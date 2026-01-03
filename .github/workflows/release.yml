@@ -1,0 +1,48 @@
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.15.2"
+      - name: Build x86_64-linux-musl
+        run: |
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
+          zig objcopy --strip-all zig-out/bin/refract
+          mv zig-out/bin/refract refract-x86_64-linux
+      - name: Build aarch64-linux-musl
+        run: |
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe
+          zig objcopy --strip-all zig-out/bin/refract
+          mv zig-out/bin/refract refract-aarch64-linux
+      - name: Build x86_64-macos
+        run: |
+          zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
+          zig objcopy --strip-all zig-out/bin/refract
+          mv zig-out/bin/refract refract-x86_64-macos
+      - name: Build aarch64-macos
+        run: |
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
+          zig objcopy --strip-all zig-out/bin/refract
+          mv zig-out/bin/refract refract-aarch64-macos
+      - name: Create checksums
+        run: sha256sum refract-* > refract-checksums.txt
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_notes: true
+          files: |
+            refract-x86_64-linux
+            refract-aarch64-linux
+            refract-x86_64-macos
+            refract-aarch64-macos
+            refract-checksums.txt

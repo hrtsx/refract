@@ -1,0 +1,26 @@
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.15.2"
+      - run: zig build
+      - run: zig fmt --check src/
+      - run: zig build test
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.15.2"
+      - run: zig build
+      - run: zig fmt --check src/
+      - run: zig build test
