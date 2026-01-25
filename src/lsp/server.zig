@@ -8,6 +8,9 @@ const indexer = @import("../indexer/index.zig");
 const gems = @import("../indexer/gems.zig");
 const transport = @import("transport.zig");
 const prism_mod = @import("../prism.zig");
+const refactor = @import("refactor.zig");
+const snippets = @import("snippets.zig");
+const erb_mapping = @import("erb_mapping.zig");
 
 const ruby_block_keywords = [_][]const u8{ "if ", "unless ", "case ", "while ", "until ", "begin", "for " };
 const empty_json_array = "[]";
@@ -254,6 +257,7 @@ const BgCtx = struct {
             std.heap.c_allocator.free(self.root_path);
             std.heap.c_allocator.destroy(self);
         }
+        self.server_ptr.bg_started_event.store(true, .release);
         var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
@@ -563,6 +567,7 @@ pub const Server = struct {
     alloc: std.mem.Allocator,
     initialized: bool,
     bg_started: bool,
+    bg_started_event: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     shutdown_requested: bool,
     root_uri: ?[]u8,
     writer_mutex: std.Thread.Mutex,
@@ -2591,6 +2596,9 @@ pub const Server = struct {
 
         const offset = self.clientPosToOffset(source, line, character);
 
+        if (std.mem.endsWith(u8, path, ".erb") and !erb_mapping.isErbRubyContext(source, offset))
+            return emptyResult(msg);
+
         if (resolveRequireTarget(self.alloc, self.db, source, offset, path)) |target_path| {
             defer self.alloc.free(target_path);
             const target_uri = pathToUri(self.alloc, target_path) catch return emptyResult(msg);
@@ -2811,6 +2819,9 @@ pub const Server = struct {
         defer self.alloc.free(source);
 
         const offset = self.clientPosToOffset(source, line, character);
+
+        if (std.mem.endsWith(u8, path, ".erb") and !erb_mapping.isErbRubyContext(source, offset))
+            return emptyResult(msg);
 
         if (resolveRequireTarget(self.alloc, self.db, source, offset, path)) |target_path| {
             defer self.alloc.free(target_path);
@@ -3929,6 +3940,37 @@ pub const Server = struct {
             }
         }
 
+        // Append snippet completions when user is typing a word
+        if (word.len > 0) {
+            const te_col = character -| @as(u32, @intCast(word.len));
+            var has_prev = !first;
+            const snip_arrays = [_][]const snippets.Snippet{
+                &snippets.RUBY_SNIPPETS, &snippets.RAILS_SNIPPETS, &snippets.RSPEC_SNIPPETS,
+            };
+            for (snip_arrays) |arr| {
+                for (arr) |snippet| {
+                    if (std.mem.startsWith(u8, snippet.trigger, word)) {
+                        if (has_prev) try w.writeByte(',');
+                        has_prev = true;
+                        try w.writeAll("{\"label\":");
+                        try writeEscapedJson(w, snippet.label);
+                        try w.writeAll(",\"kind\":15,\"insertTextFormat\":2,\"detail\":");
+                        try writeEscapedJson(w, snippet.detail);
+                        try w.writeAll(",\"sortText\":\"");
+                        try writeEscapedJsonContent(w, snippet.sort_prefix);
+                        try writeEscapedJsonContent(w, snippet.trigger);
+                        try w.writeAll("\",\"filterText\":");
+                        try writeEscapedJson(w, snippet.trigger);
+                        try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
+                            line, te_col, line, character,
+                        });
+                        try writeEscapedJson(w, snippet.body);
+                        try w.writeAll("}}");
+                    }
+                }
+            }
+        }
+
         const items_json = try items_aw.toOwnedSlice();
         defer self.alloc.free(items_json);
         var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -3963,6 +4005,27 @@ pub const Server = struct {
         defer self.alloc.free(source);
 
         const offset = self.clientPosToOffset(source, line, character);
+
+        if (std.mem.endsWith(u8, path, ".erb") and !erb_mapping.isErbRubyContext(source, offset)) {
+            var aw_erb = std.Io.Writer.Allocating.init(self.alloc);
+            const ew = &aw_erb.writer;
+            try ew.writeAll("{\"isIncomplete\":false,\"items\":[");
+            var erb_first = true;
+            for (erb_mapping.RAILS_VIEW_HELPERS) |helper| {
+                if (!erb_first) try ew.writeByte(',');
+                erb_first = false;
+                try ew.writeAll("{\"label\":");
+                try writeEscapedJson(ew, helper.name);
+                try ew.writeAll(",\"kind\":3,\"detail\":");
+                try writeEscapedJson(ew, helper.detail);
+                try ew.writeAll(",\"insertTextFormat\":2,\"insertText\":");
+                try writeEscapedJson(ew, helper.snippet);
+                try ew.writeByte('}');
+            }
+            try ew.writeAll("]}");
+            return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_erb.toOwnedSlice(), .@"error" = null };
+        }
+
         const word = extractWord(source, offset);
 
         if (detectRequireContext(source, offset) != null)
@@ -4002,6 +4065,10 @@ pub const Server = struct {
         defer self.alloc.free(source);
 
         const offset = self.clientPosToOffset(source, line, character);
+
+        if (std.mem.endsWith(u8, path, ".erb") and !erb_mapping.isErbRubyContext(source, offset))
+            return emptyResult(msg);
+
         const word = extractWord(source, offset);
         if (word.len == 0) return emptyResult(msg);
 
@@ -4156,10 +4223,12 @@ pub const Server = struct {
             if (d.code.len > 0) {
                 w.writeAll(",\"code\":") catch return;
                 writeEscapedJson(w, d.code) catch return;
-                const slash = std.mem.indexOfScalar(u8, d.code, '/') orelse d.code.len;
-                w.writeAll(",\"codeDescription\":{\"href\":\"https://docs.rubocop.org/rubocop/cops_") catch return;
-                for (d.code[0..slash]) |ch| w.writeByte(std.ascii.toLower(ch)) catch return;
-                w.writeAll(".html\"}") catch return;
+                if (!std.mem.startsWith(u8, d.code, "refract/")) {
+                    const slash = std.mem.indexOfScalar(u8, d.code, '/') orelse d.code.len;
+                    w.writeAll(",\"codeDescription\":{\"href\":\"https://docs.rubocop.org/rubocop/cops_") catch return;
+                    for (d.code[0..slash]) |ch| w.writeByte(std.ascii.toLower(ch)) catch return;
+                    w.writeAll(".html\"}") catch return;
+                }
             }
             w.writeByte('}') catch return;
         }
@@ -4227,6 +4296,24 @@ pub const Server = struct {
         w.writeAll(",\"diagnostics\":[") catch return;
         var first = true;
         self.writeDiagItems(w, prism_diags, diag_source, &first);
+
+        // Semantic checks (unused vars, undefined methods)
+        sem_blk: {
+            self.db_mutex.lock();
+            defer self.db_mutex.unlock();
+            const fid_stmt = self.db.prepare("SELECT id FROM files WHERE path = ?") catch break :sem_blk;
+            defer fid_stmt.finalize();
+            fid_stmt.bind_text(1, path);
+            if (!(fid_stmt.step() catch false)) break :sem_blk;
+            const fid = fid_stmt.column_int(0);
+            var sem_diags = indexer.runSemanticChecks(self.db, fid, self.alloc) catch break :sem_blk;
+            defer {
+                for (sem_diags.items) |d| self.alloc.free(d.message);
+                sem_diags.deinit(self.alloc);
+            }
+            self.writeDiagItems(w, sem_diags.items, diag_source, &first);
+        }
+
         w.writeAll("]}}") catch return;
 
         const json = aw.toOwnedSlice() catch return;
@@ -5174,6 +5261,34 @@ pub const Server = struct {
             else => return emptyResult(msg),
         };
 
+        // Extract range for refactoring support
+        var action_line: u32 = 0;
+        var action_char: u32 = 0;
+        var end_line: u32 = 0;
+        var end_char: u32 = 0;
+        if (obj.get("range")) |range_val| {
+            const range_obj = switch (range_val) {
+                .object => |o| o,
+                else => null,
+            };
+            if (range_obj) |ro| {
+                if (ro.get("start")) |sv| {
+                    const so = switch (sv) { .object => |o| o, else => null };
+                    if (so) |s| {
+                        if (s.get("line")) |l| { action_line = switch (l) { .integer => |i| @intCast(i), else => 0 }; }
+                        if (s.get("character")) |c| { action_char = switch (c) { .integer => |i| @intCast(i), else => 0 }; }
+                    }
+                }
+                if (ro.get("end")) |ev| {
+                    const eo = switch (ev) { .object => |o| o, else => null };
+                    if (eo) |e| {
+                        if (e.get("line")) |l| { end_line = switch (l) { .integer => |i| @intCast(i), else => 0 }; }
+                        if (e.get("character")) |c| { end_char = switch (c) { .integer => |i| @intCast(i), else => 0 }; }
+                    }
+                }
+            }
+        }
+
         var has_rubocop = false;
         if (obj.get("context")) |ctx_val| {
             const ctx_obj = switch (ctx_val) {
@@ -5207,80 +5322,153 @@ pub const Server = struct {
             }
         }
 
-        if (!has_rubocop) {
-            const empty = try self.alloc.dupe(u8, empty_json_array);
-            return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = empty, .@"error" = null };
-        }
-
         const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
         defer self.alloc.free(path);
         if (!self.pathInBounds(path)) return emptyResult(msg);
         const source = self.readSourceForUri(uri, path) catch return emptyResult(msg);
         defer self.alloc.free(source);
 
-        const source_dir_ca = std.fs.path.dirname(path) orelse "/tmp";
-        const tmp_base_ca = self.tmp_dir orelse "/tmp";
-        if (self.tmp_dir) |d| std.fs.makeDirAbsolute(d) catch {};
-        const actual_tmp_ca = try std.fmt.allocPrint(self.alloc, "{s}/ca-{d}.rb", .{ tmp_base_ca, self.fmt_counter });
-        self.fmt_counter +%= 1;
-        defer {
-            std.fs.deleteFileAbsolute(actual_tmp_ca) catch {}; // cleanup — ignore error
-            self.alloc.free(actual_tmp_ca);
-        }
-        std.fs.cwd().writeFile(.{ .sub_path = actual_tmp_ca, .data = source }) catch return emptyResult(msg);
+        var aw_ca = std.Io.Writer.Allocating.init(self.alloc);
+        const wa = &aw_ca.writer;
+        try wa.writeByte('[');
+        var action_count: usize = 0;
 
-        var child = std.process.Child.init(
-            &.{ "rubocop", "--autocorrect-all", "--no-color", "-f", "quiet", actual_tmp_ca },
-            self.alloc,
-        );
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.cwd = self.root_path orelse source_dir_ca;
-        child.spawn() catch {
-            if (!self.rubocop_checked.load(.monotonic)) {
-                self.rubocop_checked.store(true, .monotonic);
-                self.rubocop_available.store(false, .monotonic);
-                self.sendShowMessage(2, "refract: formatting requires rubocop in PATH");
+        // Refactoring actions based on cursor/selection context
+        {
+            const kinds = refactor.availableRefactors(source, action_line, action_char, end_line, end_char);
+            for (kinds) |kind| {
+                switch (kind) {
+                    .extract_method => {
+                        var result = refactor.extractMethod(self.alloc, source, action_line, end_line, "extracted_method") catch continue;
+                        defer result.deinit();
+                        if (result.edits.len == 0) continue;
+                        if (action_count > 0) try wa.writeByte(',');
+                        action_count += 1;
+                        try writeCodeActionEdits(wa, "Extract method", "refactor.extract", uri, result.edits);
+                    },
+                    .extract_variable => {
+                        var result = refactor.extractVariable(self.alloc, source, action_line, action_char, end_line, end_char, "extracted_var") catch continue;
+                        defer result.deinit();
+                        if (result.edits.len == 0) continue;
+                        if (action_count > 0) try wa.writeByte(',');
+                        action_count += 1;
+                        try writeCodeActionEdits(wa, "Extract variable", "refactor.extract", uri, result.edits);
+                    },
+                    .extract_constant => {
+                        var result = refactor.extractConstant(self.alloc, source, action_line, action_char, end_line, end_char, "EXTRACTED_CONST") catch continue;
+                        defer result.deinit();
+                        if (result.edits.len == 0) continue;
+                        if (action_count > 0) try wa.writeByte(',');
+                        action_count += 1;
+                        try writeCodeActionEdits(wa, "Extract constant", "refactor.extract", uri, result.edits);
+                    },
+                    .inline_variable => {
+                        var result = refactor.inlineVariable(self.alloc, source, action_line, action_char) catch continue;
+                        defer result.deinit();
+                        if (result.edits.len == 0) continue;
+                        if (action_count > 0) try wa.writeByte(',');
+                        action_count += 1;
+                        try writeCodeActionEdits(wa, "Inline variable", "refactor.inline", uri, result.edits);
+                    },
+                    .convert_string_style => {
+                        const cursor_off = self.clientPosToOffset(source, action_line, action_char);
+                        if (cursor_off < source.len) {
+                            const ch = source[cursor_off];
+                            if (ch == '\'') {
+                                var result = refactor.convertStringStyle(self.alloc, source, action_line, action_char, .single_to_double) catch continue;
+                                defer result.deinit();
+                                if (result.edits.len > 0) {
+                                    if (action_count > 0) try wa.writeByte(',');
+                                    action_count += 1;
+                                    try writeCodeActionEdits(wa, "Convert to double quotes", "refactor.rewrite", uri, result.edits);
+                                }
+                            } else if (ch == '"') {
+                                {
+                                    var result = refactor.convertStringStyle(self.alloc, source, action_line, action_char, .double_to_single) catch continue;
+                                    defer result.deinit();
+                                    if (result.edits.len > 0) {
+                                        if (action_count > 0) try wa.writeByte(',');
+                                        action_count += 1;
+                                        try writeCodeActionEdits(wa, "Convert to single quotes", "refactor.rewrite", uri, result.edits);
+                                    }
+                                }
+                                {
+                                    var result = refactor.convertStringStyle(self.alloc, source, action_line, action_char, .string_to_symbol) catch continue;
+                                    defer result.deinit();
+                                    if (result.edits.len > 0) {
+                                        if (action_count > 0) try wa.writeByte(',');
+                                        action_count += 1;
+                                        try writeCodeActionEdits(wa, "Convert to symbol", "refactor.rewrite", uri, result.edits);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
             }
-            return emptyResult(msg);
-        };
-        var tctx_ca = TimeoutCtx{ .child = &child, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
-        const tkill_ca = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx_ca}) catch null;
-        if (child.wait()) |term| {
-            tctx_ca.done.store(true, .release);
-            if (tkill_ca) |t| t.join();
-            switch (term) {
-                .Exited => |code| if (code >= 2) self.sendLogMessage(2, "refract: rubocop failed (check rubocop config)"),
-                else => {},
+        }
+
+        // RuboCop quickfix
+        if (has_rubocop) rubocop_blk: {
+            const source_dir_ca = std.fs.path.dirname(path) orelse "/tmp";
+            const tmp_base_ca = self.tmp_dir orelse "/tmp";
+            if (self.tmp_dir) |d| std.fs.makeDirAbsolute(d) catch {};
+            const actual_tmp_ca = std.fmt.allocPrint(self.alloc, "{s}/ca-{d}.rb", .{ tmp_base_ca, self.fmt_counter }) catch break :rubocop_blk;
+            self.fmt_counter +%= 1;
+            defer {
+                std.fs.deleteFileAbsolute(actual_tmp_ca) catch {};
+                self.alloc.free(actual_tmp_ca);
             }
-        } else |_| {
-            tctx_ca.done.store(true, .release);
-            if (tkill_ca) |t| t.join();
+            std.fs.cwd().writeFile(.{ .sub_path = actual_tmp_ca, .data = source }) catch break :rubocop_blk;
+
+            var child_ca = std.process.Child.init(
+                &.{ "rubocop", "--autocorrect-all", "--no-color", "-f", "quiet", actual_tmp_ca },
+                self.alloc,
+            );
+            child_ca.stdout_behavior = .Ignore;
+            child_ca.stderr_behavior = .Ignore;
+            child_ca.cwd = self.root_path orelse source_dir_ca;
+            child_ca.spawn() catch {
+                if (!self.rubocop_checked.load(.monotonic)) {
+                    self.rubocop_checked.store(true, .monotonic);
+                    self.rubocop_available.store(false, .monotonic);
+                    self.sendShowMessage(2, "refract: formatting requires rubocop in PATH");
+                }
+                break :rubocop_blk;
+            };
+            var tctx_ca = TimeoutCtx{ .child = &child_ca, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
+            const tkill_ca = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx_ca}) catch null;
+            if (child_ca.wait()) |term| {
+                tctx_ca.done.store(true, .release);
+                if (tkill_ca) |t| t.join();
+                switch (term) {
+                    .Exited => |code| if (code >= 2) self.sendLogMessage(2, "refract: rubocop failed (check rubocop config)"),
+                    else => {},
+                }
+            } else |_| {
+                tctx_ca.done.store(true, .release);
+                if (tkill_ca) |t| t.join();
+            }
+
+            const formatted = std.fs.cwd().readFileAlloc(self.alloc, actual_tmp_ca, self.max_file_size.load(.monotonic)) catch break :rubocop_blk;
+            defer self.alloc.free(formatted);
+            if (std.mem.eql(u8, source, formatted)) break :rubocop_blk;
+
+            if (action_count > 0) try wa.writeByte(',');
+            action_count += 1;
+            const actual_lines_ca: i64 = @intCast(std.mem.count(u8, source, "\n") + 1);
+            try wa.writeAll("{\"title\":\"Fix with RuboCop\",\"kind\":\"quickfix\",\"isPreferred\":true,\"diagnostics\":[],\"edit\":{\"changes\":{");
+            try writeEscapedJson(wa, uri);
+            try wa.print(":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}},\"newText\":", .{actual_lines_ca});
+            try writeEscapedJson(wa, formatted);
+            try wa.writeAll("}]}}}");
         }
 
-        const formatted = std.fs.cwd().readFileAlloc(self.alloc, actual_tmp_ca, self.max_file_size.load(.monotonic)) catch {
-            const empty = try self.alloc.dupe(u8, empty_json_array);
-            return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = empty, .@"error" = null };
-        };
-        defer self.alloc.free(formatted);
-
-        if (std.mem.eql(u8, source, formatted)) {
-            const empty = try self.alloc.dupe(u8, empty_json_array);
-            return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = empty, .@"error" = null };
-        }
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        const w = &aw.writer;
-        const actual_lines_ca: i64 = @intCast(std.mem.count(u8, source, "\n") + 1);
-        try w.writeAll("[{\"title\":\"Fix with RuboCop\",\"kind\":\"quickfix\",\"isPreferred\":true,\"diagnostics\":[],\"edit\":{\"changes\":{");
-        try writeEscapedJson(w, uri);
-        try w.print(":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}},\"newText\":", .{actual_lines_ca});
-        try writeEscapedJson(w, formatted);
-        try w.writeAll("}]}}}]");
+        try wa.writeByte(']');
         return types.ResponseMessage{
             .id = msg.id,
             .result = null,
-            .raw_result = try aw.toOwnedSlice(),
+            .raw_result = try aw_ca.toOwnedSlice(),
             .@"error" = null,
         };
     }
@@ -8045,6 +8233,25 @@ fn writeEscapedJson(w: *std.Io.Writer, s: []const u8) !void {
     try w.writeByte('"');
     try writeEscapedJsonContent(w, s);
     try w.writeByte('"');
+}
+
+fn writeCodeActionEdits(w: *std.Io.Writer, title: []const u8, kind: []const u8, uri: []const u8, edits: []const refactor.RefactorEdit) !void {
+    try w.writeAll("{\"title\":");
+    try writeEscapedJson(w, title);
+    try w.writeAll(",\"kind\":");
+    try writeEscapedJson(w, kind);
+    try w.writeAll(",\"edit\":{\"changes\":{");
+    try writeEscapedJson(w, uri);
+    try w.writeAll(":[");
+    for (edits, 0..) |edit, ei| {
+        if (ei > 0) try w.writeByte(',');
+        try w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
+            edit.start_line, edit.start_col, edit.end_line, edit.end_col,
+        });
+        try writeEscapedJson(w, edit.new_text);
+        try w.writeByte('}');
+    }
+    try w.writeAll("]}}}");
 }
 
 fn addStdlibCompletions(w: *std.Io.Writer, class_name: []const u8, first_item: *bool, line: u32, character: u32) !void {

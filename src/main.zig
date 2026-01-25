@@ -4,6 +4,7 @@ const db_mod = @import("db.zig");
 const transport = @import("lsp/transport.zig");
 const types = @import("lsp/types.zig");
 const server_mod = @import("lsp/server.zig");
+const mcp = @import("mcp/server.zig");
 
 var stdin_buf: [65536]u8 = undefined;
 var stdout_buf: [65536]u8 = undefined;
@@ -31,6 +32,7 @@ pub fn main() !void {
     var flag_print_db_path: bool = false;
     var flag_check: bool = false;
     var flag_stats: bool = false;
+    var flag_mcp: bool = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -53,7 +55,8 @@ pub fn main() !void {
                     "  --print-db-path      Print computed database path and exit\n" ++
                     "  --reset-db           Delete the database and exit\n" ++
                     "  --check              Verify database integrity and exit 0/1\n" ++
-                    "  --stats              Print index statistics and exit\n",
+                    "  --stats              Print index statistics and exit\n" ++
+                    "  --mcp                Run as MCP server\n",
             );
             return;
         } else if (std.mem.eql(u8, arg, "--log-file")) {
@@ -90,6 +93,8 @@ pub fn main() !void {
             flag_check = true;
         } else if (std.mem.eql(u8, arg, "--stats")) {
             flag_stats = true;
+        } else if (std.mem.eql(u8, arg, "--mcp")) {
+            flag_mcp = true;
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -254,6 +259,16 @@ pub fn main() !void {
         try std.fs.File.stderr().writeAll("refract: database is corrupted (PRAGMA quick_check failed)\n");
         return error.CorruptDatabase;
     };
+
+    if (flag_mcp) {
+        var mcp_server = mcp.Server.init(db, alloc);
+        var file_reader = std.fs.File.stdin().readerStreaming(&stdin_buf);
+        var file_writer = std.fs.File.stdout().writerStreaming(&stdout_buf);
+        const reader = &file_reader.interface;
+        const writer = &file_writer.interface;
+        try mcp_server.run(reader, writer);
+        return;
+    }
 
     var server = try server_mod.Server.init(db, db_pathz, alloc);
     defer server.deinit();
