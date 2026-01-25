@@ -289,6 +289,19 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
         try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','1')");
+        const final_ver = self.getSchemaVersion() orelse 0;
+        if (final_ver != 1) {
+            std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
+        }
+    }
+
+    pub fn getSchemaVersion(self: Db) ?i64 {
+        const stmt = self.prepare("SELECT value FROM meta WHERE key='schema_version'") catch return null;
+        defer stmt.finalize();
+        if (stmt.step() catch false) {
+            return std.fmt.parseInt(i64, stmt.column_text(0), 10) catch null;
+        }
+        return null;
     }
 
     pub fn runOptimize(self: Db) void {
