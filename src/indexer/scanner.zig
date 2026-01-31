@@ -109,11 +109,14 @@ fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), 
             const is_ruby = std.mem.endsWith(u8, entry.name, ".rb") or
                 std.mem.endsWith(u8, entry.name, ".erb") or
                 std.mem.endsWith(u8, entry.name, ".haml") or
+                std.mem.endsWith(u8, entry.name, ".slim") or
                 std.mem.endsWith(u8, entry.name, ".rbs") or
                 std.mem.endsWith(u8, entry.name, ".rbi") or
                 std.mem.endsWith(u8, entry.name, ".rake") or
                 std.mem.endsWith(u8, entry.name, ".gemspec") or
                 std.mem.endsWith(u8, entry.name, ".ru") or
+                std.mem.endsWith(u8, entry.name, ".jbuilder") or
+                std.mem.endsWith(u8, entry.name, ".builder") or
                 std.mem.endsWith(u8, entry.name, ".yml") or
                 std.mem.endsWith(u8, entry.name, ".yaml") or
                 std.mem.eql(u8, entry.name, "Rakefile") or
