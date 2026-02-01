@@ -49,8 +49,10 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
 
         // Extract key (strip surrounding quotes if present)
         var raw_key = std.mem.trim(u8, content[0..colon_pos], " \t\"'");
-        // Skip YAML anchors, aliases, and special keys
-        if (raw_key.len == 0 or raw_key[0] == '&' or raw_key[0] == '*' or raw_key[0] == '!') continue;
+        if (raw_key.len == 0 or raw_key[0] == '!' or raw_key[0] == '*') continue;
+        // Strip YAML anchor markers (&anchor) from key
+        if (raw_key[0] == '&') raw_key = std.mem.trim(u8, raw_key[1..], " \t");
+        if (raw_key.len == 0) continue;
 
         // Copy key into stack at this level
         if (level < MAX_DEPTH) {
@@ -94,7 +96,10 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
 
         // Extract value string (strip quotes and inline comments)
         var value_str: []const u8 = after_colon;
-        if (value_str.len > 0 and (value_str[0] == '"' or value_str[0] == '\'')) {
+        // Handle YAML alias references (*alias) as values
+        if (value_str.len > 0 and value_str[0] == '*') {
+            value_str = value_str; // store alias ref as-is for display
+        } else if (value_str.len > 0 and (value_str[0] == '"' or value_str[0] == '\'')) {
             const quote_char = value_str[0];
             value_str = value_str[1..];
             if (std.mem.indexOfScalar(u8, value_str, quote_char)) |end| {
