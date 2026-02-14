@@ -435,6 +435,22 @@ const BgCtx = struct {
                 setMetaInt(db, "gemfile_lock_mtime", lock_mtime, alloc);
                 self.server_ptr.db_mutex.unlock();
             }
+
+            // Index RBS collection paths (rbs_collection.lock.yaml)
+            if (!self.server_ptr.bg_cancelled.load(.acquire)) {
+                if (gems.findRbsCollectionPaths(self.root_path, alloc)) |rbs_coll_paths| {
+                    if (rbs_coll_paths.len > 0) {
+                        const rbs_const = alloc.alloc([]const u8, rbs_coll_paths.len) catch return;
+                        for (rbs_coll_paths, 0..) |p, i| rbs_const[i] = p;
+                        self.server_ptr.db_mutex.lock();
+                        defer self.server_ptr.db_mutex.unlock();
+                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic)) catch {};
+                        var rbuf: [128]u8 = undefined;
+                        const rmsg = std.fmt.bufPrint(&rbuf, "refract: indexed {d} RBS collection files", .{rbs_const.len}) catch "refract: indexed RBS collection";
+                        self.server_ptr.sendLogMessage(3, rmsg);
+                    }
+                } else |_| {}
+            }
         }
 
         // Incremental reindex watch loop: drain queued paths every 200ms
@@ -912,8 +928,14 @@ pub const Server = struct {
                         else => {},
                     };
                     if (cfg.get("logLevel")) |v| switch (v) {
-                        .integer => |n| { self.log_level.store(@intCast(@min(n, 4)), .monotonic); },
-                        else => {},
+                        .integer => |n| {
+                            if (n < 1 or n > 4) {
+                                self.sendLspLogMessage(2, "refract: logLevel must be 1-4, ignoring invalid value");
+                            } else {
+                                self.log_level.store(@intCast(n), .monotonic);
+                            }
+                        },
+                        else => { self.sendLspLogMessage(2, "refract: logLevel must be an integer (1-4)"); },
                     };
                     if (cfg.get("disableGemIndex")) |v| switch (v) {
                         .bool => |b| { self.disable_gem_index.store(b, .monotonic); },
@@ -1300,9 +1322,19 @@ pub const Server = struct {
     }
 
     pub fn sendShowMessage(self: *Server, level: u8, msg: []const u8) void {
+        self.sendLspWindowMessage("window/showMessage", level, msg);
+    }
+
+    pub fn sendLspLogMessage(self: *Server, level: u8, msg: []const u8) void {
+        self.sendLspWindowMessage("window/logMessage", level, msg);
+    }
+
+    fn sendLspWindowMessage(self: *Server, method: []const u8, level: u8, msg: []const u8) void {
         var aw = std.Io.Writer.Allocating.init(std.heap.c_allocator);
         const w = &aw.writer;
-        w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"type\":") catch return;
+        w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"") catch return;
+        w.writeAll(method) catch return;
+        w.writeAll("\",\"params\":{\"type\":") catch return;
         w.print("{d}", .{level}) catch return;
         w.writeAll(",\"message\":") catch return;
         writeEscapedJson(w, msg) catch return;
@@ -6616,41 +6648,120 @@ pub const Server = struct {
             } else |_| {}
 
             if (method_parent) |mp| {
-                const sym_stmt = try self.db.prepare(
-                    \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
-                    \\WHERE s.name=? AND f.is_gem=0 AND s.file_id IN (
-                    \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
-                    \\)
-                );
-                defer sym_stmt.finalize();
-                sym_stmt.bind_text(1, word);
-                sym_stmt.bind_text(2, mp);
-                while (try sym_stmt.step()) {
-                    const sym_line = sym_stmt.column_int(0);
-                    const sym_col = sym_stmt.column_int(1);
-                    const sym_path = sym_stmt.column_text(2);
-                    const key = try a.dupe(u8, sym_path);
-                    const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
-                    try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
+                // Build MRO closure: collect all classes/modules related through
+                // inheritance and mixins so rename covers subclasses and includers.
+                var related_classes = std.StringHashMap(void).init(a);
+                try related_classes.put(try a.dupe(u8, mp), {});
+
+                // Walk mixins: find classes that include/extend the parent module
+                // and modules included by the parent class (up to 4 levels)
+                var depth: u8 = 0;
+                while (depth < 4) : (depth += 1) {
+                    var new_names = std.ArrayList([]const u8){};
+                    var it = related_classes.keyIterator();
+                    while (it.next()) |kp| {
+                        // Find classes that include this module
+                        if (self.db.prepare(
+                            \\SELECT DISTINCT s.name FROM symbols s
+                            \\JOIN mixins m ON m.class_id = s.id
+                            \\WHERE m.module_name = ? AND s.kind IN ('class','module') AND s.file_id IN (SELECT id FROM files WHERE is_gem=0)
+                        )) |inc_stmt| {
+                            defer inc_stmt.finalize();
+                            inc_stmt.bind_text(1, kp.*);
+                            while (inc_stmt.step() catch false) {
+                                const cn = inc_stmt.column_text(0);
+                                if (cn.len > 0 and !related_classes.contains(cn)) {
+                                    new_names.append(a, a.dupe(u8, cn) catch continue) catch {};
+                                }
+                            }
+                        } else |_| {}
+                        // Find subclasses (parent_name = this class)
+                        if (self.db.prepare(
+                            \\SELECT DISTINCT name FROM symbols
+                            \\WHERE parent_name = ? AND kind IN ('class','module') AND file_id IN (SELECT id FROM files WHERE is_gem=0)
+                        )) |sub_stmt| {
+                            defer sub_stmt.finalize();
+                            sub_stmt.bind_text(1, kp.*);
+                            while (sub_stmt.step() catch false) {
+                                const cn = sub_stmt.column_text(0);
+                                if (cn.len > 0 and !related_classes.contains(cn)) {
+                                    new_names.append(a, a.dupe(u8, cn) catch continue) catch {};
+                                }
+                            }
+                        } else |_| {}
+                    }
+                    if (new_names.items.len == 0) break;
+                    for (new_names.items) |nn| related_classes.put(nn, {}) catch {};
                 }
-                const ref_stmt = try self.db.prepare(
+
+                // Query symbols and refs across all related classes
+                var rc_it = related_classes.keyIterator();
+                while (rc_it.next()) |class_name_ptr| {
+                    const cn = class_name_ptr.*;
+                    const sym_stmt = self.db.prepare(
+                        \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
+                        \\WHERE s.name=? AND f.is_gem=0 AND s.file_id IN (
+                        \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
+                        \\)
+                    ) catch continue;
+                    defer sym_stmt.finalize();
+                    sym_stmt.bind_text(1, word);
+                    sym_stmt.bind_text(2, cn);
+                    while (sym_stmt.step() catch false) {
+                        const sym_line = sym_stmt.column_int(0);
+                        const sym_col = sym_stmt.column_int(1);
+                        const sym_path = sym_stmt.column_text(2);
+                        const key = try a.dupe(u8, sym_path);
+                        const gop = try edits_map.getOrPut(key);
+                        if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                        try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
+                    }
+                    const ref_stmt = self.db.prepare(
+                        \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
+                        \\WHERE r.name=? AND f.is_gem=0 AND r.file_id IN (
+                        \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
+                        \\)
+                    ) catch continue;
+                    defer ref_stmt.finalize();
+                    ref_stmt.bind_text(1, word);
+                    ref_stmt.bind_text(2, cn);
+                    while (ref_stmt.step() catch false) {
+                        const ref_line = ref_stmt.column_int(0);
+                        const ref_col = ref_stmt.column_int(1);
+                        const ref_path = ref_stmt.column_text(2);
+                        const key = try a.dupe(u8, ref_path);
+                        const gop = try edits_map.getOrPut(key);
+                        if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                        try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
+                    }
+                }
+
+                // Also query refs globally for the method name in files that
+                // reference it without necessarily defining the parent class
+                const global_ref = self.db.prepare(
                     \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
-                    \\WHERE r.name=? AND f.is_gem=0 AND r.file_id IN (
-                    \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
-                    \\)
-                );
-                defer ref_stmt.finalize();
-                ref_stmt.bind_text(1, word);
-                ref_stmt.bind_text(2, mp);
-                while (try ref_stmt.step()) {
-                    const ref_line = ref_stmt.column_int(0);
-                    const ref_col = ref_stmt.column_int(1);
-                    const ref_path = ref_stmt.column_text(2);
-                    const key = try a.dupe(u8, ref_path);
-                    const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
-                    try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
+                    \\WHERE r.name=? AND f.is_gem=0
+                ) catch null;
+                if (global_ref) |gr| {
+                    defer gr.finalize();
+                    gr.bind_text(1, word);
+                    while (gr.step() catch false) {
+                        const rl = gr.column_int(0);
+                        const rc = gr.column_int(1);
+                        const rp = gr.column_text(2);
+                        const key = try a.dupe(u8, rp);
+                        const gop = try edits_map.getOrPut(key);
+                        if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                        // Deduplicate: check if this exact location already exists
+                        var exists = false;
+                        for (gop.value_ptr.items) |existing| {
+                            if (existing.line == rl and existing.col == rc) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) try gop.value_ptr.append(a, .{ .line = rl, .col = rc });
+                    }
                 }
             } else {
                 const sym_stmt = try self.db.prepare(

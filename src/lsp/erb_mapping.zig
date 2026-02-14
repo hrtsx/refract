@@ -161,9 +161,16 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
 
         if (in_multiline_attrs) {
             var j: usize = 0;
+            var in_string: u8 = 0; // 0 = none, '"' or '\'' = inside that quote
             while (j < trimmed.len) : (j += 1) {
-                if (trimmed[j] == '{') pending_brace_depth += 1;
-                if (trimmed[j] == '}') {
+                const ch = trimmed[j];
+                if (in_string != 0) {
+                    if (ch == in_string and (j == 0 or trimmed[j - 1] != '\\')) in_string = 0;
+                    continue;
+                }
+                if (ch == '"' or ch == '\'') { in_string = ch; continue; }
+                if (ch == '{') pending_brace_depth += 1;
+                if (ch == '}') {
                     if (pending_brace_depth > 0) pending_brace_depth -= 1;
                 }
             }
@@ -270,9 +277,16 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                 var brace_depth: u32 = 1;
                 const brace_start = j + 1;
                 j += 1;
+                var init_quote: u8 = 0;
                 while (j < trimmed.len and brace_depth > 0) : (j += 1) {
-                    if (trimmed[j] == '{') brace_depth += 1;
-                    if (trimmed[j] == '}') brace_depth -= 1;
+                    const bch = trimmed[j];
+                    if (init_quote != 0) {
+                        if (bch == init_quote and (j == 0 or trimmed[j - 1] != '\\')) init_quote = 0;
+                        continue;
+                    }
+                    if (bch == '"' or bch == '\'') { init_quote = bch; continue; }
+                    if (bch == '{') brace_depth += 1;
+                    if (bch == '}') brace_depth -= 1;
                 }
                 if (brace_depth == 0 and brace_start < j - 1) {
                     const code_len: u32 = @intCast(j - brace_start - 1);

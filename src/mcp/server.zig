@@ -90,6 +90,12 @@ const schema_available_code_actions =
 const schema_diagnostic_summary =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Optional file path filter"},"severity_filter":{"type":"string","enum":["error","warning","info"],"description":"Filter by severity"},"code_filter":{"type":"string","description":"Filter by diagnostic code"}},"required":[]}
 ;
+const schema_type_coverage =
+    \\{"type":"object","properties":{"file":{"type":"string","description":"Optional file path — omit for workspace-wide"},"min_coverage":{"type":"number","description":"Only show files below this percentage (0-100, default 100)"}},"required":[]}
+;
+const schema_find_similar =
+    \\{"type":"object","properties":{"method_name":{"type":"string","description":"Method name to find similar methods for"},"max_distance":{"type":"integer","description":"Maximum edit distance (default 2)"}},"required":["method_name"]}
+;
 const schema_explain_type_chain =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"line":{"type":"integer","description":"1-based line number"},"col":{"type":"integer","description":"0-based column offset"}},"required":["file","line"]}
 ;
@@ -134,6 +140,8 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "diagnostic_summary", .description = "Get diagnostics with optional filtering by file, severity, or code", .schema = schema_diagnostic_summary },
     .{ .name = "explain_type_chain", .description = "Explain how a local variable's type was inferred — shows chain from source (RBS, YARD, literal, chain)", .schema = schema_explain_type_chain },
     .{ .name = "suggest_types", .description = "Suggest YARD/RBS type annotations for untyped methods in a file", .schema = schema_suggest_types },
+    .{ .name = "type_coverage", .description = "Show type annotation coverage per file — percentage of methods with return types", .schema = schema_type_coverage },
+    .{ .name = "find_similar", .description = "Find methods with similar names (typo detection, naming consistency)", .schema = schema_find_similar },
 };
 
 pub const Server = struct {
@@ -295,6 +303,8 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "diagnostic_summary")) return self.toolDiagnosticSummary(id, args);
         if (std.mem.eql(u8, name, "explain_type_chain")) return self.toolExplainTypeChain(id, args);
         if (std.mem.eql(u8, name, "suggest_types")) return self.toolSuggestTypes(id, args);
+        if (std.mem.eql(u8, name, "type_coverage")) return self.toolTypeCoverage(id, args);
+        if (std.mem.eql(u8, name, "find_similar")) return self.toolFindSimilar(id, args);
 
         return self.buildError(id, -32601, "Unknown tool");
     }
@@ -2837,7 +2847,131 @@ pub const Server = struct {
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
     }
+
+    fn toolTypeCoverage(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const file_filter = if (args) |a| if (a.get("file")) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null else null;
+        const min_cov: f64 = if (args) |a| if (a.get("min_coverage")) |v| switch (v) {
+            .float => |f| f,
+            .integer => |i| @floatFromInt(i),
+            else => 100.0,
+        } else 100.0 else 100.0;
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeAll("{\"files\":[");
+
+        const query = if (file_filter != null)
+            "SELECT f.path, " ++
+                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def') as total, " ++
+                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def' AND return_type IS NOT NULL) as typed " ++
+                "FROM files f WHERE f.is_gem=0 AND f.path=? ORDER BY f.path"
+        else
+            "SELECT f.path, " ++
+                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def') as total, " ++
+                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def' AND return_type IS NOT NULL) as typed " ++
+                "FROM files f WHERE f.is_gem=0 ORDER BY f.path";
+
+        const stmt = self.db.prepare(query) catch return self.buildError(id, -32603, "DB error");
+        defer stmt.finalize();
+        if (file_filter) |ff| stmt.bind_text(1, ff);
+
+        var first = true;
+        var ws_total: u32 = 0;
+        var ws_typed: u32 = 0;
+        while (stmt.step() catch false) {
+            const fpath = stmt.column_text(0);
+            const total: u32 = @intCast(stmt.column_int(1));
+            const typed: u32 = @intCast(stmt.column_int(2));
+            if (total == 0) continue;
+            const pct: f64 = @as(f64, @floatFromInt(typed)) / @as(f64, @floatFromInt(total)) * 100.0;
+            if (pct > min_cov) continue;
+            ws_total += total;
+            ws_typed += typed;
+            if (!first) try w.writeAll(",");
+            first = false;
+            try w.writeAll("{\"file\":");
+            try writeJsonStr(w, fpath);
+            try w.print(",\"total_methods\":{d},\"typed_methods\":{d},\"coverage_pct\":{d:.1}}}", .{ total, typed, pct });
+        }
+        const ws_pct: f64 = if (ws_total > 0) @as(f64, @floatFromInt(ws_typed)) / @as(f64, @floatFromInt(ws_total)) * 100.0 else 0.0;
+        try w.print("],\"workspace_total\":{d},\"workspace_typed\":{d},\"workspace_coverage_pct\":{d:.1}}}", .{ ws_total, ws_typed, ws_pct });
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolFindSimilar(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const method_name = if (args) |a| if (a.get("method_name")) |v| switch (v) {
+            .string => |s| s,
+            else => return self.buildError(id, -32602, "method_name required"),
+        } else return self.buildError(id, -32602, "method_name required") else return self.buildError(id, -32602, "method_name required");
+
+        const max_dist: u32 = if (args) |a| if (a.get("max_distance")) |v| switch (v) {
+            .integer => |i| if (i > 0 and i <= 5) @intCast(i) else 2,
+            else => 2,
+        } else 2 else 2;
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeAll("{\"query\":");
+        try writeJsonStr(w, method_name);
+        try w.writeAll(",\"similar\":[");
+
+        // Use LIKE for prefix filtering, then edit distance for ranking
+        const stmt = self.db.prepare(
+            "SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000"
+        ) catch return self.buildError(id, -32603, "DB error");
+        defer stmt.finalize();
+        stmt.bind_text(1, method_name);
+
+        var first = true;
+        var count: u32 = 0;
+        while (stmt.step() catch false) {
+            if (count >= 50) break;
+            const cand = stmt.column_text(0);
+            if (cand.len == 0) continue;
+            const dist = editDistance(method_name, cand);
+            if (dist <= max_dist) {
+                if (!first) try w.writeAll(",");
+                first = false;
+                try w.writeAll("{\"name\":");
+                try writeJsonStr(w, cand);
+                const parent = stmt.column_text(1);
+                if (parent.len > 0) {
+                    try w.writeAll(",\"class\":");
+                    try writeJsonStr(w, parent);
+                }
+                try w.print(",\"distance\":{d}}}", .{dist});
+                count += 1;
+            }
+        }
+        try w.writeAll("]}");
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
 };
+
+fn editDistance(a: []const u8, b: []const u8) u32 {
+    if (a.len > 64 or b.len > 64) return 99;
+    if (a.len == 0) return @intCast(b.len);
+    if (b.len == 0) return @intCast(a.len);
+    var prev: [65]u32 = undefined;
+    var curr: [65]u32 = undefined;
+    for (0..b.len + 1) |j| prev[j] = @intCast(j);
+    for (a, 0..) |ca, i| {
+        curr[0] = @intCast(i + 1);
+        for (b, 0..) |cb, j| {
+            const cost: u32 = if (ca == cb) 0 else 1;
+            curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
+        }
+        @memcpy(prev[0..b.len + 1], curr[0..b.len + 1]);
+    }
+    return prev[b.len];
+}
 
 fn countLines(source: []const u8) u32 {
     var count: u32 = 1;

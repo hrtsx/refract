@@ -451,6 +451,8 @@ fn isIterationMethod(name: []const u8) bool {
         "downto", "step", "each_slice", "each_cons", "min_by", "max_by",
         "sort_by", "group_by", "tally", "then", "yield_self", "zip",
         "take_while", "drop_while", "partition", "count", "sum",
+        "find_all", "lazy", "cycle", "each_entry", "chunk_while",
+        "slice_when", "slice_before", "slice_after", "tap", "chunk",
     };
     for (methods) |m| if (std.mem.eql(u8, name, m)) return true;
     return false;
@@ -3044,15 +3046,208 @@ pub fn lookupStdlibReturn(class_name: []const u8, method_name: []const u8) ?[]co
     if (std.mem.eql(u8, class_name, "Symbol")) {
         if (std.mem.eql(u8, method_name, "to_s") or
             std.mem.eql(u8, method_name, "id2name") or
+            std.mem.eql(u8, method_name, "name") or
             std.mem.eql(u8, method_name, "inspect")) return "String";
         if (std.mem.eql(u8, method_name, "to_sym") or
             std.mem.eql(u8, method_name, "upcase") or
-            std.mem.eql(u8, method_name, "downcase") or
-            std.mem.eql(u8, method_name, "to_proc")) return "Symbol";
+            std.mem.eql(u8, method_name, "downcase")) return "Symbol";
+        if (std.mem.eql(u8, method_name, "to_proc")) return "Proc";
         if (std.mem.eql(u8, method_name, "length") or
             std.mem.eql(u8, method_name, "size")) return "Integer";
         if (std.mem.eql(u8, method_name, "match?") or
             std.mem.eql(u8, method_name, "empty?")) return "TrueClass";
+        if (std.mem.eql(u8, method_name, "match")) return "MatchData";
+    }
+    if (std.mem.eql(u8, class_name, "Regexp")) {
+        if (std.mem.eql(u8, method_name, "match")) return "MatchData";
+        if (std.mem.eql(u8, method_name, "source") or
+            std.mem.eql(u8, method_name, "inspect") or
+            std.mem.eql(u8, method_name, "to_s")) return "String";
+        if (std.mem.eql(u8, method_name, "match?") or
+            std.mem.eql(u8, method_name, "casefold?")) return "TrueClass";
+        if (std.mem.eql(u8, method_name, "names") or
+            std.mem.eql(u8, method_name, "named_captures")) return "Array";
+        if (std.mem.eql(u8, method_name, "options")) return "Integer";
+    }
+    if (std.mem.eql(u8, class_name, "MatchData")) {
+        if (std.mem.eql(u8, method_name, "to_s") or
+            std.mem.eql(u8, method_name, "string") or
+            std.mem.eql(u8, method_name, "pre_match") or
+            std.mem.eql(u8, method_name, "post_match") or
+            std.mem.eql(u8, method_name, "inspect")) return "String";
+        if (std.mem.eql(u8, method_name, "captures") or
+            std.mem.eql(u8, method_name, "to_a") or
+            std.mem.eql(u8, method_name, "names")) return "Array";
+        if (std.mem.eql(u8, method_name, "named_captures")) return "Hash";
+        if (std.mem.eql(u8, method_name, "length") or
+            std.mem.eql(u8, method_name, "size")) return "Integer";
+        if (std.mem.eql(u8, method_name, "regexp")) return "Regexp";
+    }
+    if (std.mem.eql(u8, class_name, "File") or std.mem.eql(u8, class_name, "IO")) {
+        if (std.mem.eql(u8, method_name, "read") or
+            std.mem.eql(u8, method_name, "gets") or
+            std.mem.eql(u8, method_name, "readline") or
+            std.mem.eql(u8, method_name, "chomp") or
+            std.mem.eql(u8, method_name, "to_s") or
+            std.mem.eql(u8, method_name, "path") or
+            std.mem.eql(u8, method_name, "inspect")) return "String";
+        if (std.mem.eql(u8, method_name, "readlines") or
+            std.mem.eql(u8, method_name, "each_line")) return "Array";
+        if (std.mem.eql(u8, method_name, "size") or
+            std.mem.eql(u8, method_name, "pos") or
+            std.mem.eql(u8, method_name, "lineno") or
+            std.mem.eql(u8, method_name, "fileno")) return "Integer";
+        if (std.mem.eql(u8, method_name, "exist?") or
+            std.mem.eql(u8, method_name, "file?") or
+            std.mem.eql(u8, method_name, "directory?") or
+            std.mem.eql(u8, method_name, "readable?") or
+            std.mem.eql(u8, method_name, "writable?") or
+            std.mem.eql(u8, method_name, "eof?") or
+            std.mem.eql(u8, method_name, "closed?")) return "TrueClass";
+        if (std.mem.eql(u8, method_name, "stat")) return "File::Stat";
+    }
+    if (std.mem.eql(u8, class_name, "Time") or std.mem.eql(u8, class_name, "Date") or
+        std.mem.eql(u8, class_name, "DateTime"))
+    {
+        if (std.mem.eql(u8, method_name, "now") or
+            std.mem.eql(u8, method_name, "today") or
+            std.mem.eql(u8, method_name, "current") or
+            std.mem.eql(u8, method_name, "new") or
+            std.mem.eql(u8, method_name, "parse") or
+            std.mem.eql(u8, method_name, "utc") or
+            std.mem.eql(u8, method_name, "at") or
+            std.mem.eql(u8, method_name, "yesterday") or
+            std.mem.eql(u8, method_name, "tomorrow") or
+            std.mem.eql(u8, method_name, "beginning_of_day") or
+            std.mem.eql(u8, method_name, "end_of_day") or
+            std.mem.eql(u8, method_name, "beginning_of_month") or
+            std.mem.eql(u8, method_name, "end_of_month") or
+            std.mem.eql(u8, method_name, "beginning_of_year") or
+            std.mem.eql(u8, method_name, "ago") or
+            std.mem.eql(u8, method_name, "since") or
+            std.mem.eql(u8, method_name, "in_time_zone") or
+            std.mem.eql(u8, method_name, "change") or
+            std.mem.eql(u8, method_name, "advance")) return class_name;
+        if (std.mem.eql(u8, method_name, "to_s") or
+            std.mem.eql(u8, method_name, "strftime") or
+            std.mem.eql(u8, method_name, "iso8601") or
+            std.mem.eql(u8, method_name, "httpdate") or
+            std.mem.eql(u8, method_name, "rfc2822") or
+            std.mem.eql(u8, method_name, "to_formatted_s") or
+            std.mem.eql(u8, method_name, "inspect")) return "String";
+        if (std.mem.eql(u8, method_name, "to_i") or
+            std.mem.eql(u8, method_name, "to_r") or
+            std.mem.eql(u8, method_name, "year") or
+            std.mem.eql(u8, method_name, "month") or
+            std.mem.eql(u8, method_name, "day") or
+            std.mem.eql(u8, method_name, "hour") or
+            std.mem.eql(u8, method_name, "min") or
+            std.mem.eql(u8, method_name, "sec") or
+            std.mem.eql(u8, method_name, "wday") or
+            std.mem.eql(u8, method_name, "yday") or
+            std.mem.eql(u8, method_name, "usec") or
+            std.mem.eql(u8, method_name, "nsec")) return "Integer";
+        if (std.mem.eql(u8, method_name, "to_f")) return "Float";
+        if (std.mem.eql(u8, method_name, "to_date")) return "Date";
+        if (std.mem.eql(u8, method_name, "to_time")) return "Time";
+        if (std.mem.eql(u8, method_name, "to_datetime")) return "DateTime";
+        if (std.mem.eql(u8, method_name, "zone")) return "String";
+        if (std.mem.eql(u8, method_name, "dst?") or
+            std.mem.eql(u8, method_name, "utc?") or
+            std.mem.eql(u8, method_name, "future?") or
+            std.mem.eql(u8, method_name, "past?") or
+            std.mem.eql(u8, method_name, "today?") or
+            std.mem.eql(u8, method_name, "saturday?") or
+            std.mem.eql(u8, method_name, "sunday?") or
+            std.mem.eql(u8, method_name, "on_weekday?") or
+            std.mem.eql(u8, method_name, "on_weekend?")) return "TrueClass";
+    }
+    if (std.mem.eql(u8, class_name, "Enumerator")) {
+        if (std.mem.eql(u8, method_name, "to_a") or
+            std.mem.eql(u8, method_name, "entries")) return "Array";
+        if (std.mem.eql(u8, method_name, "size") or
+            std.mem.eql(u8, method_name, "count")) return "Integer";
+        if (std.mem.eql(u8, method_name, "inspect") or
+            std.mem.eql(u8, method_name, "to_s")) return "String";
+    }
+    if (std.mem.eql(u8, class_name, "Range")) {
+        if (std.mem.eql(u8, method_name, "to_a") or
+            std.mem.eql(u8, method_name, "entries")) return "Array";
+        if (std.mem.eql(u8, method_name, "size") or
+            std.mem.eql(u8, method_name, "count") or
+            std.mem.eql(u8, method_name, "min") or
+            std.mem.eql(u8, method_name, "max")) return "Integer";
+        if (std.mem.eql(u8, method_name, "to_s") or
+            std.mem.eql(u8, method_name, "inspect")) return "String";
+        if (std.mem.eql(u8, method_name, "include?") or
+            std.mem.eql(u8, method_name, "cover?") or
+            std.mem.eql(u8, method_name, "any?") or
+            std.mem.eql(u8, method_name, "none?") or
+            std.mem.eql(u8, method_name, "exclude_end?")) return "TrueClass";
+    }
+    if (std.mem.eql(u8, class_name, "Pathname")) {
+        if (std.mem.eql(u8, method_name, "to_s") or
+            std.mem.eql(u8, method_name, "to_path") or
+            std.mem.eql(u8, method_name, "basename") or
+            std.mem.eql(u8, method_name, "dirname") or
+            std.mem.eql(u8, method_name, "extname") or
+            std.mem.eql(u8, method_name, "expand_path") or
+            std.mem.eql(u8, method_name, "realpath") or
+            std.mem.eql(u8, method_name, "read")) return "String";
+        if (std.mem.eql(u8, method_name, "join") or
+            std.mem.eql(u8, method_name, "parent") or
+            std.mem.eql(u8, method_name, "cleanpath") or
+            std.mem.eql(u8, method_name, "relative_path_from") or
+            std.mem.eql(u8, method_name, "sub_ext")) return "Pathname";
+        if (std.mem.eql(u8, method_name, "children") or
+            std.mem.eql(u8, method_name, "entries") or
+            std.mem.eql(u8, method_name, "glob") or
+            std.mem.eql(u8, method_name, "readlines")) return "Array";
+        if (std.mem.eql(u8, method_name, "exist?") or
+            std.mem.eql(u8, method_name, "file?") or
+            std.mem.eql(u8, method_name, "directory?") or
+            std.mem.eql(u8, method_name, "empty?") or
+            std.mem.eql(u8, method_name, "absolute?") or
+            std.mem.eql(u8, method_name, "relative?")) return "TrueClass";
+    }
+    // Universal methods present on all objects
+    if (std.mem.eql(u8, method_name, "class")) return "Class";
+    if (std.mem.eql(u8, method_name, "frozen?") or
+        std.mem.eql(u8, method_name, "nil?") or
+        std.mem.eql(u8, method_name, "is_a?") or
+        std.mem.eql(u8, method_name, "kind_of?") or
+        std.mem.eql(u8, method_name, "instance_of?") or
+        std.mem.eql(u8, method_name, "respond_to?") or
+        std.mem.eql(u8, method_name, "equal?") or
+        std.mem.eql(u8, method_name, "eql?") or
+        std.mem.eql(u8, method_name, "tainted?")) return "TrueClass";
+    if (std.mem.eql(u8, method_name, "to_s") or
+        std.mem.eql(u8, method_name, "inspect")) return "String";
+    if (std.mem.eql(u8, method_name, "hash") or
+        std.mem.eql(u8, method_name, "object_id")) return "Integer";
+    if (std.mem.eql(u8, method_name, "dup") or
+        std.mem.eql(u8, method_name, "clone") or
+        std.mem.eql(u8, method_name, "freeze") or
+        std.mem.eql(u8, method_name, "itself") or
+        std.mem.eql(u8, method_name, "tap")) return class_name;
+    if (std.mem.eql(u8, method_name, "methods") or
+        std.mem.eql(u8, method_name, "public_methods") or
+        std.mem.eql(u8, method_name, "private_methods") or
+        std.mem.eql(u8, method_name, "protected_methods") or
+        std.mem.eql(u8, method_name, "instance_variables")) return "Array";
+    // String methods missed earlier
+    if (std.mem.eql(u8, class_name, "String")) {
+        if (std.mem.eql(u8, method_name, "match")) return "MatchData";
+        if (std.mem.eql(u8, method_name, "index") or
+            std.mem.eql(u8, method_name, "rindex")) return "Integer";
+        if (std.mem.eql(u8, method_name, "replace") or
+            std.mem.eql(u8, method_name, "insert") or
+            std.mem.eql(u8, method_name, "force_encoding") or
+            std.mem.eql(u8, method_name, "scrub") or
+            std.mem.eql(u8, method_name, "unicode_normalize") or
+            std.mem.eql(u8, method_name, "b")) return "String";
+        if (std.mem.eql(u8, method_name, "unpack")) return "Array";
+        if (std.mem.eql(u8, method_name, "encoding")) return "Encoding";
     }
     // ActiveSupport methods — harmless on non-Rails codebases
     if (std.mem.eql(u8, method_name, "blank?") or
@@ -3061,6 +3256,9 @@ pub fn lookupStdlibReturn(class_name: []const u8, method_name: []const u8) ?[]co
     if (std.mem.eql(u8, method_name, "with_indifferent_access") or
         std.mem.eql(u8, method_name, "deep_symbolize_keys") or
         std.mem.eql(u8, method_name, "deep_stringify_keys")) return "Hash";
+    if (std.mem.eql(u8, method_name, "presence")) return class_name;
+    if (std.mem.eql(u8, method_name, "try") or
+        std.mem.eql(u8, method_name, "try!")) return null;
     return null;
 }
 
