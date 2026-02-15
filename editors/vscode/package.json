@@ -1,0 +1,72 @@
+{
+  "name": "refract",
+  "displayName": "Refract Ruby LSP",
+  "description": "Zero-dependency Ruby language server",
+  "version": "0.1.0",
+  "publisher": "refract",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:ruby",
+    "onLanguage:erb",
+    "onLanguage:haml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Refract",
+      "properties": {
+        "refract.path": {
+          "type": "string",
+          "default": "refract",
+          "description": "Path to the refract executable"
+        },
+        "refract.disableGemIndex": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip indexing gems from Gemfile"
+        },
+        "refract.disableRubocop": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable RuboCop integration"
+        },
+        "refract.maxFileSizeMb": {
+          "type": "number",
+          "default": 8,
+          "description": "Maximum file size for indexing (MB)"
+        },
+        "refract.maxWorkers": {
+          "type": "number",
+          "default": 0,
+          "description": "Max indexer workers (0 = auto)"
+        },
+        "refract.excludeDirs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional directories to exclude from indexing"
+        },
+        "refract.logLevel": {
+          "type": "number",
+          "default": 2,
+          "description": "Log verbosity (0=off, 1=error, 2=warn, 3=info, 4=debug)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --platform=node --format=cjs",
+    "watch": "npm run build -- --watch"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "@types/vscode": "^1.75.0"
+  }
+}
