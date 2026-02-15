@@ -152,54 +152,6 @@ pub fn findRbsStdlibPaths(root_path: []const u8, alloc: std.mem.Allocator, timeo
     return &.{};
 }
 
-pub fn findRbsCollectionPaths(root_path: []const u8, alloc: std.mem.Allocator) ![][]u8 {
-    // Parse rbs_collection.lock.yaml (preferred) or .rbs_collection.yaml for gem RBS paths
-    const lock_names = [_][]const u8{ "rbs_collection.lock.yaml", ".rbs_collection.lock.yaml" };
-    for (lock_names) |lock_name| {
-        const lock_path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ root_path, lock_name }) catch continue;
-        defer alloc.free(lock_path);
-        const source = std.fs.cwd().readFileAllocOptions(alloc, lock_path, 2 * 1024 * 1024, null, .@"1", 0) catch continue;
-        defer alloc.free(source);
-
-        // Line-by-line YAML parse: extract `path:` entries under `gems:` section
-        var rbs_paths = std.ArrayList([]u8){};
-        var lines = std.mem.splitScalar(u8, source, '\n');
-        var in_gems = false;
-        while (lines.next()) |raw_line| {
-            const line = std.mem.trimRight(u8, raw_line, " \t\r");
-            if (line.len == 0 or line[0] == '#') continue;
-            const content = std.mem.trim(u8, line, " \t");
-            if (std.mem.eql(u8, content, "gems:")) { in_gems = true; continue; }
-            if (!in_gems) continue;
-            // Detect top-level keys (no indent) to exit gems section
-            if (line.len > 0 and line[0] != ' ' and line[0] != '-') { in_gems = false; continue; }
-            if (std.mem.startsWith(u8, content, "path:")) {
-                const path_val = std.mem.trim(u8, content[5..], " \t\"'");
-                if (path_val.len == 0) continue;
-                // Resolve relative paths against root
-                const full_path = if (std.fs.path.isAbsolute(path_val))
-                    alloc.dupe(u8, path_val) catch continue
-                else
-                    std.fmt.allocPrint(alloc, "{s}/{s}", .{ root_path, path_val }) catch continue;
-                std.fs.cwd().access(full_path, .{}) catch {
-                    alloc.free(full_path);
-                    continue;
-                };
-                const dir_paths = scanner.scan(full_path, alloc, &.{".rbs"}) catch {
-                    alloc.free(full_path);
-                    continue;
-                };
-                alloc.free(full_path);
-                for (dir_paths) |p| rbs_paths.append(alloc, p) catch continue;
-                alloc.free(dir_paths);
-            }
-        }
-        if (rbs_paths.items.len > 0) return rbs_paths.toOwnedSlice(alloc);
-        rbs_paths.deinit(alloc);
-    }
-    return &.{};
-}
-
 pub fn findGemPaths(root_path: []const u8, alloc: std.mem.Allocator, timeout_ns: u64) ![][]u8 {
     const lock_path = try std.fmt.allocPrint(alloc, "{s}/Gemfile.lock", .{root_path});
     defer alloc.free(lock_path);
