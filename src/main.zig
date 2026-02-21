@@ -444,24 +444,32 @@ pub fn main() !void {
     defer alloc.free(db_pathz);
 
     // Single-instance locking: prevent two servers from writing to the same DB.
+    // MCP mode skips locking — it only reads, and SQLite WAL handles concurrent readers.
     // Uses flock() so the kernel auto-releases the lock on any exit (clean, panic, SIGKILL).
-    const lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{db_path});
-    defer alloc.free(lock_path);
-    const lock_file = try std.fs.cwd().createFile(lock_path, .{ .exclusive = false });
-    std.posix.flock(lock_file.handle, std.posix.LOCK.EX | std.posix.LOCK.NB) catch |err| {
-        lock_file.close();
-        if (err == error.WouldBlock) {
-            try std.fs.File.stderr().writeAll("refract: another instance is already running with this database\n");
-            return;
-        }
-        return err;
-    };
-    defer std.fs.cwd().deleteFile(lock_path) catch {};
-    defer lock_file.close();
-    {
+    var lock_file: ?std.fs.File = null;
+    var lock_path: ?[]u8 = null;
+    if (!flag_mcp) {
+        lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{db_path});
+        const lf = try std.fs.cwd().createFile(lock_path.?, .{ .exclusive = false });
+        std.posix.flock(lf.handle, std.posix.LOCK.EX | std.posix.LOCK.NB) catch |err| {
+            lf.close();
+            if (err == error.WouldBlock) {
+                try std.fs.File.stderr().writeAll("refract: another instance is already running with this database\n");
+                return;
+            }
+            return err;
+        };
+        lock_file = lf;
         var pid_buf: [32]u8 = undefined;
         const pid_str = std.fmt.bufPrint(&pid_buf, "{d}\n", .{std.c.getpid()}) catch "";
-        lock_file.writeAll(pid_str) catch {};
+        lf.writeAll(pid_str) catch {};
+    }
+    defer {
+        if (lock_file) |lf| lf.close();
+        if (lock_path) |lp| {
+            std.fs.cwd().deleteFile(lp) catch {};
+            alloc.free(lp);
+        }
     }
 
     const db = db_mod.Db.open(db_pathz) catch {
@@ -476,6 +484,37 @@ pub fn main() !void {
     };
 
     if (flag_mcp) {
+        var file_count: i64 = 0;
+        if (db.prepare("SELECT COUNT(*) FROM files")) |stmt| {
+            defer stmt.finalize();
+            if (try stmt.step()) file_count = stmt.column_int(0);
+        } else |_| {}
+        if (file_count == 0) {
+            try std.fs.File.stderr().writeAll("refract: auto-indexing workspace for MCP...\n");
+            const paths = scanner.scanWithNegations(cwd, alloc, &.{}, &.{}) catch {
+                try std.fs.File.stderr().writeAll("refract: workspace scan failed\n");
+                return error.ScanFailed;
+            };
+            defer {
+                for (paths) |p| alloc.free(p);
+                alloc.free(paths);
+            }
+            const const_paths = try alloc.alloc([]const u8, paths.len);
+            defer alloc.free(const_paths);
+            for (paths, 0..) |p, idx| const_paths[idx] = p;
+            indexer.reindex(db, const_paths, false, alloc, 8 * 1024 * 1024) catch {
+                try std.fs.File.stderr().writeAll("refract: auto-index failed\n");
+                return error.IndexFailed;
+            };
+            var out_buf: [128]u8 = undefined;
+            var indexed_count: i64 = 0;
+            if (db.prepare("SELECT COUNT(*) FROM files")) |s| {
+                defer s.finalize();
+                if (try s.step()) indexed_count = s.column_int(0);
+            } else |_| {}
+            const msg = std.fmt.bufPrint(&out_buf, "refract: indexed {d} files\n", .{indexed_count}) catch "refract: indexing complete\n";
+            try std.fs.File.stderr().writeAll(msg);
+        }
         var mcp_server = mcp.Server.init(db, alloc);
         var file_reader = std.fs.File.stdin().readerStreaming(&stdin_buf);
         var file_writer = std.fs.File.stdout().writerStreaming(&stdout_buf);

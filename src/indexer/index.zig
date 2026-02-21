@@ -97,7 +97,15 @@ fn inferLiteralType(node: *const prism.Node) ?[]const u8 {
                         if (assoc.value) |value| {
                             if (inferLiteralType(key)) |key_type| {
                                 if (inferLiteralType(value)) |val_type| {
-                                    const len = std.fmt.bufPrint(&hash_type_buf, "Hash[{s}, {s}]", .{ key_type, val_type }) catch break :blk "Hash";
+                                    // Copy slices to avoid aliasing when key_type/val_type
+                                    // point into hash_type_buf from a recursive call.
+                                    var kt_buf: [64]u8 = undefined;
+                                    var vt_buf: [64]u8 = undefined;
+                                    const kt_len = @min(key_type.len, kt_buf.len);
+                                    const vt_len = @min(val_type.len, vt_buf.len);
+                                    @memcpy(kt_buf[0..kt_len], key_type[0..kt_len]);
+                                    @memcpy(vt_buf[0..vt_len], val_type[0..vt_len]);
+                                    const len = std.fmt.bufPrint(&hash_type_buf, "Hash[{s}, {s}]", .{ kt_buf[0..kt_len], vt_buf[0..vt_len] }) catch break :blk "Hash";
                                     break :blk len;
                                 }
                             }
@@ -377,6 +385,12 @@ fn isRailsDsl(mname: []const u8) bool {
         "helpers", "version", "default_format", "default_error_status", "content_type", "formatter",
         // Roda
         "plugin", "freeze", "hash_branch", "hash_routes",
+        // Sequel associations
+        "one_to_many", "many_to_one", "many_to_many", "one_to_one",
+        "one_through_one", "many_through_many",
+        // Sequel validations
+        "validates_presence", "validates_unique", "validates_format",
+        "validates_type",
     };
     for (dsl) |d| if (std.mem.eql(u8, mname, d)) return true;
     return false;
@@ -568,9 +582,15 @@ fn insertBlockParams(ctx: *VisitCtx, block: *const prism.BlockNode, receiver_typ
 
 fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name: []const u8) ?[]u8 {
     const is_plural = std.mem.eql(u8, mname, "has_many") or
-                      std.mem.eql(u8, mname, "has_and_belongs_to_many");
+                      std.mem.eql(u8, mname, "has_and_belongs_to_many") or
+                      std.mem.eql(u8, mname, "one_to_many") or
+                      std.mem.eql(u8, mname, "many_to_many") or
+                      std.mem.eql(u8, mname, "many_through_many");
     const is_singular = std.mem.eql(u8, mname, "belongs_to") or
-                        std.mem.eql(u8, mname, "has_one");
+                        std.mem.eql(u8, mname, "has_one") or
+                        std.mem.eql(u8, mname, "many_to_one") or
+                        std.mem.eql(u8, mname, "one_to_one") or
+                        std.mem.eql(u8, mname, "one_through_one");
     if (!is_plural and !is_singular) return null;
     var singular: []const u8 = assoc_name;
     if (std.mem.endsWith(u8, assoc_name, "ies") and assoc_name.len > 3) {
@@ -610,7 +630,17 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         sym_name = sn.unescaped.source[0..sn.unescaped.length];
     } else return;
     const kind: []const u8 =
-        if (std.mem.eql(u8, mname, "scope")) "def"
+        if (std.mem.eql(u8, mname, "scope")) "scope"
+        else if (std.mem.eql(u8, mname, "belongs_to") or
+                 std.mem.eql(u8, mname, "has_many") or
+                 std.mem.eql(u8, mname, "has_one") or
+                 std.mem.eql(u8, mname, "has_and_belongs_to_many") or
+                 std.mem.eql(u8, mname, "one_to_many") or
+                 std.mem.eql(u8, mname, "many_to_one") or
+                 std.mem.eql(u8, mname, "many_to_many") or
+                 std.mem.eql(u8, mname, "one_to_one") or
+                 std.mem.eql(u8, mname, "one_through_one") or
+                 std.mem.eql(u8, mname, "many_through_many")) "association"
         else if (std.mem.eql(u8, mname, "shared_examples_for") or
                  std.mem.eql(u8, mname, "shared_context") or
                  std.mem.eql(u8, mname, "shared_examples")) "module"
@@ -2190,9 +2220,12 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                     const sym_id = insertSymbolGetId(ctx, "def", name, lc.line, lc.col, lambda_ret, null, "public", null) catch 0;
                     if (sym_id > 0 and lam.parameters != null) {
-                        const bp: *const prism.BlockParametersNode = @ptrCast(@alignCast(lam.parameters.?));
-                        if (bp.parameters != null) {
-                            extractParams(ctx, sym_id, bp.parameters.?) catch {};
+                        const param_node: *const prism.Node = @ptrCast(@alignCast(lam.parameters.?));
+                        if (param_node.*.type == prism.NODE_BLOCK_PARAMETERS) {
+                            const bp: *const prism.BlockParametersNode = @ptrCast(@alignCast(lam.parameters.?));
+                            if (bp.parameters != null) {
+                                extractParams(ctx, sym_id, bp.parameters.?) catch {};
+                            }
                         }
                     }
                 }
@@ -3746,9 +3779,11 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             continue;
         }
 
-        if (std.mem.containsAtLeast(u8, path, 1, "locales/") and
-            (std.mem.endsWith(u8, path, ".yml") or std.mem.endsWith(u8, path, ".yaml"))) {
-            i18n_mod.indexLocaleFile(db, file_id, source[0 .. source.len - 1]);
+        if (std.mem.endsWith(u8, path, ".yml") or std.mem.endsWith(u8, path, ".yaml")) {
+            if (std.mem.containsAtLeast(u8, path, 1, "locales/")) {
+                i18n_mod.indexLocaleFile(db, file_id, source[0 .. source.len - 1]);
+            }
+            // Skip non-locale YAML files — Prism can hang on large YAML parsed as Ruby
             continue;
         }
 
