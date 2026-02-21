@@ -1,10 +1,9 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
-const transport = @import("../lsp/transport.zig");
 const refactor_mod = @import("../lsp/refactor.zig");
 const build_meta = @import("build_meta");
 
-const PROTOCOL_VERSION = "2024-11-05";
+const PROTOCOL_VERSION = "2025-06-18";
 
 const schema_resolve_type =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"line":{"type":"integer","description":"1-based line number"},"col":{"type":"integer","description":"0-based column offset (optional)"}},"required":["file","line"]}
@@ -13,10 +12,10 @@ const schema_class_summary =
     \\{"type":"object","properties":{"class_name":{"type":"string","description":"Fully qualified class or module name"}},"required":["class_name"]}
 ;
 const schema_method_signature =
-    \\{"type":"object","properties":{"class_name":{"type":"string","description":"Class or module name"},"method_name":{"type":"string","description":"Method name"}},"required":["class_name","method_name"]}
+    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
 ;
 const schema_find_callers =
-    \\{"type":"object","properties":{"class_name":{"type":"string","description":"Receiver class name (optional filter)"},"method_name":{"type":"string","description":"Method name to find callers of"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["method_name"]}
+    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' or bare method name (preferred)"},"class_name":{"type":"string","description":"Receiver class name (optional filter, legacy)"},"method_name":{"type":"string","description":"Method name to find callers of (legacy, use 'symbol' instead)"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":[]}
 ;
 const schema_find_implementations =
     \\{"type":"object","properties":{"method_name":{"type":"string","description":"Method name to find implementations of"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["method_name"]}
@@ -52,7 +51,7 @@ const schema_find_unused =
     \\{"type":"object","properties":{"kind":{"type":"string","description":"Symbol kind to check, default 'def'"},"parent_name":{"type":"string","description":"Optional class filter"}},"required":[]}
 ;
 const schema_get_file_overview =
-    \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"}},"required":["file"]}
+    \\{"type":"object","properties":{"file":{"type":"string","description":"Path to the source file (absolute or relative to workspace root)"}},"required":["file"]}
 ;
 const schema_list_validations =
     \\{"type":"object","properties":{"class_name":{"type":"string","description":"Class or module name to list validations for"}},"required":["class_name"]}
@@ -67,7 +66,7 @@ const schema_find_references =
     \\{"type":"object","properties":{"name":{"type":"string","description":"Method or symbol name to find references to"},"ref_kind":{"type":"string","description":"Optional kind filter, e.g. 'method_call'"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["name"]}
 ;
 const schema_explain_symbol =
-    \\{"type":"object","properties":{"class_name":{"type":"string","description":"Fully qualified class or module name"},"method_name":{"type":"string","description":"Method name"}},"required":["class_name","method_name"]}
+    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Fully qualified class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
 ;
 const schema_batch_resolve =
     \\{"type":"object","properties":{"positions":{"type":"array","description":"Array of source positions to resolve (max 20)","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"col":{"type":"integer"}},"required":["file","line"]}}},"required":["positions"]}
@@ -142,6 +141,8 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "suggest_types", .description = "Suggest YARD/RBS type annotations for untyped methods in a file", .schema = schema_suggest_types },
     .{ .name = "type_coverage", .description = "Show type annotation coverage per file — percentage of methods with return types", .schema = schema_type_coverage },
     .{ .name = "find_similar", .description = "Find methods with similar names (typo detection, naming consistency)", .schema = schema_find_similar },
+    .{ .name = "find_symbol", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
+    .{ .name = "search_symbols", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
 };
 
 pub const Server = struct {
@@ -154,12 +155,13 @@ pub const Server = struct {
 
     pub fn run(self: *Server, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
         while (true) {
-            const raw = transport.readMessage(reader, self.alloc) catch |err| switch (err) {
+            // MCP stdio transport: bare JSON lines (one JSON object per line, no headers)
+            const line = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
                 error.EndOfStream => break,
-                error.InvalidContentLength, error.MalformedHeader, error.InvalidHeader => continue,
                 else => return err,
             };
-            defer self.alloc.free(raw);
+            const raw = std.mem.trimRight(u8, line, "\r\n \t");
+            if (raw.len == 0) continue;
 
             const parsed = std.json.parseFromSlice(std.json.Value, self.alloc, raw, .{}) catch continue;
             defer parsed.deinit();
@@ -182,7 +184,9 @@ pub const Server = struct {
             };
             if (resp_opt) |resp| {
                 defer self.alloc.free(resp);
-                transport.writeMessage(writer, resp) catch break;
+                writer.writeAll(resp) catch break;
+                writer.writeByte('\n') catch break;
+                writer.flush() catch break;
             }
         }
     }
@@ -306,6 +310,9 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "type_coverage")) return self.toolTypeCoverage(id, args);
         if (std.mem.eql(u8, name, "find_similar")) return self.toolFindSimilar(id, args);
 
+        // Aliases for common guesses — forward to canonical handlers.
+        if (std.mem.eql(u8, name, "find_symbol") or std.mem.eql(u8, name, "search_symbols")) return self.toolWorkspaceSymbols(id, args);
+
         return self.buildError(id, -32601, "Unknown tool");
     }
 
@@ -313,6 +320,8 @@ pub const Server = struct {
         const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
         const line = getIntArg(args, "line") orelse return self.buildToolError(id, "missing 'line' argument");
         const col = getIntArg(args, "col") orelse 0;
+        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
+        defer self.alloc.free(resolved);
 
         const stmt = self.db.prepare(
             \\SELECT lv.name, lv.type_hint, lv.confidence
@@ -321,7 +330,7 @@ pub const Server = struct {
             \\ORDER BY ABS(lv.col - ?) LIMIT 1
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, file);
+        stmt.bind_text(1, resolved);
         stmt.bind_int(2, line);
         stmt.bind_int(3, col);
 
@@ -355,7 +364,29 @@ pub const Server = struct {
             }
             try w.print(",\"line\":{d}}}", .{line});
         } else {
-            try w.print("{{\"line\":{d},\"type_hint\":null}}", .{line});
+            // Fallback: check symbols table for method return types at this line
+            const sym_stmt = self.db.prepare(
+                \\SELECT s.name, s.return_type
+                \\FROM symbols s JOIN files f ON f.id = s.file_id
+                \\WHERE f.path = ? AND s.line = ? AND s.return_type IS NOT NULL
+                \\LIMIT 1
+            ) catch null;
+            if (sym_stmt) |ss| {
+                defer ss.finalize();
+                ss.bind_text(1, file);
+                ss.bind_int(2, line);
+                if (ss.step() catch |e| stepLog(e)) {
+                    try w.writeAll("{\"name\":");
+                    try writeJsonStr(w, ss.column_text(0));
+                    try w.writeAll(",\"type_hint\":");
+                    try writeJsonStr(w, ss.column_text(1));
+                    try w.print(",\"source\":\"method_return_type\",\"line\":{d}}}", .{line});
+                } else {
+                    try w.print("{{\"line\":{d},\"type_hint\":null}}", .{line});
+                }
+            } else {
+                try w.print("{{\"line\":{d},\"type_hint\":null}}", .{line});
+            }
         }
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
@@ -523,8 +554,17 @@ pub const Server = struct {
     }
 
     fn toolMethodSignature(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name'");
-        const method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name'");
+        var class_name: []const u8 = "";
+        var method_name: []const u8 = "";
+        if (getStrArg(args, "symbol")) |sym| {
+            if (splitQualified(sym)) |q| {
+                class_name = q.class_name;
+                method_name = q.method_name;
+            } else return self.buildToolError(id, "'symbol' must be 'Class#method'");
+        } else {
+            class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name' (or pass 'symbol':'Class#method')");
+            method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
+        }
 
         const sym_stmt = self.db.prepare(
             \\SELECT s.id, s.return_type, s.doc, s.line, s.visibility
@@ -621,7 +661,12 @@ pub const Server = struct {
         const content = if (cache.get(path)) |c| c else blk: {
             if (cache.count() >= 50) return self.readFileLine(path, line_1based);
             const c = std.fs.cwd().readFileAlloc(self.alloc, path, 8 * 1024 * 1024) catch return null;
-            cache.put(path, c) catch {
+            const owned_key = self.alloc.dupe(u8, path) catch {
+                self.alloc.free(c);
+                return self.readFileLine(path, line_1based);
+            };
+            cache.put(owned_key, c) catch {
+                self.alloc.free(owned_key);
                 self.alloc.free(c);
                 return self.readFileLine(path, line_1based);
             };
@@ -643,40 +688,50 @@ pub const Server = struct {
     }
 
     fn toolFindCallers(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name'");
-        const class_name = getStrArg(args, "class_name");
+        var method_name: []const u8 = "";
+        var class_name: ?[]const u8 = null;
+        if (getStrArg(args, "symbol")) |sym| {
+            if (splitQualified(sym)) |q| {
+                class_name = q.class_name;
+                method_name = q.method_name;
+            } else {
+                method_name = sym;
+            }
+        } else {
+            method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
+            class_name = getStrArg(args, "class_name");
+        }
         const offset = getIntArg(args, "offset") orelse 0;
 
         const stmt = self.db.prepare(
-            \\SELECT f.path, r.line, r.col, r.scope_receiver
+            \\SELECT f.path, r.line, r.col
             \\FROM refs r JOIN files f ON f.id = r.file_id
-            \\WHERE r.name = ? AND r.kind = 'method_call'
-            \\  AND (? IS NULL OR r.scope_receiver = ?)
+            \\WHERE r.name = ?
             \\ORDER BY f.path, r.line
             \\LIMIT 200 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, method_name);
-        if (class_name) |cn| {
-            stmt.bind_text(2, cn);
-            stmt.bind_text(3, cn);
-        } else {
-            stmt.bind_null(2);
-            stmt.bind_null(3);
-        }
-        stmt.bind_int(4, offset);
+        stmt.bind_int(2, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
         try w.writeAll("{\"method\":");
         try writeJsonStr(w, method_name);
+        if (class_name) |cn| {
+            try w.writeAll(",\"class_filter\":");
+            try writeJsonStr(w, cn);
+        }
         try w.writeAll(",\"callers\":[");
 
         var file_cache = std.StringHashMap([]const u8).init(self.alloc);
         defer {
             var it = file_cache.iterator();
-            while (it.next()) |entry| self.alloc.free(entry.value_ptr.*);
+            while (it.next()) |entry| {
+                self.alloc.free(entry.key_ptr.*);
+                self.alloc.free(entry.value_ptr.*);
+            }
             file_cache.deinit();
         }
 
@@ -685,16 +740,11 @@ pub const Server = struct {
             const fpath = stmt.column_text(0);
             const fline = stmt.column_int(1);
             const fcol = stmt.column_int(2);
-            const recv = stmt.column_text(3);
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             try w.writeAll("{\"file\":");
             try writeJsonStr(w, fpath);
             try w.print(",\"line\":{d},\"col\":{d}", .{ fline, fcol });
-            if (recv.len > 0) {
-                try w.writeAll(",\"receiver\":");
-                try writeJsonStr(w, recv);
-            }
             const ctx_line = self.readFileLineFromCache(&file_cache, fpath, fline);
             defer if (ctx_line) |cl| self.alloc.free(cl);
             if (ctx_line) |cl| {
@@ -831,10 +881,6 @@ pub const Server = struct {
             \\  FROM symbols s JOIN anc ON s.name = anc.cn
             \\  WHERE s.parent_name IS NOT NULL AND s.kind IN ('class','module') AND anc.depth < 20
             \\  UNION ALL
-            \\  SELECT s.sti_parent, anc.depth + 1
-            \\  FROM symbols s JOIN anc ON s.name = anc.cn
-            \\  WHERE s.sti_parent IS NOT NULL AND s.is_sti = 1 AND anc.depth < 20
-            \\  UNION ALL
             \\  SELECT m.module_name, anc.depth + 1
             \\  FROM mixins m JOIN symbols s ON s.id = m.class_id
             \\  JOIN anc ON s.name = anc.cn
@@ -928,7 +974,11 @@ pub const Server = struct {
             if (aret.len > 0) try writeJsonStr(w, aret) else try w.writeAll("null");
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        try w.writeAll("]");
+        if (row_count == 0) {
+            try w.writeAll(",\"note\":\"No associations detected. Supported: ActiveRecord (has_many, belongs_to, has_one), Sequel (one_to_many, many_to_one, many_to_many, one_to_one).\"");
+        }
+        try w.print(",\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -1265,20 +1315,17 @@ pub const Server = struct {
 
             try w.writeAll("\n---\n");
         } else if (std.mem.eql(u8, name, "trace-callers")) {
-            const class_name = if (arguments) |a| if (a.get("class_name")) |v| switch (v) { .string => |s| s, else => "" } else "" else "";
+            _ = if (arguments) |a| a.get("class_name") else null; // class_name filtering planned (needs refs.scope_receiver)
             const method_name = if (arguments) |a| if (a.get("method_name")) |v| switch (v) { .string => |s| s, else => return } else return else return;
 
             const cal_stmt = self.db.prepare(
-                \\SELECT f.path, r.line, r.col, r.scope_receiver
+                \\SELECT f.path, r.line, r.col
                 \\FROM refs r JOIN files f ON f.id = r.file_id
-                \\WHERE r.name = ? AND r.kind = 'method_call'
-                \\  AND (? = '' OR r.scope_receiver = ?)
+                \\WHERE r.name = ?
                 \\ORDER BY f.path, r.line LIMIT 20
             ) catch return;
             defer cal_stmt.finalize();
             cal_stmt.bind_text(1, method_name);
-            cal_stmt.bind_text(2, class_name);
-            cal_stmt.bind_text(3, class_name);
 
             var cal_count: usize = 0;
             while (cal_stmt.step() catch |e| stepLog(e)) {
@@ -1632,7 +1679,7 @@ pub const Server = struct {
         const stmt = self.db.prepare(
             \\SELECT s.name, s.kind, s.parent_name, f.path, s.line
             \\FROM symbols s JOIN files f ON f.id = s.file_id
-            \\LEFT JOIN refs r ON r.name = s.name AND r.kind = 'method_call'
+            \\LEFT JOIN refs r ON r.name = s.name
             \\WHERE r.name IS NULL
             \\  AND s.kind = COALESCE(?, 'def')
             \\  AND (? IS NULL OR s.parent_name = ?)
@@ -1682,6 +1729,8 @@ pub const Server = struct {
 
     fn toolGetFileOverview(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file'");
+        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
+        defer self.alloc.free(resolved);
 
         const stmt = self.db.prepare(
             \\SELECT name, kind, line, parent_name, return_type, visibility
@@ -1691,7 +1740,7 @@ pub const Server = struct {
             \\LIMIT 500
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, file);
+        stmt.bind_text(1, resolved);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -1756,7 +1805,10 @@ pub const Server = struct {
         var file_cache = std.StringHashMap([]const u8).init(self.alloc);
         defer {
             var it = file_cache.iterator();
-            while (it.next()) |entry| self.alloc.free(entry.value_ptr.*);
+            while (it.next()) |entry| {
+                self.alloc.free(entry.key_ptr.*);
+                self.alloc.free(entry.value_ptr.*);
+            }
             file_cache.deinit();
         }
 
@@ -1821,6 +1873,8 @@ pub const Server = struct {
         var gem_count: i64 = 0;
         var sym_count: i64 = 0;
         var schema_ver: []const u8 = "unknown";
+        var schema_ver_alloc = false;
+        defer if (schema_ver_alloc) self.alloc.free(schema_ver);
 
         if (self.db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0")) |s| {
             defer s.finalize();
@@ -1836,7 +1890,10 @@ pub const Server = struct {
         } else |_| {}
         if (self.db.prepare("SELECT value FROM meta WHERE key='schema_version'")) |s| {
             defer s.finalize();
-            if (s.step() catch |e| stepLog(e)) schema_ver = s.column_text(0);
+            if (s.step() catch |e| stepLog(e)) {
+                schema_ver = self.alloc.dupe(u8, s.column_text(0)) catch "unknown";
+                schema_ver_alloc = !std.mem.eql(u8, schema_ver, "unknown");
+            }
         } else |_| {}
 
         // Build the inner JSON text first, then embed it as an escaped string
@@ -2131,22 +2188,16 @@ pub const Server = struct {
         const ref_kind = getStrArg(args, "ref_kind");
         const offset = getIntArg(args, "offset") orelse 0;
 
+        _ = ref_kind; // ref_kind filtering not yet supported (refs.kind column planned)
         const stmt = self.db.prepare(
-            \\SELECT f.path, r.line, r.col, r.kind FROM refs r
+            \\SELECT f.path, r.line, r.col FROM refs r
             \\JOIN files f ON f.id = r.file_id
-            \\WHERE r.name = ? AND (? IS NULL OR r.kind = ?)
+            \\WHERE r.name = ?
             \\ORDER BY f.path, r.line LIMIT 200 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, name);
-        if (ref_kind) |rk| {
-            stmt.bind_text(2, rk);
-            stmt.bind_text(3, rk);
-        } else {
-            stmt.bind_null(2);
-            stmt.bind_null(3);
-        }
-        stmt.bind_int(4, offset);
+        stmt.bind_int(2, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -2158,7 +2209,10 @@ pub const Server = struct {
         var file_cache = std.StringHashMap([]const u8).init(self.alloc);
         defer {
             var it = file_cache.iterator();
-            while (it.next()) |entry| self.alloc.free(entry.value_ptr.*);
+            while (it.next()) |entry| {
+                self.alloc.free(entry.key_ptr.*);
+                self.alloc.free(entry.value_ptr.*);
+            }
             file_cache.deinit();
         }
 
@@ -2169,11 +2223,9 @@ pub const Server = struct {
             const fpath = stmt.column_text(0);
             const rline = stmt.column_int(1);
             const rcol = stmt.column_int(2);
-            const rkind = stmt.column_text(3);
             try w.writeAll("{\"file\":");
             try writeJsonStr(w, fpath);
-            try w.print(",\"line\":{d},\"col\":{d},\"kind\":", .{ rline, rcol });
-            if (rkind.len > 0) try writeJsonStr(w, rkind) else try w.writeAll("null");
+            try w.print(",\"line\":{d},\"col\":{d}", .{ rline, rcol });
             const ctx_line = self.readFileLineFromCache(&file_cache, fpath, rline);
             defer if (ctx_line) |cl| self.alloc.free(cl);
             if (ctx_line) |cl| {
@@ -2189,8 +2241,17 @@ pub const Server = struct {
     }
 
     fn toolExplainSymbol(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name'");
-        const method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name'");
+        var class_name: []const u8 = "";
+        var method_name: []const u8 = "";
+        if (getStrArg(args, "symbol")) |sym| {
+            if (splitQualified(sym)) |q| {
+                class_name = q.class_name;
+                method_name = q.method_name;
+            } else return self.buildToolError(id, "'symbol' must be 'Class#method'");
+        } else {
+            class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name' (or pass 'symbol':'Class#method')");
+            method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
+        }
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -2280,13 +2341,10 @@ pub const Server = struct {
         // Caller count + up to 3 sample sites
         var caller_count: i64 = 0;
         if (self.db.prepare(
-            \\SELECT COUNT(*) FROM refs r
-            \\JOIN symbols s ON s.name = r.scope_receiver
-            \\WHERE r.name = ? AND s.name = ?
+            \\SELECT COUNT(*) FROM refs r WHERE r.name = ?
         )) |cs| {
             defer cs.finalize();
             cs.bind_text(1, method_name);
-            cs.bind_text(2, class_name);
             if (cs.step() catch |e| stepLog(e)) caller_count = cs.column_int(0);
         } else |_| {}
         try w.print(",\"caller_count\":{d}", .{caller_count});
@@ -2294,14 +2352,13 @@ pub const Server = struct {
         const sample_stmt = self.db.prepare(
             \\SELECT f.path, r.line FROM refs r
             \\JOIN files f ON f.id = r.file_id
-            \\WHERE r.name = ? AND r.scope_receiver = ?
+            \\WHERE r.name = ?
             \\ORDER BY f.path, r.line LIMIT 3
         ) catch null;
         try w.writeAll(",\"sample_callers\":[");
         if (sample_stmt) |ss| {
             defer ss.finalize();
             ss.bind_text(1, method_name);
-            ss.bind_text(2, class_name);
             var sfirst = true;
             while (ss.step() catch |e| stepLog(e)) {
                 if (!sfirst) try w.writeByte(',');
@@ -2422,6 +2479,8 @@ pub const Server = struct {
         var total_vars: i64 = 0;
         var unused_defs: i64 = 0;
         var schema_ver: []const u8 = "unknown";
+        var schema_ver_allocated = false;
+        defer if (schema_ver_allocated) self.alloc.free(schema_ver);
 
         if (self.db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0")) |s| {
             defer s.finalize();
@@ -2442,14 +2501,17 @@ pub const Server = struct {
         if (self.db.prepare(
             \\SELECT COUNT(*) FROM symbols s
             \\WHERE s.kind = 'def' AND s.visibility = 'public'
-            \\  AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.name = s.name AND r.kind = 'method_call')
+            \\  AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.name = s.name)
         )) |s| {
             defer s.finalize();
             if (s.step() catch |e| stepLog(e)) unused_defs = s.column_int(0);
         } else |_| {}
         if (self.db.prepare("SELECT value FROM meta WHERE key='schema_version'")) |s| {
             defer s.finalize();
-            if (s.step() catch |e| stepLog(e)) schema_ver = s.column_text(0);
+            if (s.step() catch |e| stepLog(e)) {
+                schema_ver = self.alloc.dupe(u8, s.column_text(0)) catch "unknown";
+                schema_ver_allocated = !std.mem.eql(u8, schema_ver, "unknown");
+            }
         } else |_| {}
 
         const typed_pct: f64 = if (total_vars > 0)
@@ -2487,13 +2549,16 @@ pub const Server = struct {
 
     fn toolTestSummary(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
+        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
+        defer self.alloc.free(resolved);
         const stmt = self.db.prepare(
-            \\SELECT t.name, t.kind, t.line, t.end_line
-            \\FROM tests t JOIN files f ON f.id = t.file_id
-            \\WHERE f.path = ? ORDER BY t.line LIMIT 500
+            \\SELECT s.name, s.kind, s.line, s.end_line
+            \\FROM symbols s JOIN files f ON f.id = s.file_id
+            \\WHERE f.path = ? AND s.kind = 'test'
+            \\ORDER BY s.line LIMIT 500
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, file);
+        stmt.bind_text(1, resolved);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -2701,48 +2766,49 @@ pub const Server = struct {
         const w = &aw.writer;
         try w.writeAll("[");
 
-        const stmt = self.db.prepare(
+        if (self.db.prepare(
             \\SELECT d.line, d.col, d.message, d.severity, d.code, f.path
             \\FROM diagnostics d JOIN files f ON f.id = d.file_id
             \\ORDER BY f.path, d.line
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
+        )) |stmt| {
+            defer stmt.finalize();
 
-        var first = true;
-        while (stmt.step() catch |e| stepLog(e)) {
-            const line = stmt.column_int(0);
-            const col = stmt.column_int(1);
-            const msg = stmt.column_text(2);
-            const severity = stmt.column_int(3);
-            const code = stmt.column_text(4);
-            const fpath = stmt.column_text(5);
+            var first = true;
+            while (stmt.step() catch |e| stepLog(e)) {
+                const line = stmt.column_int(0);
+                const col = stmt.column_int(1);
+                const msg = stmt.column_text(2);
+                const severity = stmt.column_int(3);
+                const code = stmt.column_text(4);
+                const fpath = stmt.column_text(5);
 
-            if (file_filter) |ff| {
-                if (!std.mem.eql(u8, fpath, ff)) continue;
+                if (file_filter) |ff| {
+                    if (!std.mem.eql(u8, fpath, ff)) continue;
+                }
+
+                if (severity_filter) |sf| {
+                    var sev_match = false;
+                    if (std.mem.eql(u8, sf, "error") and severity == 1) sev_match = true;
+                    if (std.mem.eql(u8, sf, "warning") and severity == 2) sev_match = true;
+                    if (std.mem.eql(u8, sf, "info") and severity == 3) sev_match = true;
+                    if (!sev_match) continue;
+                }
+
+                if (code_filter) |cf| {
+                    if (!std.mem.eql(u8, code, cf)) continue;
+                }
+
+                if (!first) try w.writeByte(',');
+                first = false;
+                try w.print("{{\"file\":", .{});
+                try writeJsonStr(w, fpath);
+                try w.print(",\"line\":{d},\"col\":{d},\"severity\":{d},\"message\":", .{ line, col, severity });
+                try writeJsonStr(w, msg);
+                try w.writeAll(",\"code\":");
+                if (code.len > 0) try writeJsonStr(w, code) else try w.writeAll("null");
+                try w.writeAll("}");
             }
-
-            if (severity_filter) |sf| {
-                var sev_match = false;
-                if (std.mem.eql(u8, sf, "error") and severity == 1) sev_match = true;
-                if (std.mem.eql(u8, sf, "warning") and severity == 2) sev_match = true;
-                if (std.mem.eql(u8, sf, "info") and severity == 3) sev_match = true;
-                if (!sev_match) continue;
-            }
-
-            if (code_filter) |cf| {
-                if (!std.mem.eql(u8, code, cf)) continue;
-            }
-
-            if (!first) try w.writeByte(',');
-            first = false;
-            try w.print("{{\"file\":", .{});
-            try writeJsonStr(w, fpath);
-            try w.print(",\"line\":{d},\"col\":{d},\"severity\":{d},\"message\":", .{ line, col, severity });
-            try writeJsonStr(w, msg);
-            try w.writeAll(",\"code\":");
-            if (code.len > 0) try writeJsonStr(w, code) else try w.writeAll("null");
-            try w.writeAll("}");
-        }
+        } else |_| {}
 
         try w.writeAll("]");
         const text = try aw.toOwnedSlice();
@@ -2792,7 +2858,11 @@ pub const Server = struct {
             try writeJsonStr(w, source_label);
             try w.print(",\"line\":{d}}}", .{src_line});
         }
-        try w.writeAll("]}");
+        if (first) {
+            try w.writeAll("],\"note\":\"No type information found at this location. The indexer may not have resolved the type for this assignment.\"}");
+        } else {
+            try w.writeAll("]}");
+        }
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2802,6 +2872,8 @@ pub const Server = struct {
         const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
         const limit_raw = getIntArg(args, "limit");
         const limit: i64 = if (limit_raw) |l| (if (l > 0 and l <= 100) l else 20) else 20;
+        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
+        defer self.alloc.free(resolved);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -2815,7 +2887,7 @@ pub const Server = struct {
             \\ORDER BY s.line LIMIT ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, file);
+        stmt.bind_text(1, resolved);
         stmt.bind_int(2, limit);
 
         var first = true;
@@ -2826,15 +2898,19 @@ pub const Server = struct {
             const method_line = stmt.column_int(2);
 
             // Try to infer from return statements or callers
-            var suggested: []const u8 = "untyped";
+            var suggested_buf: ?[]u8 = null;
+            defer if (suggested_buf) |b| self.alloc.free(b);
             const ret_stmt = self.db.prepare(
                 "SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1"
             ) catch null;
             if (ret_stmt) |rs| {
                 defer rs.finalize();
                 rs.bind_text(1, method_name);
-                if (rs.step() catch false) suggested = rs.column_text(0);
+                if (rs.step() catch false) {
+                    suggested_buf = self.alloc.dupe(u8, rs.column_text(0)) catch null;
+                }
             }
+            const suggested: []const u8 = suggested_buf orelse "untyped";
 
             try w.writeAll("{\"method\":");
             try writeJsonStr(w, method_name);
@@ -2910,9 +2986,9 @@ pub const Server = struct {
         } else return self.buildError(id, -32602, "method_name required") else return self.buildError(id, -32602, "method_name required");
 
         const max_dist: u32 = if (args) |a| if (a.get("max_distance")) |v| switch (v) {
-            .integer => |i| if (i > 0 and i <= 5) @intCast(i) else 2,
-            else => 2,
-        } else 2 else 2;
+            .integer => |i| if (i > 0 and i <= 10) @intCast(i) else 3,
+            else => 3,
+        } else 3 else 3;
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         const w = &aw.writer;
@@ -2934,7 +3010,10 @@ pub const Server = struct {
             const cand = stmt.column_text(0);
             if (cand.len == 0) continue;
             const dist = editDistance(method_name, cand);
-            if (dist <= max_dist) {
+            const is_substring = method_name.len >= 3 and cand.len >= 3 and
+                (std.mem.indexOf(u8, cand, method_name) != null or
+                 std.mem.indexOf(u8, method_name, cand) != null);
+            if (dist <= max_dist or is_substring) {
                 if (!first) try w.writeAll(",");
                 first = false;
                 try w.writeAll("{\"name\":");
@@ -2944,7 +3023,10 @@ pub const Server = struct {
                     try w.writeAll(",\"class\":");
                     try writeJsonStr(w, parent);
                 }
-                try w.print(",\"distance\":{d}}}", .{dist});
+                const match_kind: []const u8 = if (dist <= max_dist) "edit_distance" else "substring";
+                try w.print(",\"distance\":{d},\"match\":", .{dist});
+                try writeJsonStr(w, match_kind);
+                try w.writeByte('}');
                 count += 1;
             }
         }
@@ -3020,6 +3102,20 @@ fn getStrArg(args: ?std.json.ObjectMap, key: []const u8) ?[]const u8 {
         .string => |s| s,
         else => null,
     };
+}
+
+const QualifiedSymbol = struct { class_name: []const u8, method_name: []const u8 };
+
+fn splitQualified(s: []const u8) ?QualifiedSymbol {
+    const i = std.mem.lastIndexOfScalar(u8, s, '#') orelse return null;
+    if (i == 0 or i + 1 >= s.len) return null;
+    return .{ .class_name = s[0..i], .method_name = s[i + 1 ..] };
+}
+
+fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[]u8 {
+    if (file.len == 0) return null;
+    if (file[0] == '/') return alloc.dupe(u8, file) catch null;
+    return std.fs.cwd().realpathAlloc(alloc, file) catch null;
 }
 
 fn getIntArg(args: ?std.json.ObjectMap, key: []const u8) ?i64 {

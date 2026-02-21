@@ -162,7 +162,7 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
-        const CURRENT_SCHEMA: u32 = 2;
+        const CURRENT_SCHEMA: u32 = 3;
         {
             var needs_reset = false;
             {
@@ -179,6 +179,7 @@ pub const Db = struct {
             if (needs_reset) {
                 std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
                 self.exec("DROP TABLE IF EXISTS sem_tokens") catch {};
+                self.exec("DROP TABLE IF EXISTS diagnostics") catch {};
                 self.exec("DROP TABLE IF EXISTS mixins") catch {};
                 self.exec("DROP TABLE IF EXISTS params") catch {};
                 self.exec("DROP TABLE IF EXISTS local_vars") catch {};
@@ -270,6 +271,45 @@ pub const Db = struct {
             \\  kind        TEXT NOT NULL
             \\)
         );
+        // Diagnostics table (queried by diagnostic_summary, workspace_health, etc.)
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS diagnostics (
+            \\  id       INTEGER PRIMARY KEY,
+            \\  file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  line     INTEGER NOT NULL,
+            \\  col      INTEGER NOT NULL,
+            \\  message  TEXT NOT NULL,
+            \\  severity INTEGER NOT NULL DEFAULT 1,
+            \\  code     TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file_id)") catch {};
+        // i18n keys table (populated by i18n.zig locale file indexer)
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS i18n_keys (
+            \\  id      INTEGER PRIMARY KEY,
+            \\  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  key     TEXT NOT NULL,
+            \\  value   TEXT,
+            \\  locale  TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_i18n_key ON i18n_keys(key)") catch {};
+        // Routes table (populated by routes.zig route parser)
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS routes (
+            \\  id             INTEGER PRIMARY KEY,
+            \\  file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  http_method    TEXT NOT NULL,
+            \\  path_pattern   TEXT NOT NULL,
+            \\  helper_name    TEXT,
+            \\  controller     TEXT,
+            \\  action         TEXT,
+            \\  line           INTEGER NOT NULL,
+            \\  col            INTEGER NOT NULL
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_routes_file ON routes(file_id)") catch {};
         // Migration guards for gem indexing (Phase 8)
         self.execMigration("ALTER TABLE files ADD COLUMN is_gem INTEGER NOT NULL DEFAULT 0");
         self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {};
@@ -299,14 +339,14 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {};
-        // Phase 2: block param marker, composite indexes for query optimization
+        // Phase v24: block param marker, composite indexes for query optimization
         self.execMigration("ALTER TABLE local_vars ADD COLUMN is_block_param INTEGER DEFAULT 0");
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','2')");
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','3')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 2) {
+        if (final_ver != 3) {
             std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
         }
     }
