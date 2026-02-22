@@ -655,22 +655,23 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         else if (std.mem.eql(u8, mname, "factory") or
                  std.mem.eql(u8, mname, "trait")) "class"
         else "def";
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
     const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name);
     defer if (assoc_return_type) |rt| ctx.alloc.free(rt);
     if (assoc_return_type) |rt| {
-        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent);
     } else if (std.mem.eql(u8, mname, "scope") and ctx.namespace_stack_len > 0) {
         var scope_buf: [270]u8 = undefined;
-        var ns_buf: [256]u8 = undefined;
-        const class_name = namespaceFromStack(ctx, &ns_buf);
+        const class_name = parent orelse "";
         const scope_rt = if (class_name.len > 0) std.fmt.bufPrint(&scope_buf, "[{s}]", .{class_name}) catch null else null;
         if (scope_rt) |srt| {
-            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt, mname, parent);
         } else {
-            try insertSymbol(ctx, kind, sym_name, lc.line, lc.col, null);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent);
         }
     } else {
-        try insertSymbol(ctx, kind, sym_name, lc.line, lc.col, null);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent);
     }
 }
 
@@ -1847,11 +1848,14 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const ar_singular = [_][]const u8{
                                 "find", "first", "last", "create", "create!", "build",
                                 "find_by", "find_by!", "take", "new",
+                                "[]", "with_pk", "with_pk!",
+                                "now", "today", "parse", "open", "read",
                             };
                             const ar_plural = [_][]const u8{
                                 "where", "all", "order", "limit", "includes", "joins",
                                 "preload", "eager_load", "select", "group", "having",
                                 "left_joins", "left_outer_joins", "distinct",
+                                "exclude", "filter", "dataset", "grep", "eager", "graph",
                             };
                             for (ar_singular) |m| {
                                 if (std.mem.eql(u8, mname, m)) {
@@ -1885,7 +1889,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const inner_ar_mname = resolveConstant(ctx.parser, inner_ar.name);
                                 const ar_plural_set = [_][]const u8{ "where", "all", "order", "limit",
                                     "includes", "joins", "preload", "eager_load", "select", "group",
-                                    "having", "left_joins", "left_outer_joins", "distinct", "scoped", "unscoped" };
+                                    "having", "left_joins", "left_outer_joins", "distinct", "scoped", "unscoped",
+                                    "exclude", "filter", "dataset", "grep", "eager", "graph" };
                                 const inner_is_pl = for (ar_plural_set) |m| {
                                     if (std.mem.eql(u8, inner_ar_mname, m)) break true;
                                 } else false;
@@ -2040,6 +2045,12 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     const rt_len = @min(rt_raw.len, root_type_storage.len);
                     @memcpy(root_type_storage[0..rt_len], rt_raw[0..rt_len]);
                     current_type = root_type_storage[0..rt_len];
+                } else if (cur_node.*.type == prism.NODE_CONSTANT) {
+                    const rc2: *const prism.ConstReadNode = @ptrCast(@alignCast(cur_node));
+                    const cname2 = resolveConstant(ctx.parser, rc2.name);
+                    const cn2_len = @min(cname2.len, root_type_storage.len);
+                    @memcpy(root_type_storage[0..cn2_len], cname2[0..cn2_len]);
+                    current_type = root_type_storage[0..cn2_len];
                 } else break :blk2;
 
                 // Resolve types through the chain (reverse order: root → leaf)
@@ -2048,6 +2059,11 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 while (step_idx > 1) {
                     step_idx -= 1;
                     const method_name = chain_methods[step_idx];
+                    // Constructor-like methods return the class itself
+                    if (std.mem.eql(u8, method_name, "new") or std.mem.eql(u8, method_name, "[]") or
+                        std.mem.eql(u8, method_name, "now") or std.mem.eql(u8, method_name, "today") or
+                        std.mem.eql(u8, method_name, "parse"))
+                        continue;
                     // Strip generic brackets for class lookup
                     const base_type = if (std.mem.indexOfScalar(u8, current_type, '[')) |bracket|
                         current_type[0..bracket]
@@ -2090,7 +2106,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             if (std.mem.eql(u8, method_name, m)) break true;
                         } else false;
                         if (is_ar_plural) {
-                            current_type = std.fmt.bufPrint(&root_type_storage, "[{s}]", .{base_type}) catch break :blk2;
+                            // Copy base_type to step_buf to avoid aliasing with root_type_storage
+                            const bt_len = @min(base_type.len, step_buf.len);
+                            @memcpy(step_buf[0..bt_len], base_type[0..bt_len]);
+                            current_type = std.fmt.bufPrint(&root_type_storage, "[{s}]", .{step_buf[0..bt_len]}) catch break :blk2;
                             found = true;
                         }
                     }
@@ -2336,17 +2355,19 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             return false;
         },
         // Control flow: visit children so body vars get indexed (Phase 29)
-        prism.NODE_WHILE,
-        prism.NODE_UNTIL,
         prism.NODE_UNLESS => {
-            const unless_node: *const prism.IfNode = @ptrCast(@alignCast(n));
+            const unless_node: *const prism.UnlessNode = @ptrCast(@alignCast(n));
             if (unless_node.predicate) |cond| {
-                // `unless x.nil?` → x is not nil in the body
                 if (detectNilGuard(ctx.parser, cond)) |var_name| {
                     const guard_lc = locationLineCol(ctx.parser, cond.*.location.start);
                     insertLocalVar(ctx.db, ctx.file_id, var_name, guard_lc.line, guard_lc.col, "Object", 80, ctx.scope_id) catch {};
                 }
             }
+            prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
+        },
+        prism.NODE_WHILE,
+        prism.NODE_UNTIL => {
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
@@ -2526,10 +2547,10 @@ fn insertSymbol(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, c
     _ = try stmt.step();
 }
 
-fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: ?[]const u8) !void {
+fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: ?[]const u8, doc: ?[]const u8, parent_name: ?[]const u8) !void {
     const stmt = try ctx.db.prepare(
-        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type)
-        \\VALUES (?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type, doc, parent_name)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, ctx.file_id);
@@ -2538,6 +2559,8 @@ fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, li
     stmt.bind_int(4, line);
     stmt.bind_int(5, @intCast(col));
     if (return_type) |rt| stmt.bind_text(6, rt) else stmt.bind_null(6);
+    if (doc) |d| stmt.bind_text(7, d) else stmt.bind_null(7);
+    if (parent_name) |pn| stmt.bind_text(8, pn) else stmt.bind_null(8);
     _ = try stmt.step();
 }
 
@@ -3765,11 +3788,14 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             _ = s.step() catch {};
         } else |_| {}
 
-        // Routes: index config/routes*.rb files
-        if (std.mem.containsAtLeast(u8, path, 1, "config/routes") and
-            std.mem.endsWith(u8, path, ".rb"))
-        {
-            routes_mod.indexRoutes(db, file_id, source[0 .. source.len - 1], alloc) catch {};
+        // Routes: index config/routes*.rb, routes/*.rb, and common Sinatra entry points
+        const is_route_file = (std.mem.containsAtLeast(u8, path, 1, "config/routes") or
+            std.mem.containsAtLeast(u8, path, 1, "routes/") or
+            std.mem.endsWith(u8, path, "/app.rb") or
+            std.mem.endsWith(u8, path, "/web.rb") or
+            std.mem.endsWith(u8, path, "/server.rb"));
+        if (is_route_file and std.mem.endsWith(u8, path, ".rb")) {
+            routes_mod.indexRoutesWithPath(db, file_id, source[0 .. source.len - 1], alloc, path);
         }
 
         // RBS: parse type signatures directly, skip Prism

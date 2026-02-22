@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0] - 2026-04-11
+
+### Rename
+- MRO-aware cross-file method rename: follows inheritance chains and mixins
+- Rename a concern method → all includers and subclasses updated
+
+### Type System
+- Stdlib return types: Regexp, MatchData, File/IO, Time/Date/DateTime, Enumerator, Range, Pathname
+- Universal Object methods: `class`, `dup`, `clone`, `freeze`, `nil?`, `is_a?`, `respond_to?`, `inspect`, `to_s`, `object_id`
+- Additional String methods: `match` → MatchData, `index`/`rindex` → Integer, `force_encoding`, `scrub`, `b`
+- Symbol `to_proc` → Proc, `match` → MatchData
+- ActiveSupport: `presence` returns receiver type, `try`/`try!` nullable
+- Expanded iteration methods: `find_all`, `lazy`, `cycle`, `chunk_while`, `slice_when`, `slice_before`, `slice_after`, `tap`, `chunk`
+
+### Safety
+- `window/logMessage` for non-intrusive error reporting (file skips, DB issues, config warnings)
+- Configuration validation in `didChangeConfiguration` with user feedback on bad values
+
+### Templates
+- HAML attribute brace counting respects string literals (braces inside `"..."` no longer break parsing)
+
+### MCP
+- `type_coverage` tool: file-by-file type annotation percentage
+- `find_similar` tool: typo detection and naming consistency (edit distance)
+- Total: 32 MCP tools
+
+### Gem Indexing
+- `rbs_collection.lock.yaml` / `.rbs_collection.lock.yaml` support for gem RBS type discovery
+- Discovered paths fed into indexer automatically on startup
+
+### Editor Configs
+- Neovim: added `slim`, `rake`, `gemspec`, `builder` filetypes; `Rakefile`/`config.ru` root patterns
+- Emacs: added `eruby-mode`, `haml-mode`, `slim-mode` to eglot-server-programs
+
 ## [0.2.1] - 2026-04-04
 
 ### Safety & Reliability

@@ -1788,7 +1788,11 @@ pub const Server = struct {
             \\WHERE r.file_id = s.file_id
             \\  AND r.name IN ('validates','validate','validates_presence_of','validates_uniqueness_of',
             \\                 'validates_format_of','validates_length_of','validates_numericality_of',
-            \\                 'validates_inclusion_of','validates_exclusion_of','validates_with')
+            \\                 'validates_inclusion_of','validates_exclusion_of','validates_with',
+            \\                 'validates_presence','validates_unique','validates_format',
+            \\                 'validates_type','validates_not_null','validates_exact_length',
+            \\                 'validates_min_length','validates_max_length','validates_integer',
+            \\                 'validates_numeric','validates_includes','validates_schema_types')
             \\ORDER BY r.line
             \\LIMIT 100
         ) catch return self.buildToolError(id, "database error");
@@ -2148,12 +2152,14 @@ pub const Server = struct {
             \\SELECT s.name, f.path, m.kind FROM symbols s
             \\JOIN files f ON f.id = s.file_id
             \\JOIN mixins m ON m.class_id = s.id
-            \\WHERE m.module_name = ? AND m.kind IN ('include','prepend','extend')
+            \\WHERE (m.module_name = ? OR m.module_name LIKE '%::' || ?)
+            \\  AND m.kind IN ('include','prepend','extend')
             \\ORDER BY s.name LIMIT 100 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, module_name);
-        stmt.bind_int(2, offset);
+        stmt.bind_text(2, module_name);
+        stmt.bind_int(3, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -2829,17 +2835,19 @@ pub const Server = struct {
         const stmt = self.db.prepare(
             \\SELECT lv.name, lv.type_hint, lv.confidence, lv.line, lv.col
             \\FROM local_vars lv JOIN files f ON f.id = lv.file_id
-            \\WHERE f.path = ? AND lv.name = (
+            \\WHERE (f.path = ? OR f.path LIKE '%/' || ?) AND lv.name = (
             \\  SELECT lv2.name FROM local_vars lv2 JOIN files f2 ON f2.id = lv2.file_id
-            \\  WHERE f2.path = ? AND lv2.line = ? ORDER BY ABS(lv2.col - ?) LIMIT 1
+            \\  WHERE (f2.path = ? OR f2.path LIKE '%/' || ?) AND lv2.line = ? ORDER BY ABS(lv2.col - ?) LIMIT 1
             \\) AND lv.type_hint IS NOT NULL
             \\ORDER BY lv.confidence DESC, lv.line ASC
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, file);
         stmt.bind_text(2, file);
-        stmt.bind_int(3, line);
-        stmt.bind_int(4, col);
+        stmt.bind_text(3, file);
+        stmt.bind_text(4, file);
+        stmt.bind_int(5, line);
+        stmt.bind_int(6, col);
 
         var first = true;
         while (stmt.step() catch false) {

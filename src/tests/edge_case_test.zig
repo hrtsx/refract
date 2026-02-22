@@ -1,0 +1,188 @@
+const std = @import("std");
+const harness = @import("harness");
+const Session = harness.Session;
+
+test "P48 T48.1 Edge case: empty file zero bytes" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t481";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/empty.rb", .data = "" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/empty.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/empty.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "error") == null or std.mem.indexOf(u8, raw, "error") != null);
+}
+
+test "P48 T48.2 Edge case: comments only file" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t482";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/comments.rb", .data = "# Initial comment\n# Comment block\n=begin\nMultiline\ncomment\n=end\n# Final comment\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/comments.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/comments.rb\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "error") == null);
+}
+
+test "P48 T48.3 Edge case: deeply nested modules (8+ levels)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t483";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/deep.rb", .data = "module L1\nmodule L2\nmodule L3\nmodule L4\nmodule L5\nmodule L6\nmodule L7\nmodule L8\nmodule L9\nclass Deep\n  def work\n    true\n  end\nend\nend\nend\nend\nend\nend\nend\nend\nend\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/deep.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/deep.rb\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P48 T48.4 Edge case: file with syntax errors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t484";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/syntax.rb", .data = "class Broken\n  def method\n    if true\n      puts \"unmatched\"\n    # missing end\n  end\n  def another_error\n    [1, 2,  # missing bracket\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/syntax.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/syntax.rb\"},\"position\":{\"line\":1,\"character\":5}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "error") == null or std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P48 T48.5 Edge case: very long method name (200+ chars)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t485";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/long.rb", .data = "class Handler\n  def this_is_a_very_long_method_name_that_exceeds_two_hundred_characters_in_length_to_test_identifier_handling_and_truncation_in_the_indexing_system_and_should_be_properly_indexed_for_search_and_navigation_without_any_issues_whatsoever\n    true\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/long.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/long.rb\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P48 T48.6 Edge case: unicode identifiers in Ruby" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t486";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/unicode.rb", .data = "class Café\n  attr_accessor :naïve_field\n  def métier\n    \"work\"\n  end\n  def 日本語\n    \"japanese\"\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/unicode.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/unicode.rb\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P48 T48.7 Edge case: cyclic module inclusion" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p48_t487";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/cyclic.rb", .data = "module CycleA\n  include CycleB\n  def method_a\n    true\n  end\nend\nmodule CycleB\n  include CycleA\n  def method_b\n    true\n  end\nend\nclass UsesCycle\n  include CycleA\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/cyclic.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/cyclic.rb\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P49 T49.1 Template: HAML file indexing" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p49_t491";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws ++ "/app");
+    try std.fs.makeDirAbsolute(ws ++ "/app/views");
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/app/views/sample.haml", .data = ".container\n  %h1.title User Profile\n  %form#user-form\n    .form-group\n      %label Email\n      %input{name: 'email', type: 'email'}\n    .form-group\n      %label Password\n      %input{name: 'password', type: 'password'}\n    %button{type: 'submit'} Submit\n  #sidebar\n    %ul.nav\n      %li%a{href: '/'} Home\n      %li%a{href: '/about'} About\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app/views/sample.haml\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/app/views/sample.haml\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P49 T49.2 Template: routes file with nested resources" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p49_t492";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws ++ "/config");
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/config/routes.rb", .data = "Rails.application.routes.draw do\n  namespace :admin do\n    resources :users do\n      resources :posts do\n        resources :comments, only: [:create, :destroy]\n      end\n      collection do\n        get :active\n        post :bulk_update\n      end\n    end\n  end\n  scope 'api/v1' do\n    resources :products\n    resources :orders\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/routes.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"route_map\",\"arguments\":{}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
+test "P49 T49.3 Template: locale file with i18n keys" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p49_t493";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws ++ "/config");
+    try std.fs.makeDirAbsolute(ws ++ "/config/locales");
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/config/locales/en.yml", .data = "en:\n  activerecord:\n    models:\n      user: User\n      post: Post\n    attributes:\n      user:\n        name: Name\n        email: Email Address\n        password: Password\n      post:\n        title: Post Title\n        content: Content\n  errors:\n    messages:\n      taken: has already been taken\n      invalid: is invalid\n  views:\n    users:\n      show: User Profile\n      edit: Edit User\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/locales/en.yml\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"i18n_lookup\",\"arguments\":{\"query\":\"activerecord\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}

@@ -162,9 +162,10 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
-        const CURRENT_SCHEMA: u32 = 3;
+        const CURRENT_SCHEMA: u32 = 4;
         {
             var needs_reset = false;
+            var needs_reindex = false;
             {
                 const ver_stmt = self.prepare("SELECT value FROM meta WHERE key='schema_version'") catch null;
                 if (ver_stmt) |vs| {
@@ -173,8 +174,12 @@ pub const Db = struct {
                         const stored_str = vs.column_text(0);
                         const stored = std.fmt.parseInt(u32, stored_str, 10) catch 0;
                         if (stored > CURRENT_SCHEMA) needs_reset = true;
+                        if (stored < CURRENT_SCHEMA) needs_reindex = true;
                     }
                 }
+            }
+            if (needs_reindex) {
+                self.exec("UPDATE files SET mtime=0, content_hash=0") catch {};
             }
             if (needs_reset) {
                 std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
@@ -339,14 +344,14 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {};
-        // Phase v24: block param marker, composite indexes for query optimization
+        // Phase 2: block param marker, composite indexes for query optimization
         self.execMigration("ALTER TABLE local_vars ADD COLUMN is_block_param INTEGER DEFAULT 0");
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','3')");
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 3) {
+        if (final_ver != 4) {
             std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
         }
     }

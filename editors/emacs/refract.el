@@ -59,7 +59,7 @@
   (refract--init-options))
 
 (add-to-list 'eglot-server-programs
-             `((ruby-mode ruby-ts-mode) . (refract-eglot-server ,refract-executable)))
+             `((ruby-mode ruby-ts-mode eruby-mode haml-mode slim-mode) . (refract-eglot-server ,refract-executable)))
 
 (provide 'refract)
 ;;; refract.el ends here
