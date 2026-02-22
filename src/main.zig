@@ -484,12 +484,26 @@ pub fn main() !void {
     };
 
     if (flag_mcp) {
-        var file_count: i64 = 0;
-        if (db.prepare("SELECT COUNT(*) FROM files")) |stmt| {
-            defer stmt.finalize();
-            if (try stmt.step()) file_count = stmt.column_int(0);
-        } else |_| {}
-        if (file_count == 0) {
+        var needs_index = false;
+        {
+            var file_count: i64 = 0;
+            if (db.prepare("SELECT COUNT(*) FROM files")) |stmt| {
+                defer stmt.finalize();
+                if (try stmt.step()) file_count = stmt.column_int(0);
+            } else |_| {}
+            if (file_count == 0) {
+                needs_index = true;
+            } else {
+                // Check if schema migration reset files (mtime=0 means needs re-index)
+                var stale_count: i64 = 0;
+                if (db.prepare("SELECT COUNT(*) FROM files WHERE mtime=0")) |stmt| {
+                    defer stmt.finalize();
+                    if (try stmt.step()) stale_count = stmt.column_int(0);
+                } else |_| {}
+                if (stale_count > 0) needs_index = true;
+            }
+        }
+        if (needs_index) {
             try std.fs.File.stderr().writeAll("refract: auto-indexing workspace for MCP...\n");
             const paths = scanner.scanWithNegations(cwd, alloc, &.{}, &.{}) catch {
                 try std.fs.File.stderr().writeAll("refract: workspace scan failed\n");

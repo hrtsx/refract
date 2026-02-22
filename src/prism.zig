@@ -62,6 +62,8 @@ pub const constantPoolIdToConstant = c.pm_constant_pool_id_to_constant;
 pub const lineOffsetListLineColumn = c.pm_line_offset_list_line_column;
 
 // Node type constants for symbol extraction
+pub const ProgramNode = c.pm_program_node_t;
+pub const NODE_PROGRAM = c.PM_PROGRAM_NODE;
 pub const NODE_CLASS = c.PM_CLASS_NODE;
 pub const NODE_MODULE = c.PM_MODULE_NODE;
 pub const NODE_DEF = c.PM_DEF_NODE;
