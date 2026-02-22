@@ -162,7 +162,7 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
-        const CURRENT_SCHEMA: u32 = 4;
+        const CURRENT_SCHEMA: u32 = 5;
         {
             var needs_reset = false;
             var needs_reindex = false;
@@ -179,10 +179,20 @@ pub const Db = struct {
                 }
             }
             if (needs_reindex) {
-                self.exec("UPDATE files SET mtime=0, content_hash=0") catch {};
+                self.exec("UPDATE files SET mtime=0, content_hash=0") catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reindex: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
             if (needs_reset) {
                 std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
+                self.begin() catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reset begin: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
+                errdefer self.rollback() catch {};
                 self.exec("DROP TABLE IF EXISTS sem_tokens") catch {};
                 self.exec("DROP TABLE IF EXISTS diagnostics") catch {};
                 self.exec("DROP TABLE IF EXISTS mixins") catch {};
@@ -195,6 +205,11 @@ pub const Db = struct {
                 self.exec("DROP TABLE IF EXISTS symbols") catch {};
                 self.exec("DROP TABLE IF EXISTS files") catch {};
                 self.exec("DROP TABLE IF EXISTS meta") catch {};
+                self.commit() catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reset commit: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
         }
         try self.exec(
@@ -349,9 +364,13 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')");
+        // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {};
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','5')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 4) {
+        if (final_ver != 5) {
             std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
         }
     }
