@@ -1,0 +1,64 @@
+name: Bug Report
+description: Report a bug in refract
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Open a Ruby file with ...
+        2. Trigger completion on ...
+        3. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Refract version
+      description: Output of `refract --version`
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: editor
+    attributes:
+      label: Editor
+      options:
+        - Neovim
+        - Helix
+        - Zed
+        - VS Code
+        - Emacs
+        - Sublime Text
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "macOS 15 aarch64 / Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any LSP log output (run with `--log-level 4` to get debug logs).
+      render: text

@@ -32,7 +32,6 @@ pub const ErbMap = struct {
         }
         return null;
     }
-
 };
 
 pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
@@ -168,7 +167,10 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                     if (ch == in_string and (j == 0 or trimmed[j - 1] != '\\')) in_string = 0;
                     continue;
                 }
-                if (ch == '"' or ch == '\'') { in_string = ch; continue; }
+                if (ch == '"' or ch == '\'') {
+                    in_string = ch;
+                    continue;
+                }
                 if (ch == '{') pending_brace_depth += 1;
                 if (ch == '}') {
                     if (pending_brace_depth > 0) pending_brace_depth -= 1;
@@ -284,7 +286,10 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                         if (bch == init_quote and (j == 0 or trimmed[j - 1] != '\\')) init_quote = 0;
                         continue;
                     }
-                    if (bch == '"' or bch == '\'') { init_quote = bch; continue; }
+                    if (bch == '"' or bch == '\'') {
+                        init_quote = bch;
+                        continue;
+                    }
                     if (bch == '{') brace_depth += 1;
                     if (bch == '}') brace_depth -= 1;
                 }
@@ -393,9 +398,7 @@ pub fn buildSlimMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
             }
         }
 
-        if (content.len == 0) {
-        } else if (content[0] == '/' or content[0] == '|' or content[0] == '\'') {
-        } else if (content[0] == ':') {
+        if (content.len == 0) {} else if (content[0] == '/' or content[0] == '|' or content[0] == '\'') {} else if (content[0] == ':') {
             const filter_end = blk: {
                 var end: usize = 1;
                 while (end < content.len and content[end] != ' ' and content[end] != '\n') : (end += 1) {}
@@ -465,12 +468,9 @@ pub fn buildSlimMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
 fn isNonRubyFilter(filter_name: []const u8) bool {
     const non_ruby_filters = [_][]const u8{
         "javascript", "js",
-        "css",
-        "coffeescript",
-        "sass",
-        "scss",
-        "plain",
-        "markdown",
+        "css",        "coffeescript",
+        "sass",       "scss",
+        "plain",      "markdown",
         "md",
     };
 

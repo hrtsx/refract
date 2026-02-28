@@ -5,6 +5,15 @@
   "version": "0.1.0",
   "publisher": "refract",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hirintsoa/refract"
+  },
+  "homepage": "https://github.com/Hirintsoa/refract",
+  "bugs": {
+    "url": "https://github.com/Hirintsoa/refract/issues"
+  },
+  "keywords": ["ruby", "lsp", "language-server", "rails", "erb", "haml"],
   "engines": {
     "vscode": "^1.75.0"
   },

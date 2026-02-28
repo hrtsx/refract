@@ -145,9 +145,15 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "search_symbols", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
 };
 
+const MAX_REQUESTS_PER_SEC: u32 = 100;
+pub const MAX_RESPONSE_BYTES: usize = 1_048_576; // 1 MiB
+pub const MAX_LINE_BODY_BYTES: usize = 512; // per-line cap for grep_source match/context
+
 pub const Server = struct {
     db: db_mod.Db,
     alloc: std.mem.Allocator,
+    request_count: u32 = 0,
+    request_window_ms: i64 = 0,
 
     pub fn init(db: db_mod.Db, alloc: std.mem.Allocator) Server {
         return .{ .db = db, .alloc = alloc };
@@ -178,15 +184,44 @@ pub const Server = struct {
             const id = obj.get("id");
             const params = obj.get("params");
 
+            const now_ms = std.time.milliTimestamp();
+            if (now_ms - self.request_window_ms > 1000) {
+                self.request_count = 0;
+                self.request_window_ms = now_ms;
+            }
+            self.request_count += 1;
+            if (self.request_count > MAX_REQUESTS_PER_SEC) {
+                if (id != null) {
+                    const rl_resp = self.buildError(id, -32600, "rate limit exceeded") catch null;
+                    if (rl_resp) |resp| {
+                        defer self.alloc.free(resp);
+                        writer.writeAll(resp) catch break;
+                        writer.writeByte('\n') catch break;
+                        writer.flush() catch break;
+                    }
+                }
+                continue;
+            }
+
             const resp_opt = self.dispatch(method, id, params) catch |e| blk: {
                 if (id == null) break :blk null;
                 break :blk self.buildError(id, -32603, @errorName(e)) catch null;
             };
             if (resp_opt) |resp| {
                 defer self.alloc.free(resp);
-                writer.writeAll(resp) catch break;
-                writer.writeByte('\n') catch break;
-                writer.flush() catch break;
+                if (resp.len > MAX_RESPONSE_BYTES) {
+                    const too_big = self.buildError(id, -32000, "response too large — narrow the query or use pagination (offset)") catch null;
+                    if (too_big) |tb| {
+                        defer self.alloc.free(tb);
+                        writer.writeAll(tb) catch break;
+                        writer.writeByte('\n') catch break;
+                        writer.flush() catch break;
+                    }
+                } else {
+                    writer.writeAll(resp) catch break;
+                    writer.writeByte('\n') catch break;
+                    writer.flush() catch break;
+                }
             }
         }
     }
@@ -1162,10 +1197,10 @@ pub const Server = struct {
         while (remaining.len > 0) {
             if (std.mem.indexOf(u8, remaining, "{{")) |open| {
                 try tw.writeAll(remaining[0..open]);
-                remaining = remaining[open + 2..];
+                remaining = remaining[open + 2 ..];
                 if (std.mem.indexOf(u8, remaining, "}}")) |close| {
                     const key = remaining[0..close];
-                    remaining = remaining[close + 2..];
+                    remaining = remaining[close + 2 ..];
                     if (arguments) |amap| {
                         if (amap.get(key)) |av| {
                             switch (av) {
@@ -1218,7 +1253,10 @@ pub const Server = struct {
 
     fn buildPromptContext(self: *Server, name: []const u8, arguments: ?std.json.ObjectMap, w: *std.Io.Writer) !void {
         if (std.mem.eql(u8, name, "class-overview")) {
-            const class_name = if (arguments) |a| if (a.get("class_name")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const class_name = if (arguments) |a| if (a.get("class_name")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             try w.print("Class: {s}\n\n", .{class_name});
 
@@ -1316,7 +1354,10 @@ pub const Server = struct {
             try w.writeAll("\n---\n");
         } else if (std.mem.eql(u8, name, "trace-callers")) {
             _ = if (arguments) |a| a.get("class_name") else null; // class_name filtering planned (needs refs.scope_receiver)
-            const method_name = if (arguments) |a| if (a.get("method_name")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const method_name = if (arguments) |a| if (a.get("method_name")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             const cal_stmt = self.db.prepare(
                 \\SELECT f.path, r.line, r.col
@@ -1342,7 +1383,10 @@ pub const Server = struct {
             }
             if (cal_count > 0) try w.writeAll("\n---\n");
         } else if (std.mem.eql(u8, name, "find-bugs")) {
-            const file = if (arguments) |a| if (a.get("file")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const file = if (arguments) |a| if (a.get("file")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             const diag_stmt = self.db.prepare(
                 \\SELECT d.line, d.col, d.message, d.severity
@@ -1458,7 +1502,10 @@ pub const Server = struct {
         if (query.len == 0) return self.buildToolError(id, "'query' must be non-empty");
         const file_pattern = getStrArg(args, "file_pattern");
         const ctx_n: usize = @intCast(@min(getIntArg(args, "context_lines") orelse 1, 5));
-        const use_regex = if (args) |a| if (a.get("use_regex")) |v| switch (v) { .bool => |b| b, else => false } else false else false;
+        const use_regex = if (args) |a| if (a.get("use_regex")) |v| switch (v) {
+            .bool => |b| b,
+            else => false,
+        } else false else false;
         const offset_raw = getIntArg(args, "offset") orelse 0;
         const offset: usize = if (offset_raw > 0) @intCast(offset_raw) else 0;
 
@@ -1490,7 +1537,7 @@ pub const Server = struct {
                     if (std.mem.indexOf(u8, fp, "*")) |star_idx| {
                         // Simple glob: split on * and require all parts present in path in order
                         const prefix = fp[0..star_idx];
-                        const suffix = fp[star_idx + 1..];
+                        const suffix = fp[star_idx + 1 ..];
                         if (prefix.len > 0 and !std.mem.containsAtLeast(u8, fpath, 1, prefix)) break :blk false;
                         if (suffix.len > 0 and !std.mem.endsWith(u8, fpath, suffix)) break :blk false;
                         break :blk true;
@@ -1524,7 +1571,10 @@ pub const Server = struct {
                 else
                     std.mem.indexOf(u8, line_lower, query_lower) != null;
                 if (!matched) continue;
-                if (skipped < offset) { skipped += 1; continue; }
+                if (skipped < offset) {
+                    skipped += 1;
+                    continue;
+                }
 
                 total += 1;
                 if (!results_first) try rw.writeByte(',');
@@ -1532,7 +1582,7 @@ pub const Server = struct {
                 try rw.writeAll("{\"file\":");
                 try writeJsonStr(rw, fpath);
                 try rw.print(",\"line\":{d},\"match\":", .{li + 1});
-                try writeJsonStr(rw, line);
+                try writeJsonStrCapped(rw, line, MAX_LINE_BODY_BYTES);
                 try rw.writeAll(",\"context_before\":[");
                 const before_start: usize = if (li >= ctx_n) li - ctx_n else 0;
                 var first_b = true;
@@ -1540,7 +1590,7 @@ pub const Server = struct {
                 while (bi < li) : (bi += 1) {
                     if (!first_b) try rw.writeByte(',');
                     first_b = false;
-                    try writeJsonStr(rw, lines.items[bi]);
+                    try writeJsonStrCapped(rw, lines.items[bi], MAX_LINE_BODY_BYTES);
                 }
                 try rw.writeAll("],\"context_after\":[");
                 const after_end = @min(li + ctx_n + 1, lines.items.len);
@@ -1549,7 +1599,7 @@ pub const Server = struct {
                 while (ai < after_end) : (ai += 1) {
                     if (!first_a) try rw.writeByte(',');
                     first_a = false;
-                    try writeJsonStr(rw, lines.items[ai]);
+                    try writeJsonStrCapped(rw, lines.items[ai], MAX_LINE_BODY_BYTES);
                 }
                 try rw.writeAll("]}");
             }
@@ -2440,17 +2490,24 @@ pub const Server = struct {
             const file = switch (pos.get("file") orelse {
                 try w.writeAll("{\"error\":\"missing file\"}");
                 continue;
-            }) { .string => |s| s, else => {
-                try w.writeAll("{\"error\":\"file must be string\"}");
-                continue;
-            }};
+            }) {
+                .string => |s| s,
+                else => {
+                    try w.writeAll("{\"error\":\"file must be string\"}");
+                    continue;
+                },
+            };
             const line = switch (pos.get("line") orelse {
                 try w.writeAll("{\"error\":\"missing line\"}");
                 continue;
-            }) { .integer => |i| i, .float => |f| @as(i64, @intFromFloat(f)), else => {
-                try w.writeAll("{\"error\":\"line must be integer\"}");
-                continue;
-            }};
+            }) {
+                .integer => |i| i,
+                .float => |f| @as(i64, @intFromFloat(f)),
+                else => {
+                    try w.writeAll("{\"error\":\"line must be integer\"}");
+                    continue;
+                },
+            };
             const col: i64 = if (pos.get("col")) |cv| switch (cv) {
                 .integer => |i| i,
                 .float => |f| @as(i64, @intFromFloat(f)),
@@ -2780,6 +2837,8 @@ pub const Server = struct {
             defer stmt.finalize();
 
             var first = true;
+            var result_count: u32 = 0;
+            const max_results: u32 = 500;
             while (stmt.step() catch |e| stepLog(e)) {
                 const line = stmt.column_int(0);
                 const col = stmt.column_int(1);
@@ -2804,6 +2863,8 @@ pub const Server = struct {
                     if (!std.mem.eql(u8, code, cf)) continue;
                 }
 
+                if (result_count >= max_results) break;
+
                 if (!first) try w.writeByte(',');
                 first = false;
                 try w.print("{{\"file\":", .{});
@@ -2813,6 +2874,7 @@ pub const Server = struct {
                 try w.writeAll(",\"code\":");
                 if (code.len > 0) try writeJsonStr(w, code) else try w.writeAll("null");
                 try w.writeAll("}");
+                result_count += 1;
             }
         } else |_| {}
 
@@ -2908,9 +2970,7 @@ pub const Server = struct {
             // Try to infer from return statements or callers
             var suggested_buf: ?[]u8 = null;
             defer if (suggested_buf) |b| self.alloc.free(b);
-            const ret_stmt = self.db.prepare(
-                "SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1"
-            ) catch null;
+            const ret_stmt = self.db.prepare("SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1") catch null;
             if (ret_stmt) |rs| {
                 defer rs.finalize();
                 rs.bind_text(1, method_name);
@@ -3005,9 +3065,7 @@ pub const Server = struct {
         try w.writeAll(",\"similar\":[");
 
         // Use LIKE for prefix filtering, then edit distance for ranking
-        const stmt = self.db.prepare(
-            "SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000"
-        ) catch return self.buildError(id, -32603, "DB error");
+        const stmt = self.db.prepare("SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000") catch return self.buildError(id, -32603, "DB error");
         defer stmt.finalize();
         stmt.bind_text(1, method_name);
 
@@ -3020,7 +3078,7 @@ pub const Server = struct {
             const dist = editDistance(method_name, cand);
             const is_substring = method_name.len >= 3 and cand.len >= 3 and
                 (std.mem.indexOf(u8, cand, method_name) != null or
-                 std.mem.indexOf(u8, method_name, cand) != null);
+                    std.mem.indexOf(u8, method_name, cand) != null);
             if (dist <= max_dist or is_substring) {
                 if (!first) try w.writeAll(",");
                 first = false;
@@ -3058,7 +3116,7 @@ fn editDistance(a: []const u8, b: []const u8) u32 {
             const cost: u32 = if (ca == cb) 0 else 1;
             curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
         }
-        @memcpy(prev[0..b.len + 1], curr[0..b.len + 1]);
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
     }
     return prev[b.len];
 }
@@ -3074,6 +3132,17 @@ fn countLines(source: []const u8) u32 {
 fn writeJsonStr(w: *std.Io.Writer, s: []const u8) !void {
     try w.writeByte('"');
     try writeJsonEscaped(w, s);
+    try w.writeByte('"');
+}
+
+fn writeJsonStrCapped(w: *std.Io.Writer, s: []const u8, max_bytes: usize) !void {
+    try w.writeByte('"');
+    if (s.len <= max_bytes) {
+        try writeJsonEscaped(w, s);
+    } else {
+        try writeJsonEscaped(w, s[0..max_bytes]);
+        try w.writeAll("\\u2026");
+    }
     try w.writeByte('"');
 }
 

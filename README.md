@@ -10,7 +10,7 @@ Download the latest binary:
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS" in Darwin) OS=macos ;; *) OS=linux ;; esac
 case "$ARCH" in arm64) ARCH=aarch64 ;; esac
-curl -L "https://github.com/fedhtrsx/refract/releases/latest/download/refract-${ARCH}-${OS}" \
+curl -L "https://github.com/Hirintsoa/refract/releases/latest/download/refract-${ARCH}-${OS}" \
   -o ~/.local/bin/refract && chmod +x ~/.local/bin/refract
 ```
 
@@ -39,7 +39,7 @@ refract --stats                # print file and symbol counts and exit
 Requires Zig 0.15.2+.
 
 ```sh
-git clone --recurse-submodules https://github.com/fedhtrsx/refract
+git clone --recurse-submodules https://github.com/Hirintsoa/refract
 cd refract
 zig build --release=safe
 # binary at zig-out/bin/refract
@@ -270,7 +270,20 @@ Set `disableRubocop: true` in `initializationOptions` to disable RuboCop entirel
 
 ## MCP Server
 
-Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compound tools, and 2 resources:
+Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compound tools, and 2 resources.
+
+**Tools that pay off the most in real Rails work** (measured on basecamp/fizzy — 1275 files, 3867 symbols, 7.7 s cold index, 26 MB RSS):
+
+| Tool | What it gives an agent | Fizzy latency |
+|---|---|---|
+| `workspace_symbols` | Ranked fuzzy symbol search (aliased as `find_symbol` / `search_symbols`) | ~9 ms |
+| `class_summary` | Full method roster with visibility, line, kind, return type | ~3 ms |
+| `association_graph` | `has_many` / `has_one` / `belongs_to` / `scope` with typed returns like `[Board]` | ~1 ms |
+| `workspace_health` | `typed_local_var_pct`, `unused_def_count`, schema version | ~15 ms |
+| `find_references` | Call-site hits with surrounding line context (not just grep) | ~8 ms |
+| `explain_symbol` | Signature + callers + sample call sites in one call. Accepts `"Class#method"` | ~2 ms |
+
+The qualified-form tools (`method_signature`, `find_callers`, `explain_symbol`) accept either `{"symbol":"Account#active?"}` (preferred) or the legacy `{"class_name":"Account","method_name":"active?"}`.
 
 **Type & Symbol Resolution**
 
@@ -278,8 +291,8 @@ Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compou
 |------|-----------|-------------|
 | `resolve_type` | `file`, `line`, `col?` | Resolve inferred type of a local variable at a source position |
 | `class_summary` | `class_name` | Get methods, constants, and mixins for a class or module |
-| `method_signature` | `class_name`, `method_name` | Get full signature and parameter types of a method |
-| `explain_symbol` | `class_name`, `method_name` | Full picture: signature, callers, and diagnostics in one call |
+| `method_signature` | `symbol` or (`class_name`, `method_name`) | Get full signature and parameter types of a method |
+| `explain_symbol` | `symbol` or (`class_name`, `method_name`) | Full picture: signature, callers, and diagnostics in one call |
 | `batch_resolve` | `positions[]` | Resolve types at multiple source positions (max 20) |
 | `explain_type_chain` | `file`, `line`, `col?` | Explain how a variable's type was inferred (RBS, YARD, literal, chain) |
 | `suggest_types` | `file`, `limit?` | Suggest YARD/RBS annotations for untyped methods in a file |
@@ -289,7 +302,7 @@ Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compou
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `workspace_symbols` | `query`, `kind?`, `offset?` | Search symbols across workspace by name |
-| `find_callers` | `method_name`, `class_name?`, `offset?` | Find all call sites of a method |
+| `find_callers` | `symbol` or (`method_name`, `class_name?`), `offset?` | Find all call sites of a method |
 | `find_implementations` | `method_name`, `offset?` | Find all classes that define a given method |
 | `find_references` | `name`, `ref_kind?`, `offset?` | Find all recorded call-site references |
 | `type_hierarchy` | `class_name` | Get ancestor chain and known descendants |
@@ -319,7 +332,7 @@ Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compou
 | `find_similar` | `method_name`, `max_distance?` | Find methods with similar names (typo detection, naming consistency) |
 | `find_unused` | `kind?`, `parent_name?` | Find symbols with no call sites (dead-code) |
 | `list_by_kind` | `kind`, `name_filter?`, `offset?` | List all symbols of a given kind |
-| `get_file_overview` | `file` | List all symbols in a file by line |
+| `get_file_overview` | `file` (absolute or relative to workspace) | List all symbols in a file by line |
 | `test_summary` | `file` | List discovered tests with kind and line numbers |
 
 **Refactoring**
@@ -362,7 +375,7 @@ If you see "resetting DB (schema newer than binary)", the database was auto-rese
 This is normal after a downgrade. To manually upgrade refract:
 
 ```sh
-curl -L "https://github.com/fedhtrsx/refract/releases/latest/download/refract-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | sed 's/Darwin/macos/')" \
+curl -L "https://github.com/Hirintsoa/refract/releases/latest/download/refract-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | sed 's/Darwin/macos/')" \
   -o ~/.local/bin/refract && chmod +x ~/.local/bin/refract
 ```
 

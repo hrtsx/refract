@@ -1,0 +1,84 @@
+== r/ruby ======================================================================
+
+Title: Refract — a fast Ruby LSP server written in Zig, backed by SQLite
+
+I built a Ruby language server from scratch in Zig. It uses Prism for parsing
+and SQLite for indexing, with zero runtime dependencies — a single static binary.
+
+What it does:
+- Full LSP: completion, hover, go-to-definition, references, rename (MRO-aware, cross-file), semantic tokens, call hierarchy, type hierarchy
+- Type inference: literal types, YARD/RBS annotations, method chains (5 levels deep), generics, union types
+- Rails: route helpers, i18n keys, associations, callbacks, validations
+- Templates: ERB, HAML, Slim
+- RuboCop integration (auto-detects bundle exec)
+- MCP server with 32 tools for AI-assisted development
+- Background indexing with incremental updates
+
+Works with Neovim, Helix, Zed, VS Code, Emacs, and Sublime Text.
+
+Install:
+  curl -L "https://github.com/hrtsx/refract/releases/latest/download/refract-$(uname -m | sed 's/arm64/aarch64/')-$(uname -s | sed 's/Darwin/macos/')" -o ~/.local/bin/refract && chmod +x ~/.local/bin/refract
+
+GitHub: https://github.com/hrtsx/refract
+
+Feedback and contributions welcome. MIT licensed.
+
+== r/neovim ====================================================================
+
+Title: Refract — fast Ruby LSP with zero dependencies (single binary, Zig + SQLite)
+
+If you work with Ruby in Neovim, I built an LSP server that might interest you.
+It's a single static binary — no Ruby runtime, no gems, no Node.js.
+
+Setup is 3 lines in your init.lua:
+
+  vim.api.nvim_create_autocmd("FileType", {
+    pattern = "ruby",
+    callback = function()
+      vim.lsp.start({
+        name = "refract",
+        cmd = { "refract" },
+        root_dir = vim.fs.root(0, { "Gemfile", ".git" }),
+      })
+    end,
+  })
+
+Features: type-aware completion, MRO-aware rename, call/type hierarchy,
+semantic tokens, inlay hints, Rails route/i18n integration, ERB/HAML/Slim,
+RuboCop formatting + diagnostics.
+
+Also ships an MCP server (refract --mcp) with 32 tools for AI workflows.
+
+GitHub: https://github.com/hrtsx/refract
+
+== Hacker News =================================================================
+
+Title: Refract: A Ruby LSP server written in Zig, backed by SQLite
+
+Text:
+I've been building a Ruby language server from scratch. It's written in Zig,
+uses the Prism parser for Ruby AST, and stores the entire workspace index in
+a per-project SQLite database.
+
+Design goals: single static binary, zero runtime dependencies, fast startup,
+incremental indexing.
+
+It implements 29 LSP capabilities including type-aware completion, MRO-aware
+cross-file rename, call/type hierarchy, and Rails-specific intelligence
+(routes, i18n, associations). It also runs as an MCP server with 32 tools
+for AI-assisted code exploration.
+
+Supports Neovim, Helix, Zed, VS Code, Emacs, and Sublime Text.
+
+https://github.com/hrtsx/refract
+
+== Ruby Weekly pitch ============================================================
+
+Subject: Refract — a new Ruby LSP server (Zig + SQLite, single binary)
+
+A new open-source Ruby language server that compiles to a single static binary.
+Written in Zig with Prism + SQLite. Supports 29 LSP features, Rails integration,
+ERB/HAML/Slim templates, and an MCP server for AI tooling. Works with all major
+editors. MIT licensed.
+
+https://github.com/hrtsx/refract

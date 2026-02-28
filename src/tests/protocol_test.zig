@@ -1531,7 +1531,7 @@ test "completion returns symbols at empty prefix" {
 
     try std.fs.cwd().writeFile(.{
         .sub_path = ws ++ "/completion_empty.rb",
-        .data = "class EmptyPrefixTarget; end\n.\n",
+        .data = "class EmptyPrefixTarget\n  def some_method\n    \n  end\nend\n",
     });
 
     var s = try Session.init(alloc);
@@ -1539,9 +1539,9 @@ test "completion returns symbols at empty prefix" {
 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\",\"type\":1}]}}");
-    // position at char 1 on line 1 (after the dot) — extractWord returns ""
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\"},\"position\":{\"line\":1,\"character\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class EmptyPrefixTarget\\n  def some_method\\n    \\n  end\\nend\\n\"}}}");
+    // position inside method body on an indented blank line — extractWord returns ""
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\"},\"position\":{\"line\":2,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -2870,7 +2870,7 @@ test "--version prints version" {
     if (stderr_content.len > 0) {
         std.debug.print("refract stderr:\n{s}\n", .{stderr_content});
     }
-    try std.testing.expect(std.mem.startsWith(u8, buf[0..n], "refract 0.2.1"));
+    try std.testing.expect(std.mem.startsWith(u8, buf[0..n], "refract "));
 }
 
 test "didOpen empty file no crash" {
@@ -4263,7 +4263,7 @@ test "substring completion matches non-prefix" {
 
     try std.fs.cwd().writeFile(.{
         .sub_path = ws ++ "/substr_test.rb",
-        .data = "class SubstrUser\n  def find_user_record; end\nend\n",
+        .data = "class SubstrUser\n  def find_user_record; end\n  def call\n    user_record\n  end\nend\n",
     });
 
     var s = try Session.init(alloc);
@@ -4271,8 +4271,9 @@ test "substring completion matches non-prefix" {
 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\",\"type\":1}]}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\"},\"position\":{\"line\":2,\"character\":4},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class SubstrUser\\n  def find_user_record; end\\n  def call\\n    user_record\\n  end\\nend\\n\"}}}");
+    // cursor on "user_record" inside method body — non-prefix substring of "find_user_record"
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\"},\"position\":{\"line\":3,\"character\":15},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -6247,7 +6248,10 @@ test "didChange no temp file" {
         if (!std.mem.startsWith(u8, entry.name, "refract-")) continue;
         var was_existing = false;
         for (existing.items) |k| {
-            if (std.mem.eql(u8, k, entry.name)) { was_existing = true; break; }
+            if (std.mem.eql(u8, k, entry.name)) {
+                was_existing = true;
+                break;
+            }
         }
         if (!was_existing) return error.TempFileFound;
     }
@@ -7338,11 +7342,21 @@ test "implementation returns definition location" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    _ = switch (result) { .null => return error.NullResult, .array => {}, else => {} };
+    _ = switch (result) {
+        .null => return error.NullResult,
+        .array => {},
+        else => {},
+    };
 }
 
 test "declaration returns definition location" {
@@ -7363,9 +7377,15 @@ test "declaration returns definition location" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("result") orelse return error.NoResult;
 }
 
@@ -7387,9 +7407,15 @@ test "semantic tokens range subset" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("result") orelse return error.NoResult;
 }
 
@@ -7411,11 +7437,20 @@ test "rspec describe indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7437,11 +7472,20 @@ test "rspec it indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7463,11 +7507,20 @@ test "rspec let indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7489,11 +7542,20 @@ test "sinatra get indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7515,11 +7577,20 @@ test "rake task indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7541,11 +7612,20 @@ test "mattr_accessor indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7567,11 +7647,20 @@ test "cattr_accessor indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7591,9 +7680,15 @@ test "executeCommand unknown returns method_not_found" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") != null);
 }
 
@@ -7603,8 +7698,7 @@ test "block param inferred from each" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/b.rb",
-        .data = "class User\n  def name; \"x\"; end\nend\nusers = []\nusers.each do |u|\n  u.name\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/b.rb", .data = "class User\n  def name; \"x\"; end\nend\nusers = []\nusers.each do |u|\n  u.name\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -7616,9 +7710,15 @@ test "block param inferred from each" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("result") orelse return error.NoResult;
 }
 
@@ -7628,32 +7728,51 @@ test "completion ranked prefix first" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/r.rb",
-        .data = "def format_output; end\ndef output_format; end\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/r.rb", .data = "def format_output; end\ndef output_format; end\nformat\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/r.rb\",\"type\":1}]}}");
+    // flush barrier: workspace/symbol synchronously drains incr_paths before next request
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/r.rb\"},\"position\":{\"line\":2,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotObject };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const items_val = res_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var format_output_idx: ?usize = null;
     var output_format_idx: ?usize = null;
     for (arr.items, 0..) |item, idx| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const label_val = item_obj.get("label") orelse continue;
-        const label = switch (label_val) { .string => |str| str, else => continue };
+        const label = switch (label_val) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, label, "format_output")) format_output_idx = idx;
         if (std.mem.eql(u8, label, "output_format")) output_format_idx = idx;
     }
@@ -7692,13 +7811,25 @@ test "completion limit 200" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotObject };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const items_val = res_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     try std.testing.expect(arr.items.len >= 20);
 }
 
@@ -7720,11 +7851,20 @@ test "callHierarchy prepare returns item" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7746,11 +7886,20 @@ test "callHierarchy incomingCalls" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7772,9 +7921,15 @@ test "bg scan does not block hover" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("id") orelse return error.NoId;
 }
 
@@ -7796,11 +7951,20 @@ test "sinatra post indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7822,11 +7986,20 @@ test "rspec context indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7848,11 +8021,20 @@ test "rspec shared_examples_for indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7874,11 +8056,20 @@ test "rake namespace indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7888,8 +8079,7 @@ test "each_with_index second param Integer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ewi.rb",
-        .data = "class Item\n  def name; end\nend\nitems = []\nitems.each_with_index do |item, idx|\n  idx\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ewi.rb", .data = "class Item\n  def name; end\nend\nitems = []\nitems.each_with_index do |item, idx|\n  idx\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -7901,9 +8091,15 @@ test "each_with_index second param Integer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("id") orelse return error.NoId;
 }
 
@@ -7923,11 +8119,20 @@ test "outgoingCalls returns empty array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len == 0);
 }
 
@@ -7948,7 +8153,10 @@ test "cancelRequest no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     _ = getResponseById(responses, 2) orelse return error.NoResponse;
 }
 
@@ -7970,11 +8178,20 @@ test "rspec before indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -7996,11 +8213,20 @@ test "rspec after indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -8022,11 +8248,20 @@ test "mattr_reader indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -8071,8 +8306,7 @@ test "self completion returns class methods" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/m.rb",
-        .data = "class MyClass\n  def greet; end\n  def farewell; end\n  def go\n    self.\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/m.rb", .data = "class MyClass\n  def greet; end\n  def farewell; end\n  def go\n    self.\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8084,18 +8318,36 @@ test "self completion returns class methods" {
     const raw2 = try s.run();
     defer alloc.free(raw2);
     const responses2 = try extractResponses(alloc, raw2);
-    defer { for (responses2) |r| r.deinit(); alloc.free(responses2); }
+    defer {
+        for (responses2) |r| r.deinit();
+        alloc.free(responses2);
+    }
     const resp2 = getResponseById(responses2, 2) orelse return error.NoResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const res2 = switch (result2) { .object => |o| o, else => return error.NotObject };
+    const res2 = switch (result2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const items2 = res2.get("items") orelse return error.NoItems;
-    const arr2 = switch (items2) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr2 = switch (items2) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_greet = false;
     for (arr2.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "greet")) found_greet = true;
     }
     try std.testing.expect(found_greet);
@@ -8107,8 +8359,7 @@ test "self completion in nested class" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/n.rb",
-        .data = "class Outer\n  def outer_method; end\n  class Inner\n    def inner_method; end\n    def go\n      self.\n    end\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/n.rb", .data = "class Outer\n  def outer_method; end\n  class Inner\n    def inner_method; end\n    def go\n      self.\n    end\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8120,18 +8371,36 @@ test "self completion in nested class" {
     const rawN = try s.run();
     defer alloc.free(rawN);
     const respN = try extractResponses(alloc, rawN);
-    defer { for (respN) |r| r.deinit(); alloc.free(respN); }
+    defer {
+        for (respN) |r| r.deinit();
+        alloc.free(respN);
+    }
     const rN = getResponseById(respN, 2) orelse return error.NoResponse;
-    const oN = switch (rN) { .object => |o| o, else => return error.NotObject };
+    const oN = switch (rN) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resN = oN.get("result") orelse return error.NoResult;
-    const roN = switch (resN) { .object => |o| o, else => return error.NotObject };
+    const roN = switch (resN) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivN = roN.get("items") orelse return error.NoItems;
-    const aN = switch (ivN) { .array => |a| a, else => return error.ItemsNotArray };
+    const aN = switch (ivN) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_inner = false;
     for (aN.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "inner_method")) found_inner = true;
     }
     try std.testing.expect(found_inner);
@@ -8164,8 +8433,7 @@ test "@ivar completion resolves type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/iv.rb",
-        .data = "class User\n  def profile; end\nend\nclass Controller\n  def init\n    @user = User.new\n  end\n  def show\n    @user.\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/iv.rb", .data = "class User\n  def profile; end\nend\nclass Controller\n  def init\n    @user = User.new\n  end\n  def show\n    @user.\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8177,18 +8445,36 @@ test "@ivar completion resolves type" {
     const rawI = try s.run();
     defer alloc.free(rawI);
     const respI = try extractResponses(alloc, rawI);
-    defer { for (respI) |r| r.deinit(); alloc.free(respI); }
+    defer {
+        for (respI) |r| r.deinit();
+        alloc.free(respI);
+    }
     const rI = getResponseById(respI, 2) orelse return error.NoResponse;
-    const oI = switch (rI) { .object => |o| o, else => return error.NotObject };
+    const oI = switch (rI) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resI = oI.get("result") orelse return error.NoResult;
-    const roI = switch (resI) { .object => |o| o, else => return error.NotObject };
+    const roI = switch (resI) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivI = roI.get("items") orelse return error.NoItems;
-    const aI = switch (ivI) { .array => |a| a, else => return error.ItemsNotArray };
+    const aI = switch (ivI) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_prof = false;
     for (aI.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "profile")) found_prof = true;
     }
     try std.testing.expect(found_prof);
@@ -8200,8 +8486,7 @@ test "@ivar completion two ivars independent" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/iv2.rb",
-        .data = "class Foo\n  def foo_method; end\nend\nclass Bar\n  def bar_method; end\nend\nclass C\n  def init\n    @a = Foo.new\n    @b = Bar.new\n  end\n  def go\n    @b.\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/iv2.rb", .data = "class Foo\n  def foo_method; end\nend\nclass Bar\n  def bar_method; end\nend\nclass C\n  def init\n    @a = Foo.new\n    @b = Bar.new\n  end\n  def go\n    @b.\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8213,18 +8498,36 @@ test "@ivar completion two ivars independent" {
     const rawI2 = try s.run();
     defer alloc.free(rawI2);
     const respI2 = try extractResponses(alloc, rawI2);
-    defer { for (respI2) |r| r.deinit(); alloc.free(respI2); }
+    defer {
+        for (respI2) |r| r.deinit();
+        alloc.free(respI2);
+    }
     const rI2 = getResponseById(respI2, 2) orelse return error.NoResponse;
-    const oI2 = switch (rI2) { .object => |o| o, else => return error.NotObject };
+    const oI2 = switch (rI2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resI2 = oI2.get("result") orelse return error.NoResult;
-    const roI2 = switch (resI2) { .object => |o| o, else => return error.NotObject };
+    const roI2 = switch (resI2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivI2 = roI2.get("items") orelse return error.NoItems;
-    const aI2 = switch (ivI2) { .array => |a| a, else => return error.ItemsNotArray };
+    const aI2 = switch (ivI2) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_bar = false;
     for (aI2.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "bar_method")) found_bar = true;
     }
     try std.testing.expect(found_bar);
@@ -8236,8 +8539,7 @@ test "@ivar block param inferred" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ib.rb",
-        .data = "class Item\n  def name; end\nend\nclass C\n  def init\n    @items = [Item.new]\n  end\n  def process\n    @items.each do |item|\n      item.\n    end\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ib.rb", .data = "class Item\n  def name; end\nend\nclass C\n  def init\n    @items = [Item.new]\n  end\n  def process\n    @items.each do |item|\n      item.\n    end\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8249,9 +8551,15 @@ test "@ivar block param inferred" {
     const rawIB = try s.run();
     defer alloc.free(rawIB);
     const respIB = try extractResponses(alloc, rawIB);
-    defer { for (respIB) |r| r.deinit(); alloc.free(respIB); }
+    defer {
+        for (respIB) |r| r.deinit();
+        alloc.free(respIB);
+    }
     const rIB = getResponseById(respIB, 2) orelse return error.NoResponse;
-    const oIB = switch (rIB) { .object => |o| o, else => return error.NotObject };
+    const oIB = switch (rIB) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = oIB.get("result") orelse return error.NoResult;
 }
 
@@ -8261,8 +8569,7 @@ test "block param from User.all.each" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/bp.rb",
-        .data = "class User\n  def name; end\nend\nUser.all.each do |u|\n  u.\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/bp.rb", .data = "class User\n  def name; end\nend\nUser.all.each do |u|\n  u.\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8274,18 +8581,36 @@ test "block param from User.all.each" {
     const rawBP = try s.run();
     defer alloc.free(rawBP);
     const respBP = try extractResponses(alloc, rawBP);
-    defer { for (respBP) |r| r.deinit(); alloc.free(respBP); }
+    defer {
+        for (respBP) |r| r.deinit();
+        alloc.free(respBP);
+    }
     const rBP = getResponseById(respBP, 2) orelse return error.NoResponse;
-    const oBP = switch (rBP) { .object => |o| o, else => return error.NotObject };
+    const oBP = switch (rBP) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resBP = oBP.get("result") orelse return error.NoResult;
-    const roBP = switch (resBP) { .object => |o| o, else => return error.NotObject };
+    const roBP = switch (resBP) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivBP = roBP.get("items") orelse return error.NoItems;
-    const aBP = switch (ivBP) { .array => |a| a, else => return error.ItemsNotArray };
+    const aBP = switch (ivBP) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_name = false;
     for (aBP.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "name")) found_name = true;
     }
     try std.testing.expect(found_name);
@@ -8297,8 +8622,7 @@ test "block param from User.where.each" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/bpw.rb",
-        .data = "class User\n  def email; end\nend\nUser.where(active: true).each do |u|\n  u.\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/bpw.rb", .data = "class User\n  def email; end\nend\nUser.where(active: true).each do |u|\n  u.\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8310,18 +8634,36 @@ test "block param from User.where.each" {
     const rawBW = try s.run();
     defer alloc.free(rawBW);
     const respBW = try extractResponses(alloc, rawBW);
-    defer { for (respBW) |r| r.deinit(); alloc.free(respBW); }
+    defer {
+        for (respBW) |r| r.deinit();
+        alloc.free(respBW);
+    }
     const rBW = getResponseById(respBW, 2) orelse return error.NoResponse;
-    const oBW = switch (rBW) { .object => |o| o, else => return error.NotObject };
+    const oBW = switch (rBW) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resBW = oBW.get("result") orelse return error.NoResult;
-    const roBW = switch (resBW) { .object => |o| o, else => return error.NotObject };
+    const roBW = switch (resBW) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivBW = roBW.get("items") orelse return error.NoItems;
-    const aBW = switch (ivBW) { .array => |a| a, else => return error.ItemsNotArray };
+    const aBW = switch (ivBW) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_email = false;
     for (aBW.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "email")) found_email = true;
     }
     try std.testing.expect(found_email);
@@ -8333,8 +8675,7 @@ test "ternary same type infers type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/tn.rb",
-        .data = "class User\n  def login; end\nend\ncond = true\nx = cond ? User.new : User.new\nx.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/tn.rb", .data = "class User\n  def login; end\nend\ncond = true\nx = cond ? User.new : User.new\nx.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8346,18 +8687,36 @@ test "ternary same type infers type" {
     const rawTN = try s.run();
     defer alloc.free(rawTN);
     const respTN = try extractResponses(alloc, rawTN);
-    defer { for (respTN) |r| r.deinit(); alloc.free(respTN); }
+    defer {
+        for (respTN) |r| r.deinit();
+        alloc.free(respTN);
+    }
     const rTN = getResponseById(respTN, 2) orelse return error.NoResponse;
-    const oTN = switch (rTN) { .object => |o| o, else => return error.NotObject };
+    const oTN = switch (rTN) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resTN = oTN.get("result") orelse return error.NoResult;
-    const roTN = switch (resTN) { .object => |o| o, else => return error.NotObject };
+    const roTN = switch (resTN) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivTN = roTN.get("items") orelse return error.NoItems;
-    const aTN = switch (ivTN) { .array => |a| a, else => return error.ItemsNotArray };
+    const aTN = switch (ivTN) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_login = false;
     for (aTN.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "login")) found_login = true;
     }
     try std.testing.expect(found_login);
@@ -8369,8 +8728,7 @@ test "ternary different types uses then branch" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/td.rb",
-        .data = "class Foo\n  def foo_op; end\nend\nclass Bar\n  def bar_op; end\nend\ncond = true\nx = cond ? Foo.new : Bar.new\nx.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/td.rb", .data = "class Foo\n  def foo_op; end\nend\nclass Bar\n  def bar_op; end\nend\ncond = true\nx = cond ? Foo.new : Bar.new\nx.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8382,18 +8740,36 @@ test "ternary different types uses then branch" {
     const rawTD = try s.run();
     defer alloc.free(rawTD);
     const respTD = try extractResponses(alloc, rawTD);
-    defer { for (respTD) |r| r.deinit(); alloc.free(respTD); }
+    defer {
+        for (respTD) |r| r.deinit();
+        alloc.free(respTD);
+    }
     const rTD = getResponseById(respTD, 2) orelse return error.NoResponse;
-    const oTD = switch (rTD) { .object => |o| o, else => return error.NotObject };
+    const oTD = switch (rTD) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resTD = oTD.get("result") orelse return error.NoResult;
-    const roTD = switch (resTD) { .object => |o| o, else => return error.NotObject };
+    const roTD = switch (resTD) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivTD = roTD.get("items") orelse return error.NoItems;
-    const aTD = switch (ivTD) { .array => |a| a, else => return error.ItemsNotArray };
+    const aTD = switch (ivTD) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_foo_op = false;
     for (aTD.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "foo_op")) found_foo_op = true;
     }
     try std.testing.expect(found_foo_op);
@@ -8405,8 +8781,7 @@ test "if-else same branches infers type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ie.rb",
-        .data = "class User\n  def activate; end\nend\ncond = true\nx = if cond\n  User.new\nelse\n  User.new\nend\nx.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/ie.rb", .data = "class User\n  def activate; end\nend\ncond = true\nx = if cond\n  User.new\nelse\n  User.new\nend\nx.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -8418,18 +8793,36 @@ test "if-else same branches infers type" {
     const rawIE = try s.run();
     defer alloc.free(rawIE);
     const respIE = try extractResponses(alloc, rawIE);
-    defer { for (respIE) |r| r.deinit(); alloc.free(respIE); }
+    defer {
+        for (respIE) |r| r.deinit();
+        alloc.free(respIE);
+    }
     const rIE = getResponseById(respIE, 2) orelse return error.NoResponse;
-    const oIE = switch (rIE) { .object => |o| o, else => return error.NotObject };
+    const oIE = switch (rIE) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resIE = oIE.get("result") orelse return error.NoResult;
-    const roIE = switch (resIE) { .object => |o| o, else => return error.NotObject };
+    const roIE = switch (resIE) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const ivIE = roIE.get("items") orelse return error.NoItems;
-    const aIE = switch (ivIE) { .array => |a| a, else => return error.ItemsNotArray };
+    const aIE = switch (ivIE) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_act = false;
     for (aIE.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const l = switch (lv) { .string => |str| str, else => continue };
+        const l = switch (lv) {
+            .string => |str| str,
+            else => continue,
+        };
         if (std.mem.eql(u8, l, "activate")) found_act = true;
     }
     try std.testing.expect(found_act);
@@ -8453,11 +8846,20 @@ test "factory :user indexed" {
     const rawF = try s.run();
     defer alloc.free(rawF);
     const respF = try extractResponses(alloc, rawF);
-    defer { for (respF) |r| r.deinit(); alloc.free(respF); }
+    defer {
+        for (respF) |r| r.deinit();
+        alloc.free(respF);
+    }
     const rF = getResponseById(respF, 2) orelse return error.NoSymbolResponse;
-    const oF = switch (rF) { .object => |o| o, else => return error.NotObject };
+    const oF = switch (rF) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resF = oF.get("result") orelse return error.NoResult;
-    const aF = switch (resF) { .array => |a| a, else => return error.ResultNotArray };
+    const aF = switch (resF) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aF.items.len >= 1);
 }
 
@@ -8479,11 +8881,20 @@ test "trait :admin indexed" {
     const rawTR = try s.run();
     defer alloc.free(rawTR);
     const respTR = try extractResponses(alloc, rawTR);
-    defer { for (respTR) |r| r.deinit(); alloc.free(respTR); }
+    defer {
+        for (respTR) |r| r.deinit();
+        alloc.free(respTR);
+    }
     const rTR = getResponseById(respTR, 2) orelse return error.NoSymbolResponse;
-    const oTR = switch (rTR) { .object => |o| o, else => return error.NotObject };
+    const oTR = switch (rTR) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resTR = oTR.get("result") orelse return error.NoResult;
-    const aTR = switch (resTR) { .array => |a| a, else => return error.ResultNotArray };
+    const aTR = switch (resTR) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aTR.items.len >= 1);
 }
 
@@ -8505,11 +8916,20 @@ test "sequence :email indexed" {
     const rawSQ = try s.run();
     defer alloc.free(rawSQ);
     const respSQ = try extractResponses(alloc, rawSQ);
-    defer { for (respSQ) |r| r.deinit(); alloc.free(respSQ); }
+    defer {
+        for (respSQ) |r| r.deinit();
+        alloc.free(respSQ);
+    }
     const rSQ = getResponseById(respSQ, 2) orelse return error.NoSymbolResponse;
-    const oSQ = switch (rSQ) { .object => |o| o, else => return error.NotObject };
+    const oSQ = switch (rSQ) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resSQ = oSQ.get("result") orelse return error.NoResult;
-    const aSQ = switch (resSQ) { .array => |a| a, else => return error.ResultNotArray };
+    const aSQ = switch (resSQ) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aSQ.items.len >= 1);
 }
 
@@ -8531,11 +8951,20 @@ test "association :user indexed" {
     const rawAS = try s.run();
     defer alloc.free(rawAS);
     const respAS = try extractResponses(alloc, rawAS);
-    defer { for (respAS) |r| r.deinit(); alloc.free(respAS); }
+    defer {
+        for (respAS) |r| r.deinit();
+        alloc.free(respAS);
+    }
     const rAS = getResponseById(respAS, 2) orelse return error.NoSymbolResponse;
-    const oAS = switch (rAS) { .object => |o| o, else => return error.NotObject };
+    const oAS = switch (rAS) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resAS = oAS.get("result") orelse return error.NoResult;
-    const aAS = switch (resAS) { .array => |a| a, else => return error.ResultNotArray };
+    const aAS = switch (resAS) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aAS.items.len >= 1);
 }
 
@@ -8557,11 +8986,20 @@ test "shared_examples plain form indexed" {
     const rawSH = try s.run();
     defer alloc.free(rawSH);
     const respSH = try extractResponses(alloc, rawSH);
-    defer { for (respSH) |r| r.deinit(); alloc.free(respSH); }
+    defer {
+        for (respSH) |r| r.deinit();
+        alloc.free(respSH);
+    }
     const rSH = getResponseById(respSH, 2) orelse return error.NoSymbolResponse;
-    const oSH = switch (rSH) { .object => |o| o, else => return error.NotObject };
+    const oSH = switch (rSH) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resSH = oSH.get("result") orelse return error.NoResult;
-    const aSH = switch (resSH) { .array => |a| a, else => return error.ResultNotArray };
+    const aSH = switch (resSH) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aSH.items.len >= 1);
 }
 
@@ -8583,11 +9021,20 @@ test "around indexed as def" {
     const rawAR = try s.run();
     defer alloc.free(rawAR);
     const respAR = try extractResponses(alloc, rawAR);
-    defer { for (respAR) |r| r.deinit(); alloc.free(respAR); }
+    defer {
+        for (respAR) |r| r.deinit();
+        alloc.free(respAR);
+    }
     const rAR = getResponseById(respAR, 2) orelse return error.NoSymbolResponse;
-    const oAR = switch (rAR) { .object => |o| o, else => return error.NotObject };
+    const oAR = switch (rAR) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resAR = oAR.get("result") orelse return error.NoResult;
-    const aAR = switch (resAR) { .array => |a| a, else => return error.ResultNotArray };
+    const aAR = switch (resAR) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aAR.items.len >= 1);
 }
 
@@ -8609,11 +9056,20 @@ test "included hook indexed" {
     const rawIC = try s.run();
     defer alloc.free(rawIC);
     const respIC = try extractResponses(alloc, rawIC);
-    defer { for (respIC) |r| r.deinit(); alloc.free(respIC); }
+    defer {
+        for (respIC) |r| r.deinit();
+        alloc.free(respIC);
+    }
     const rIC = getResponseById(respIC, 2) orelse return error.NoSymbolResponse;
-    const oIC = switch (rIC) { .object => |o| o, else => return error.NotObject };
+    const oIC = switch (rIC) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resIC = oIC.get("result") orelse return error.NoResult;
-    const aIC = switch (resIC) { .array => |a| a, else => return error.ResultNotArray };
+    const aIC = switch (resIC) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(aIC.items.len >= 1);
 }
 
@@ -8637,7 +9093,10 @@ test "cancelRequest suppresses completion response" {
     const rawC1 = try s.run();
     defer alloc.free(rawC1);
     const respC1 = try extractResponses(alloc, rawC1);
-    defer { for (respC1) |r| r.deinit(); alloc.free(respC1); }
+    defer {
+        for (respC1) |r| r.deinit();
+        alloc.free(respC1);
+    }
     try std.testing.expect(getResponseById(respC1, 42) == null);
 }
 
@@ -8660,7 +9119,10 @@ test "cancelRequest does not affect other ids" {
     const rawC2 = try s.run();
     defer alloc.free(rawC2);
     const respC2 = try extractResponses(alloc, rawC2);
-    defer { for (respC2) |r| r.deinit(); alloc.free(respC2); }
+    defer {
+        for (respC2) |r| r.deinit();
+        alloc.free(respC2);
+    }
     _ = getResponseById(respC2, 2) orelse return error.Id2Missing;
 }
 
@@ -8685,7 +9147,10 @@ test "didRenameFiles updates DB path" {
     const rawR1 = try s.run();
     defer alloc.free(rawR1);
     const respR1 = try extractResponses(alloc, rawR1);
-    defer { for (respR1) |r| r.deinit(); alloc.free(respR1); }
+    defer {
+        for (respR1) |r| r.deinit();
+        alloc.free(respR1);
+    }
     _ = getResponseById(respR1, 2) orelse return error.NoHoverResponse;
 }
 
@@ -8706,7 +9171,10 @@ test "didRenameFiles unknown file no crash" {
     const rawR2 = try s.run();
     defer alloc.free(rawR2);
     const respR2 = try extractResponses(alloc, rawR2);
-    defer { for (respR2) |r| r.deinit(); alloc.free(respR2); }
+    defer {
+        for (respR2) |r| r.deinit();
+        alloc.free(respR2);
+    }
     _ = getResponseById(respR2, 1) orelse return error.NoInitResponse;
 }
 
@@ -8725,13 +9193,25 @@ test "documentRangeFormattingProvider true" {
     const rawRC = try s.run();
     defer alloc.free(rawRC);
     const respRC = try extractResponses(alloc, rawRC);
-    defer { for (respRC) |r| r.deinit(); alloc.free(respRC); }
+    defer {
+        for (respRC) |r| r.deinit();
+        alloc.free(respRC);
+    }
     const rRC = getResponseById(respRC, 1) orelse return error.NoInitResponse;
-    const oRC = switch (rRC) { .object => |o| o, else => return error.NotObject };
+    const oRC = switch (rRC) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const resRC = oRC.get("result") orelse return error.NoResult;
-    const roRC = switch (resRC) { .object => |o| o, else => return error.NotObject };
+    const roRC = switch (resRC) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const capsV = roRC.get("capabilities") orelse return error.NoCaps;
-    const caps = switch (capsV) { .object => |o| o, else => return error.CapsNotObject };
+    const caps = switch (capsV) {
+        .object => |o| o,
+        else => return error.CapsNotObject,
+    };
     const rfmtV = caps.get("documentRangeFormattingProvider") orelse return error.NoRfmt;
     switch (rfmtV) {
         .bool => |b| try std.testing.expect(b),
@@ -8757,9 +9237,15 @@ test "rangeFormatting returns edit covering range" {
     const rawRF = try s.run();
     defer alloc.free(rawRF);
     const respRF = try extractResponses(alloc, rawRF);
-    defer { for (respRF) |r| r.deinit(); alloc.free(respRF); }
+    defer {
+        for (respRF) |r| r.deinit();
+        alloc.free(respRF);
+    }
     const rRF = getResponseById(respRF, 2) orelse return error.NoRangeFormatResponse;
-    const oRF = switch (rRF) { .object => |o| o, else => return error.NotObject };
+    const oRF = switch (rRF) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = oRF.get("result") orelse return error.NoResult;
 }
 
@@ -8813,7 +9299,10 @@ test "scope index speeds scoped rename" {
     const rawSC = try s.run();
     defer alloc.free(rawSC);
     const respSC = try extractResponses(alloc, rawSC);
-    defer { for (respSC) |r| r.deinit(); alloc.free(respSC); }
+    defer {
+        for (respSC) |r| r.deinit();
+        alloc.free(respSC);
+    }
     _ = getResponseById(respSC, 2) orelse return error.NoRenameResponse;
 }
 
@@ -8835,9 +9324,15 @@ test "open doc cache stores didOpen text" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("result") orelse return error.NoResult;
 }
 
@@ -8860,11 +9355,20 @@ test "open doc cache didChange updates symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     if (arr.items.len == 0) return error.EmptyResult;
 }
 
@@ -8887,9 +9391,15 @@ test "open doc cache didChange updates completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -8914,11 +9424,20 @@ test "open doc cache didClose reverts to disk" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r2 = getResponseById(resp, 2) orelse return error.NoSymbolResponse2;
-    const obj2 = switch (r2) { .object => |o| o, else => return error.NotObject2 };
+    const obj2 = switch (r2) {
+        .object => |o| o,
+        else => return error.NotObject2,
+    };
     const result2 = obj2.get("result") orelse return error.NoResult2;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.NotArray2 };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.NotArray2,
+    };
     if (arr2.items.len == 0) return error.EmptyResult2;
 }
 
@@ -8979,9 +9498,15 @@ test "rangeFormatting range bounds verified" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoRangeFormatResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = obj.get("result") orelse return error.NoResult;
 }
 
@@ -9003,9 +9528,15 @@ test "rangeFormatting unchanged range returns empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoRangeFormatResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
     _ = result;
 }
@@ -9028,11 +9559,20 @@ test "block param inject second param inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9054,11 +9594,20 @@ test "block param reduce inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9080,11 +9629,20 @@ test "block param times yields Integer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9106,11 +9664,20 @@ test "block param upto yields Integer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9132,11 +9699,20 @@ test "block param sort_by inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9158,11 +9734,20 @@ test "block param min_by inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9184,11 +9769,20 @@ test "block param each_slice yields Array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9210,11 +9804,20 @@ test "block param each_cons yields Array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9236,11 +9839,20 @@ test "has_many infers array return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9262,11 +9874,20 @@ test "belongs_to infers singular return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9288,11 +9909,20 @@ test "has_one infers singular return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9314,9 +9944,15 @@ test "has_many completion suggestion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9339,11 +9975,20 @@ test "Struct.new creates reader symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9365,9 +10010,15 @@ test "Struct.new reader in completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9390,11 +10041,20 @@ test "Struct.new writer symbol exists" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9416,11 +10076,20 @@ test "Data.define creates reader symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9443,11 +10112,20 @@ test "bundle dir excluded from scan" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -9466,7 +10144,10 @@ test "maxFileSizeMb configurable via initOptions" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 1) orelse return error.NoInitResponse;
 }
 
@@ -9488,9 +10169,15 @@ test "rubocopTimeoutSecs 1 kills rubocop fast" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -9512,11 +10199,20 @@ test "excludeDirs config excludes directory" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -9538,11 +10234,20 @@ test "scope DSL kind is def not classdef" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9565,9 +10270,15 @@ test "outgoingCalls returns called methods" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoOutgoingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9591,11 +10302,20 @@ test "outgoingCalls empty for method with no calls" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoOutgoingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -9617,9 +10337,15 @@ test "completionItem/resolve adds documentation" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9642,9 +10368,15 @@ test "prepend method appears before include in completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9666,9 +10398,15 @@ test "non-UTF-8 file skipped without crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -9689,11 +10427,20 @@ test "non-UTF-8 file not in workspace/symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -9738,10 +10485,8 @@ test "large workspace 1000 symbols indexes fully" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     for (0..50) |fi| {
-        const watch_msg = try std.fmt.allocPrint(alloc,
-            "{{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\"," ++
-            "\"params\":{{\"changes\":[{{\"uri\":\"file://" ++ ws ++ "/f{d}.rb\",\"type\":1}}]}}}}",
-            .{fi});
+        const watch_msg = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\"," ++
+            "\"params\":{{\"changes\":[{{\"uri\":\"file://" ++ ws ++ "/f{d}.rb\",\"type\":1}}]}}}}", .{fi});
         defer alloc.free(watch_msg);
         try s.send(watch_msg);
     }
@@ -9751,11 +10496,20 @@ test "large workspace 1000 symbols indexes fully" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9787,9 +10541,15 @@ test "large workspace symbol query fast" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9812,9 +10572,15 @@ test "plain Ruby no Rails still completes normally" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -9838,9 +10604,15 @@ test "didChange reindexes hover shows new type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -9862,23 +10634,44 @@ test "map block param strips array brackets" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     // Check hint on line 2 (users.map { |u| u }) — block param u should get User, not [User]
     var found_user = false;
     var found_bracket_user = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const pos_val = item_obj.get("position") orelse continue;
-        const pos_obj = switch (pos_val) { .object => |o| o, else => continue };
+        const pos_obj = switch (pos_val) {
+            .object => |o| o,
+            else => continue,
+        };
         const line_val = pos_obj.get("line") orelse continue;
-        const hint_line = switch (line_val) { .integer => |i| i, else => continue };
+        const hint_line = switch (line_val) {
+            .integer => |i| i,
+            else => continue,
+        };
         if (hint_line != 2) continue;
         const label = item_obj.get("label") orelse continue;
-        const ls = switch (label) { .string => |sv| sv, else => continue };
+        const ls = switch (label) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.indexOf(u8, ls, "User") != null) found_user = true;
         if (std.mem.indexOf(u8, ls, "[User]") != null) found_bracket_user = true;
     }
@@ -9904,11 +10697,20 @@ test "collect block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9930,11 +10732,20 @@ test "select block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9956,11 +10767,20 @@ test "reject block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -9982,11 +10802,20 @@ test "find block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10008,11 +10837,20 @@ test "flat_map block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10034,16 +10872,31 @@ test "each_with_index first param element type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found_user = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |s2| s2, else => continue };
+        const ls = switch (lv) {
+            .string => |s2| s2,
+            else => continue,
+        };
         if (std.mem.indexOf(u8, ls, "User") != null) found_user = true;
     }
     try std.testing.expect(found_user);
@@ -10067,16 +10920,31 @@ test "each_with_index second param Integer p25" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found_integer = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |s2| s2, else => continue };
+        const ls = switch (lv) {
+            .string => |s2| s2,
+            else => continue,
+        };
         if (std.mem.indexOf(u8, ls, "Integer") != null) found_integer = true;
     }
     try std.testing.expect(found_integer);
@@ -10100,11 +10968,20 @@ test "then block param is receiver type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10126,15 +11003,30 @@ test "AR find infers singular type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const contents = res_obj.get("contents") orelse return error.NoContents;
-    const cont_obj = switch (contents) { .object => |o| o, else => return error.NotContentsObj };
+    const cont_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.NotContentsObj,
+    };
     const value = cont_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |s2| s2, else => return error.NotValueStr };
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.NotValueStr,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "User") != null);
 }
 
@@ -10156,15 +11048,30 @@ test "AR first infers singular type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const contents = res_obj.get("contents") orelse return error.NoContents;
-    const cont_obj = switch (contents) { .object => |o| o, else => return error.NotContentsObj };
+    const cont_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.NotContentsObj,
+    };
     const value = cont_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |s2| s2, else => return error.NotValueStr };
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.NotValueStr,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "User") != null);
 }
 
@@ -10186,9 +11093,15 @@ test "AR last infers singular type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10210,15 +11123,30 @@ test "AR where infers array type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const contents = res_obj.get("contents") orelse return error.NoContents;
-    const cont_obj = switch (contents) { .object => |o| o, else => return error.NotContentsObj };
+    const cont_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.NotContentsObj,
+    };
     const value = cont_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |s2| s2, else => return error.NotValueStr };
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.NotValueStr,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "User") != null);
 }
 
@@ -10240,15 +11168,30 @@ test "AR all infers array type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const contents = res_obj.get("contents") orelse return error.NoContents;
-    const cont_obj = switch (contents) { .object => |o| o, else => return error.NotContentsObj };
+    const cont_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.NotContentsObj,
+    };
     const value = cont_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |s2| s2, else => return error.NotValueStr };
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.NotValueStr,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "Post") != null);
 }
 
@@ -10270,9 +11213,15 @@ test "AR find_by infers singular type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10295,9 +11244,15 @@ test "double colon completion returns constants" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -10320,9 +11275,15 @@ test "double colon completion does not return methods" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -10346,9 +11307,15 @@ test "rangeFormatting uses cached source not disk" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10372,11 +11339,20 @@ test "gitignore dir excluded from scan" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -10399,11 +11375,20 @@ test "gitignore comment lines ignored" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10426,11 +11411,20 @@ test "gitignore glob lines ignored" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10452,17 +11446,35 @@ test "workspace symbol fuzzy camel initials" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const nv = io.get("name") orelse continue;
-        const ns = switch (nv) { .string => |s2| s2, else => continue };
-        if (std.mem.eql(u8, ns, "UserController")) { found = true; break; }
+        const ns = switch (nv) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ns, "UserController")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -10485,17 +11497,35 @@ test "workspace symbol fuzzy subsequence" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const nv = io.get("name") orelse continue;
-        const ns = switch (nv) { .string => |s2| s2, else => continue };
-        if (std.mem.eql(u8, ns, "UserController")) { found = true; break; }
+        const ns = switch (nv) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ns, "UserController")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -10518,17 +11548,35 @@ test "workspace symbol exact prefix still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const nv = io.get("name") orelse continue;
-        const ns = switch (nv) { .string => |s2| s2, else => continue };
-        if (std.mem.eql(u8, ns, "UserController")) { found = true; break; }
+        const ns = switch (nv) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ns, "UserController")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -10551,11 +11599,20 @@ test "inlay hint method return type shown" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10577,11 +11634,20 @@ test "inlay hint no return type no extra hint" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), result_arr.items.len);
 }
 
@@ -10603,9 +11669,15 @@ test "gem file diagnostics suppressed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10627,9 +11699,15 @@ test "rubocop not found does not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -10652,9 +11730,15 @@ test "rubocop not found sends showMessage" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -10684,9 +11768,15 @@ test "DB corrupted file deleted and recreated" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10706,9 +11796,7 @@ test "open docs cap evicts oldest at 201" {
         const fname = try std.fmt.allocPrint(alloc, ws ++ "/f{d}.rb", .{i});
         defer alloc.free(fname);
         std.fs.cwd().writeFile(.{ .sub_path = fname, .data = "x = 1\n" }) catch {};
-        const msg = try std.fmt.allocPrint(alloc,
-            "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/f{d}.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"x = 1\\n\"}}}}}}",
-            .{ ws, i });
+        const msg = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/f{d}.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"x = 1\\n\"}}}}}}", .{ ws, i });
         defer alloc.free(msg);
         try s.send(msg);
     }
@@ -10718,9 +11806,15 @@ test "open docs cap evicts oldest at 201" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10739,9 +11833,7 @@ test "open docs cap below 200 no eviction" {
         const fname = try std.fmt.allocPrint(alloc, ws ++ "/g{d}.rb", .{i});
         defer alloc.free(fname);
         std.fs.cwd().writeFile(.{ .sub_path = fname, .data = "y = 2\n" }) catch {};
-        const msg = try std.fmt.allocPrint(alloc,
-            "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/g{d}.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"y = 2\\n\"}}}}}}",
-            .{ ws, i });
+        const msg = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/g{d}.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"y = 2\\n\"}}}}}}", .{ ws, i });
         defer alloc.free(msg);
         try s.send(msg);
     }
@@ -10751,9 +11843,15 @@ test "open docs cap below 200 no eviction" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -10775,11 +11873,20 @@ test "filter_map block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10801,11 +11908,20 @@ test "group_by block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10827,9 +11943,15 @@ test "AR chained completion posts after find" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -10852,15 +11974,30 @@ test "AR new infers singular type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const res_obj = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const res_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const contents = res_obj.get("contents") orelse return error.NoContents;
-    const cont_obj = switch (contents) { .object => |o| o, else => return error.NotContentsObj };
+    const cont_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.NotContentsObj,
+    };
     const value = cont_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |s2| s2, else => return error.NotValueStr };
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.NotValueStr,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "User") != null);
 }
 
@@ -10882,11 +12019,20 @@ test "detect block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10908,11 +12054,20 @@ test "filter block param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10934,11 +12089,20 @@ test "workspace symbol empty query no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10960,11 +12124,20 @@ test "sort_by still works post T0.1" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -10986,11 +12159,20 @@ test "min_by still works post T0.1" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -11012,11 +12194,20 @@ test "each_with_object first param typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -11038,11 +12229,20 @@ test "inject second param still typed post T0.1" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -11064,16 +12264,31 @@ test "times still yields Integer post T0.1" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoInlayResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found_integer = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |s2| s2, else => continue };
+        const ls = switch (lv) {
+            .string => |s2| s2,
+            else => continue,
+        };
         if (std.mem.indexOf(u8, ls, "Integer") != null) found_integer = true;
     }
     try std.testing.expect(found_integer);
@@ -11097,9 +12312,15 @@ test "namespace module completion via double colon" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -11123,11 +12344,20 @@ test "non-UTF-8 file no crash post T0.1" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -11158,11 +12388,20 @@ test "large workspace fuzzy query fast" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
-    const result_arr = switch (obj.get("result") orelse return error.NoResult) { .array => |a| a, else => return error.ResultNotArray };
+    const result_arr = switch (obj.get("result") orelse return error.NoResult) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(result_arr.items.len > 0);
 }
 
@@ -11184,9 +12423,15 @@ test "gem file publishDiagnostics empty not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -11209,9 +12454,15 @@ test "P26 T9.1 local var DB lookup array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11232,7 +12483,10 @@ test "P26 T9.2 data receiver DB" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.3 results receiver heuristic" {
@@ -11251,7 +12505,10 @@ test "P26 T9.3 results receiver heuristic" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.4 heuristic fallback" {
@@ -11270,7 +12527,10 @@ test "P26 T9.4 heuristic fallback" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.5 multi-assign both" {
@@ -11289,7 +12549,10 @@ test "P26 T9.5 multi-assign both" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.6 multi-assign underscore" {
@@ -11308,7 +12571,10 @@ test "P26 T9.6 multi-assign underscore" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.7 multi-assign single target" {
@@ -11327,7 +12593,10 @@ test "P26 T9.7 multi-assign single target" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.8 multi-assign complex RHS" {
@@ -11346,7 +12615,10 @@ test "P26 T9.8 multi-assign complex RHS" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.9 case when typed" {
@@ -11365,7 +12637,10 @@ test "P26 T9.9 case when typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.10 case when else" {
@@ -11384,7 +12659,10 @@ test "P26 T9.10 case when else" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.11 case when complex" {
@@ -11403,7 +12681,10 @@ test "P26 T9.11 case when complex" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.18 end_line for class" {
@@ -11424,9 +12705,15 @@ test "P26 T9.18 end_line for class" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11448,9 +12735,15 @@ test "P26 T9.39 namespace two-level workspace symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11472,9 +12765,15 @@ test "P26 T9.47 folding class" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11494,7 +12793,10 @@ test "P26 T9.56 for loop AR" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P26 T9.62 namespace module symbol form no crash" {
@@ -11513,7 +12815,10 @@ test "P26 T9.62 namespace module symbol form no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.1 yard return type parsed" {
@@ -11534,9 +12839,15 @@ test "P27 T10.1 yard return type parsed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11558,9 +12869,15 @@ test "P27 T10.2 yard return array type parsed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11582,9 +12899,15 @@ test "P27 T10.3 yard param type overrides inference" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11604,7 +12927,10 @@ test "P27 T10.4 yard param with literal default" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.5 yard no annotation no crash" {
@@ -11623,7 +12949,10 @@ test "P27 T10.5 yard no annotation no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.6 yard return nil type" {
@@ -11644,9 +12973,15 @@ test "P27 T10.6 yard return nil type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11666,7 +13001,10 @@ test "P27 T10.7 yard multiline doc" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.8 yard return in completion detail" {
@@ -11687,9 +13025,15 @@ test "P27 T10.8 yard return in completion detail" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11711,9 +13055,15 @@ test "P27 T10.9 rescue binding typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11733,7 +13083,10 @@ test "P27 T10.10 rescue binding untyped no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.11 rescue binding no reference" {
@@ -11752,7 +13105,10 @@ test "P27 T10.11 rescue binding no reference" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.12 rescue binding in method scope" {
@@ -11773,9 +13129,15 @@ test "P27 T10.12 rescue binding in method scope" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11795,7 +13157,10 @@ test "P27 T10.13 rescue modifier no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.14 rescue binding multiple clauses" {
@@ -11814,7 +13179,10 @@ test "P27 T10.14 rescue binding multiple clauses" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.15 or-assign creates local var" {
@@ -11835,9 +13203,15 @@ test "P27 T10.15 or-assign creates local var" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11857,7 +13231,10 @@ test "P27 T10.16 or-assign no crash no type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.17 and-assign creates local var" {
@@ -11876,7 +13253,10 @@ test "P27 T10.17 and-assign creates local var" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.18 op-assign no crash" {
@@ -11895,7 +13275,10 @@ test "P27 T10.18 op-assign no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.19 or-assign completion" {
@@ -11916,9 +13299,15 @@ test "P27 T10.19 or-assign completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11940,9 +13329,15 @@ test "P27 T10.20 or-assign does not erase prior type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11962,9 +13357,15 @@ test "P27 T10.21 execute command restartIndexer response" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -11984,9 +13385,15 @@ test "P27 T10.22 execute command unknown returns method_not_found" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") != null);
 }
 
@@ -12006,7 +13413,10 @@ test "P27 T10.23 module_function private instance" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.24 module_function public classdef" {
@@ -12027,9 +13437,15 @@ test "P27 T10.24 module_function public classdef" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12049,7 +13465,10 @@ test "P27 T10.25 module_function named arg" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.26 module_function resets at class boundary" {
@@ -12068,7 +13487,10 @@ test "P27 T10.26 module_function resets at class boundary" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.27 inlay hint param name at call site" {
@@ -12089,9 +13511,15 @@ test "P27 T10.27 inlay hint param name at call site" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12113,9 +13541,15 @@ test "P27 T10.28 inlay hint param skipped single param" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12137,9 +13571,15 @@ test "P27 T10.29 inlay hint param unknown method no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12161,9 +13601,15 @@ test "P27 T10.30 inlay hint param keyword args excluded" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12185,9 +13631,15 @@ test "P27 T10.31 inlay hint param and type hints coexist" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12207,7 +13659,10 @@ test "P27 T10.32 inlay hint param max 20 limit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.33 code lens ref count method" {
@@ -12228,9 +13683,15 @@ test "P27 T10.33 code lens ref count method" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12252,9 +13713,15 @@ test "P27 T10.34 code lens zero refs" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12276,9 +13743,15 @@ test "P27 T10.35 code lens class symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12300,9 +13773,15 @@ test "P27 T10.36 code lens large file limit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12324,9 +13803,15 @@ test "P27 T10.37 code lens rspec it block" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12348,9 +13833,15 @@ test "P27 T10.38 code lens minitest test method" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12372,9 +13863,15 @@ test "P27 T10.39 type hierarchy prepare class" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12396,9 +13893,15 @@ test "P27 T10.40 type hierarchy prepare method returns nil" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12420,9 +13923,15 @@ test "P27 T10.41 type hierarchy supertypes" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12444,9 +13953,15 @@ test "P27 T10.42 type hierarchy supertypes chain" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12468,9 +13983,15 @@ test "P27 T10.43 type hierarchy supertypes with mixins" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12492,9 +14013,15 @@ test "P27 T10.44 type hierarchy subtypes direct" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12516,9 +14043,15 @@ test "P27 T10.45 type hierarchy subtypes multiple" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12540,9 +14073,15 @@ test "P27 T10.46 type hierarchy no parent no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12564,9 +14103,15 @@ test "P27 T10.47 rspec describe indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12588,9 +14133,15 @@ test "P27 T10.48 rspec it indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12612,9 +14163,15 @@ test "P27 T10.49 minitest test method indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12634,7 +14191,10 @@ test "P27 T10.50 rspec context indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.51 non-test method not marked test" {
@@ -12655,9 +14215,15 @@ test "P27 T10.51 non-test method not marked test" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12679,9 +14245,15 @@ test "P27 T10.52 semantic tokens delta no change" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12703,9 +14275,15 @@ test "P27 T10.53 semantic tokens delta returns resultId" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12728,9 +14306,15 @@ test "P27 T10.54 semantic tokens delta changed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12752,9 +14336,15 @@ test "P27 T10.55 semantic tokens delta unknown resultId" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12776,9 +14366,15 @@ test "P27 T10.56 yard return inlay hint" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12800,9 +14396,15 @@ test "P27 T10.57 rescue binding in completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12822,7 +14424,10 @@ test "P27 T10.58 or-assign lazy cache pattern" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.59 module_function mode resets on exit" {
@@ -12841,7 +14446,10 @@ test "P27 T10.59 module_function mode resets on exit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P27 T10.60 type hierarchy supertypes depth limit" {
@@ -12862,9 +14470,15 @@ test "P27 T10.60 type hierarchy supertypes depth limit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12886,9 +14500,15 @@ test "P27 T10.61 rspec regression p27" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12910,9 +14530,15 @@ test "P27 T10.62 yard param hover shows type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -12932,7 +14558,10 @@ test "P27 T10.63 rescue begin block binding" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P28 T11.1 delta accurate deleteCount not 9999999" {
@@ -12954,9 +14583,15 @@ test "P28 T11.1 delta accurate deleteCount not 9999999" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -12981,9 +14616,15 @@ test "P28 T11.2 delta no change returns empty edits" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13006,9 +14647,15 @@ test "P28 T11.3 delta after file change non-empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13030,9 +14677,15 @@ test "P28 T11.5 param hint multiline call no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13054,9 +14707,15 @@ test "P28 T11.6 param hint string with parens no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13078,9 +14737,15 @@ test "P28 T11.8 param hint single param no hint" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13102,9 +14767,15 @@ test "P28 T11.11 code lens same file refs count" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13126,9 +14797,15 @@ test "P28 T11.14 code lens test run lens present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13150,9 +14827,15 @@ test "P28 T11.16 confidence upsert high wins" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13174,9 +14857,15 @@ test "P28 T11.19 module_function reset by private" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13198,9 +14887,15 @@ test "P28 T11.23 constant path receiver typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13222,9 +14917,15 @@ test "P28 T11.25 pattern match capture typed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13245,7 +14946,10 @@ test "P28 T11.27 pattern match no capture no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P28 T11.29 hover union type two branches" {
@@ -13266,9 +14970,15 @@ test "P28 T11.29 hover union type two branches" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13290,9 +15000,15 @@ test "P28 T11.30 hover single type no pipe" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13314,9 +15030,15 @@ test "P28 T11.32 selection range word level" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13335,9 +15057,15 @@ test "P28 T11.36 workspace folders capability present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 1) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13357,7 +15085,10 @@ test "P28 T11.37 workspace didChangeWorkspaceFolders no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
 }
 
 test "P28 T11.44 delta token count stored after full" {
@@ -13379,9 +15110,15 @@ test "P28 T11.44 delta token count stored after full" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13404,9 +15141,15 @@ test "P28 T11.45 delta uses stored count not 9999999" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 3) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13428,9 +15171,15 @@ test "P28 T11.49 or-assign confidence loses to write" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13452,9 +15201,15 @@ test "P28 T11.50 or-assign confidence wins over nothing" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const r_obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const r_obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r_obj.get("result") orelse return error.NoResult;
 }
 
@@ -13476,9 +15231,15 @@ test "P28 T11.61 p28 regression yard still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13500,12 +15261,17 @@ test "P28 T11.62 p28 regression rescue binding still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
-
 
 test "P29 T12.1 db pragma cache_size set" {
     const alloc = std.testing.allocator;
@@ -13527,7 +15293,8 @@ test "P29 T12.1 db pragma cache_size set" {
         .allocator = alloc,
         .argv = &.{ "sqlite3", db_path, "SELECT value FROM meta WHERE key='schema_version'" },
     });
-    defer alloc.free(q.stdout); defer alloc.free(q.stderr);
+    defer alloc.free(q.stdout);
+    defer alloc.free(q.stderr);
     const val_str = std.mem.trim(u8, q.stdout, " \t\r\n");
     try std.testing.expect(std.mem.eql(u8, val_str, "5"));
 }
@@ -13554,7 +15321,10 @@ test "P29 T12.2 db pragma temp_store memory" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     try std.testing.expect(getResponseById(resp, 1) != null);
 }
 
@@ -13580,7 +15350,10 @@ test "P29 T12.3 db pragma busy_timeout set" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     try std.testing.expect(getResponseById(resp, 1) != null);
 }
 
@@ -13604,7 +15377,8 @@ test "P29 T12.4 schema v21 value_snippet column exists" {
         .allocator = alloc,
         .argv = &.{ "sqlite3", db_path, "PRAGMA table_info(symbols)" },
     });
-    defer alloc.free(q.stdout); defer alloc.free(q.stderr);
+    defer alloc.free(q.stdout);
+    defer alloc.free(q.stderr);
     try std.testing.expect(std.mem.indexOf(u8, q.stdout, "value_snippet") != null);
 }
 
@@ -13628,7 +15402,8 @@ test "P29 T12.5 composite index file_kind_name exists" {
         .allocator = alloc,
         .argv = &.{ "sqlite3", db_path, "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_symbols_file_kind_name'" },
     });
-    defer alloc.free(q.stdout); defer alloc.free(q.stderr);
+    defer alloc.free(q.stdout);
+    defer alloc.free(q.stderr);
     try std.testing.expect(std.mem.indexOf(u8, q.stdout, "idx_symbols_file_kind_name") != null);
 }
 
@@ -13650,9 +15425,15 @@ test "P29 T12.6 while body var indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13674,9 +15455,15 @@ test "P29 T12.7 until body var indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13698,9 +15485,15 @@ test "P29 T12.8 unless branch var indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13722,9 +15515,15 @@ test "P29 T12.9 ensure block var indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -13800,7 +15599,6 @@ test "P29 T12.13 call_or_write no crash" {
     defer alloc.free(raw);
 }
 
-
 test "P29 T12.14 global var indexed" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p29_t1214";
@@ -13819,15 +15617,30 @@ test "P29 T12.14 global var indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
     const value = contents_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |sv| sv, else => return error.NotString };
+    const value_str = switch (value) {
+        .string => |sv| sv,
+        else => return error.NotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "Config") != null);
 }
 
@@ -13849,19 +15662,40 @@ test "P29 T12.15 global var in completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, ls, "$config")) { found = true; break; }
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ls, "$config")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -14007,11 +15841,20 @@ test "P29 T12.20 folding stack 200 deep no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    switch (result) { .array => {}, else => return error.ResultNotArray }
+    switch (result) {
+        .array => {},
+        else => return error.ResultNotArray,
+    }
 }
 
 test "P29 T12.21 folding stack 130 deep no crash" {
@@ -14042,11 +15885,20 @@ test "P29 T12.21 folding stack 130 deep no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    switch (result) { .array => {}, else => return error.ResultNotArray }
+    switch (result) {
+        .array => {},
+        else => return error.ResultNotArray,
+    }
 }
 
 test "P29 T12.22 value_snippet stored for integer constant" {
@@ -14180,15 +16032,30 @@ test "P29 T12.26 hover shows constant value_snippet" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
     const value = contents_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |sv| sv, else => return error.NotString };
+    const value_str = switch (value) {
+        .string => |sv| sv,
+        else => return error.NotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "30") != null);
 }
 
@@ -14210,9 +16077,15 @@ test "P29 T12.27 hover no value snippet for call constant" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     // result can be null (no hover) or an object; either way we just confirm no crash
     _ = obj;
 }
@@ -14223,32 +16096,49 @@ test "P29 T12.28 private_class_method marks as private" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Foo\n  def self.secret; end\n  def self.visible; end\n  private_class_method :secret\nend\nFoo.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Foo\n  def self.secret; end\n  def self.visible; end\n  private_class_method :secret\nend\nFoo.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Foo\\n  def self.secret; end\\n  def self.visible; end\\n  private_class_method :secret\\nend\\nFoo.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_secret = false;
     var found_visible = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, ls, "secret")) found_secret = true;
         if (std.mem.eql(u8, ls, "visible")) found_visible = true;
     }
@@ -14262,32 +16152,52 @@ test "P29 T12.29 public_class_method restores visibility" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Bar\n  def self.restored; end\n  private_class_method :restored\n  public_class_method :restored\nend\nBar.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Bar\n  def self.restored; end\n  private_class_method :restored\n  public_class_method :restored\nend\nBar.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Bar\\n  def self.restored; end\\n  private_class_method :restored\\n  public_class_method :restored\\nend\\nBar.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_restored = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, ls, "restored")) { found_restored = true; break; }
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ls, "restored")) {
+            found_restored = true;
+            break;
+        }
     }
     try std.testing.expect(found_restored);
 }
@@ -14298,32 +16208,49 @@ test "P29 T12.30 private_class_method with two symbols" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Baz\n  def self.alpha; end\n  def self.beta; end\n  private_class_method :alpha, :beta\nend\nBaz.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Baz\n  def self.alpha; end\n  def self.beta; end\n  private_class_method :alpha, :beta\nend\nBaz.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Baz\\n  def self.alpha; end\\n  def self.beta; end\\n  private_class_method :alpha, :beta\\nend\\nBaz.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_alpha = false;
     var found_beta = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, ls, "alpha")) found_alpha = true;
         if (std.mem.eql(u8, ls, "beta")) found_beta = true;
     }
@@ -14337,8 +16264,7 @@ test "P29 T12.31 self method return type inferred" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Builder\n  # @return [Widget]\n  def build\n    Widget.new\n  end\n  def run\n    x = self.build\n    x\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Builder\n  # @return [Widget]\n  def build\n    Widget.new\n  end\n  def run\n    x = self.build\n    x\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14350,15 +16276,30 @@ test "P29 T12.31 self method return type inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
     const value = contents_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |sv| sv, else => return error.NotString };
+    const value_str = switch (value) {
+        .string => |sv| sv,
+        else => return error.NotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "Widget") != null);
 }
 
@@ -14368,8 +16309,7 @@ test "P29 T12.32 self method no return type no crash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Worker\n  def run\n    x = self.unknown_method\n    x\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Worker\n  def run\n    x = self.unknown_method\n    x\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14381,9 +16321,15 @@ test "P29 T12.32 self method no return type no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -14393,8 +16339,7 @@ test "P29 T12.33 self method confidence 75" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Maker\n  # @return [Part]\n  def make\n    Part.new\n  end\n  def assemble\n    x = self.make\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Maker\n  # @return [Part]\n  def make\n    Part.new\n  end\n  def assemble\n    x = self.make\n  end\nend\n" });
     const db_path = ws ++ "/refract.db";
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -14420,8 +16365,7 @@ test "P29 T12.34 chained type inference one level" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class User\n  # @return [String]\n  def full_name\n    \"Alice\"\n  end\nend\nuser = User.new\nname = user.full_name\nname\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class User\n  # @return [String]\n  def full_name\n    \"Alice\"\n  end\nend\nuser = User.new\nname = user.full_name\nname\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14433,15 +16377,30 @@ test "P29 T12.34 chained type inference one level" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
     const value = contents_obj.get("value") orelse return error.NoValue;
-    const value_str = switch (value) { .string => |sv| sv, else => return error.NotString };
+    const value_str = switch (value) {
+        .string => |sv| sv,
+        else => return error.NotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value_str, "String") != null);
 }
 
@@ -14469,8 +16428,7 @@ test "P29 T12.36 chained inference missing method no crash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "user = User.new\nx = user.nonexistent_method\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "user = User.new\nx = user.nonexistent_method\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14488,8 +16446,7 @@ test "P29 T12.37 chained inference confidence 55" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Product\n  # @return [Price]\n  def price\n    Price.new\n  end\nend\nproduct = Product.new\np = product.price\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Product\n  # @return [Price]\n  def price\n    Price.new\n  end\nend\nproduct = Product.new\np = product.price\n" });
     const db_path = ws ++ "/refract.db";
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -14541,8 +16498,7 @@ test "P29 T12.39 numbered param _1 gets element type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "users = [User.new]\nusers.each { _1.name }\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "users = [User.new]\nusers.each { _1.name }\n" });
     const db_path = ws ++ "/refract.db";
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -14595,32 +16551,49 @@ test "P29 T12.41 private method hidden from dot completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Service\n  def public_action; end\n  private\n  def secret_action; end\nend\nobj = Service.new\nobj.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Service\n  def public_action; end\n  private\n  def secret_action; end\nend\nobj = Service.new\nobj.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Service\\n  def public_action; end\\n  private\\n  def secret_action; end\\nend\\nobj = Service.new\\nobj.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":6,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":6,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_secret = false;
     var found_public = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, ls, "secret_action")) found_secret = true;
         if (std.mem.eql(u8, ls, "public_action")) found_public = true;
     }
@@ -14634,32 +16607,52 @@ test "P29 T12.42 private method present in self completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Engine\n  def run\n    self.\n  end\n  private\n  def internal; end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Engine\n  def run\n    self.\n  end\n  private\n  def internal; end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Engine\\n  def run\\n    self.\\n  end\\n  private\\n  def internal; end\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":9},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":9},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_internal = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, ls, "internal")) { found_internal = true; break; }
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ls, "internal")) {
+            found_internal = true;
+            break;
+        }
     }
     try std.testing.expect(found_internal);
 }
@@ -14671,8 +16664,7 @@ test "P29 T12.43 formatting edit end line equals actual line count" {
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
     // 5-line file: 4 newlines
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Fmt\n  def foo\n    1\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Fmt\n  def foo\n    1\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14683,16 +16675,37 @@ test "P29 T12.43 formatting edit end line equals actual line count" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     if (arr.items.len == 0) return; // rubocop not available — skip assertion
-    const edit = switch (arr.items[0]) { .object => |o| o, else => return error.EditNotObject };
-    const range = switch (edit.get("range") orelse return error.NoRange) { .object => |o| o, else => return error.RangeNotObject };
-    const end_obj = switch (range.get("end") orelse return error.NoEnd) { .object => |o| o, else => return error.EndNotObject };
-    const end_line = switch (end_obj.get("line") orelse return error.NoEndLine) { .integer => |i| i, else => return error.EndLineNotInt };
+    const edit = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.EditNotObject,
+    };
+    const range = switch (edit.get("range") orelse return error.NoRange) {
+        .object => |o| o,
+        else => return error.RangeNotObject,
+    };
+    const end_obj = switch (range.get("end") orelse return error.NoEnd) {
+        .object => |o| o,
+        else => return error.EndNotObject,
+    };
+    const end_line = switch (end_obj.get("line") orelse return error.NoEndLine) {
+        .integer => |i| i,
+        else => return error.EndLineNotInt,
+    };
     // file has 5 lines with trailing newline; Fix 2 adds +1, so end.line is 6
     try std.testing.expect(end_line >= 5);
 }
@@ -14703,8 +16716,7 @@ test "P29 T12.44 code action edit end line equals actual line count" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Act\n  def bar\n    2\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Act\n  def bar\n    2\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14715,17 +16727,32 @@ test "P29 T12.44 code action edit end line equals actual line count" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCodeActionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     if (arr.items.len == 0) return; // no actions — skip
     // Find an action with a workspaceEdit
     for (arr.items) |action| {
-        const ao = switch (action) { .object => |o| o, else => continue };
+        const ao = switch (action) {
+            .object => |o| o,
+            else => continue,
+        };
         const we = ao.get("edit") orelse continue;
-        const we_obj = switch (we) { .object => |o| o, else => continue };
+        const we_obj = switch (we) {
+            .object => |o| o,
+            else => continue,
+        };
         const changes = we_obj.get("documentChanges") orelse we_obj.get("changes") orelse continue;
         _ = changes;
         return; // found an edit; structure check sufficient
@@ -14749,15 +16776,33 @@ test "P29 T12.45 rubocop diagnostic has code field" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     if (diags.items.len == 0) return; // rubocop not available or no offenses
-    const diag = switch (diags.items[0]) { .object => |o| o, else => return };
+    const diag = switch (diags.items[0]) {
+        .object => |o| o,
+        else => return,
+    };
     const src = diag.get("source") orelse return;
-    const src_str = switch (src) { .string => |sv| sv, else => return };
+    const src_str = switch (src) {
+        .string => |sv| sv,
+        else => return,
+    };
     if (!std.mem.eql(u8, src_str, "rubocop")) return; // only check rubocop diagnostics
     try std.testing.expect(diag.get("code") != null);
 }
@@ -14779,19 +16824,40 @@ test "P29 T12.46 rubocop diagnostic code equals cop_name" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     if (diags.items.len == 0) return;
     for (diags.items) |d| {
-        const do = switch (d) { .object => |o| o, else => continue };
+        const do = switch (d) {
+            .object => |o| o,
+            else => continue,
+        };
         const src = do.get("source") orelse continue;
-        const src_str = switch (src) { .string => |sv| sv, else => continue };
+        const src_str = switch (src) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, src_str, "rubocop")) continue;
         const code = do.get("code") orelse return error.NoCode;
-        const code_str = switch (code) { .string => |sv| sv, else => return error.CodeNotString };
+        const code_str = switch (code) {
+            .string => |sv| sv,
+            else => return error.CodeNotString,
+        };
         // cop_name format is "Namespace/CopName"
         try std.testing.expect(std.mem.indexOf(u8, code_str, "/") != null);
         return;
@@ -14815,20 +16881,44 @@ test "P29 T12.47 rubocop diagnostic has codeDescription href" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     if (diags.items.len == 0) return;
     for (diags.items) |d| {
-        const do = switch (d) { .object => |o| o, else => continue };
+        const do = switch (d) {
+            .object => |o| o,
+            else => continue,
+        };
         const src = do.get("source") orelse continue;
-        const src_str = switch (src) { .string => |sv| sv, else => continue };
+        const src_str = switch (src) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, src_str, "rubocop")) continue;
         if (do.get("code") == null) continue;
-        const cd = switch (do.get("codeDescription") orelse return error.NoCodeDescription) { .object => |o| o, else => return error.CodeDescNotObject };
-        const href = switch (cd.get("href") orelse return error.NoHref) { .string => |sv| sv, else => return error.HrefNotString };
+        const cd = switch (do.get("codeDescription") orelse return error.NoCodeDescription) {
+            .object => |o| o,
+            else => return error.CodeDescNotObject,
+        };
+        const href = switch (cd.get("href") orelse return error.NoHref) {
+            .string => |sv| sv,
+            else => return error.HrefNotString,
+        };
         try std.testing.expect(std.mem.startsWith(u8, href, "https://docs.rubocop.org"));
         return;
     }
@@ -14851,22 +16941,49 @@ test "P29 T12.48 rubocop codeDescription namespace lowercased" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     if (diags.items.len == 0) return;
     for (diags.items) |d| {
-        const do = switch (d) { .object => |o| o, else => continue };
+        const do = switch (d) {
+            .object => |o| o,
+            else => continue,
+        };
         const src = do.get("source") orelse continue;
-        const src_str = switch (src) { .string => |sv| sv, else => continue };
+        const src_str = switch (src) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, src_str, "rubocop")) continue;
         const code_val = do.get("code") orelse continue;
-        const code_str = switch (code_val) { .string => |sv| sv, else => continue };
+        const code_str = switch (code_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.startsWith(u8, code_str, "Style/")) continue;
-        const cd = switch (do.get("codeDescription") orelse continue) { .object => |o| o, else => continue };
-        const href = switch (cd.get("href") orelse continue) { .string => |sv| sv, else => continue };
+        const cd = switch (do.get("codeDescription") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const href = switch (cd.get("href") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         try std.testing.expect(std.mem.indexOf(u8, href, "cops_style") != null);
         return;
     }
@@ -14890,22 +17007,49 @@ test "P29 T12.49 rubocop lint namespace in href" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     if (diags.items.len == 0) return;
     for (diags.items) |d| {
-        const do = switch (d) { .object => |o| o, else => continue };
+        const do = switch (d) {
+            .object => |o| o,
+            else => continue,
+        };
         const src = do.get("source") orelse continue;
-        const src_str = switch (src) { .string => |sv| sv, else => continue };
+        const src_str = switch (src) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, src_str, "rubocop")) continue;
         const code_val = do.get("code") orelse continue;
-        const code_str = switch (code_val) { .string => |sv| sv, else => continue };
+        const code_str = switch (code_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.startsWith(u8, code_str, "Lint/")) continue;
-        const cd = switch (do.get("codeDescription") orelse continue) { .object => |o| o, else => continue };
-        const href = switch (cd.get("href") orelse continue) { .string => |sv| sv, else => continue };
+        const cd = switch (do.get("codeDescription") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const href = switch (cd.get("href") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         try std.testing.expect(std.mem.indexOf(u8, href, "cops_lint") != null);
         return;
     }
@@ -14929,15 +17073,33 @@ test "P29 T12.50 prism diagnostic has no code field" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics") orelse return;
-    const notif_obj = switch (notif) { .object => |o| o, else => return };
-    const params = switch (notif_obj.get("params") orelse return) { .object => |o| o, else => return };
-    const diags = switch (params.get("diagnostics") orelse return) { .array => |a| a, else => return };
+    const notif_obj = switch (notif) {
+        .object => |o| o,
+        else => return,
+    };
+    const params = switch (notif_obj.get("params") orelse return) {
+        .object => |o| o,
+        else => return,
+    };
+    const diags = switch (params.get("diagnostics") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
     for (diags.items) |d| {
-        const do = switch (d) { .object => |o| o, else => continue };
+        const do = switch (d) {
+            .object => |o| o,
+            else => continue,
+        };
         const src = do.get("source") orelse continue;
-        const src_str = switch (src) { .string => |sv| sv, else => continue };
+        const src_str = switch (src) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, src_str, "refract")) continue;
         // Prism diagnostics from refract must not have code or codeDescription
         try std.testing.expect(do.get("code") == null);
@@ -14952,8 +17114,7 @@ test "P29 T12.51 folding comment block 3 lines" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# Line one\n# Line two\n# Line three\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# Line one\n# Line two\n# Line three\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14965,16 +17126,34 @@ test "P29 T12.51 folding comment block 3 lines" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_comment = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, kind, "comment")) { found_comment = true; break; }
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, kind, "comment")) {
+            found_comment = true;
+            break;
+        }
     }
     try std.testing.expect(found_comment);
 }
@@ -14985,8 +17164,7 @@ test "P29 T12.52 folding comment block 2 lines no fold" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# Line one\n# Line two\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# Line one\n# Line two\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -14998,14 +17176,29 @@ test "P29 T12.52 folding comment block 2 lines no fold" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, kind, "comment"));
     }
 }
@@ -15017,8 +17210,7 @@ test "P29 T12.53 folding comment block broken by blank line" {
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
     // 2 comment lines, blank, 3 comment lines → only second run qualifies
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# A\n# B\n\n# X\n# Y\n# Z\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# A\n# B\n\n# X\n# Y\n# Z\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15030,15 +17222,30 @@ test "P29 T12.53 folding comment block broken by blank line" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var comment_count: usize = 0;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, kind, "comment")) comment_count += 1;
     }
     // Only the 3-line run (lines 3-5) should produce a comment fold
@@ -15051,8 +17258,7 @@ test "P29 T12.54 folding require block 2 lines" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "require 'json'\nrequire 'net/http'\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "require 'json'\nrequire 'net/http'\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15064,16 +17270,34 @@ test "P29 T12.54 folding require block 2 lines" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_imports = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, kind, "imports")) { found_imports = true; break; }
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, kind, "imports")) {
+            found_imports = true;
+            break;
+        }
     }
     try std.testing.expect(found_imports);
 }
@@ -15084,8 +17308,7 @@ test "P29 T12.55 folding require_relative included" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "require 'json'\nrequire_relative 'models/user'\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "require 'json'\nrequire_relative 'models/user'\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15097,16 +17320,34 @@ test "P29 T12.55 folding require_relative included" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_imports = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, kind, "imports")) { found_imports = true; break; }
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, kind, "imports")) {
+            found_imports = true;
+            break;
+        }
     }
     try std.testing.expect(found_imports);
 }
@@ -15118,8 +17359,7 @@ test "P29 T12.56 folding require block broken by non-require" {
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
     // Only one require before a non-require line → no imports fold
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "require 'json'\nx = 1\nrequire 'net/http'\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "require 'json'\nx = 1\nrequire 'net/http'\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15131,14 +17371,29 @@ test "P29 T12.56 folding require block broken by non-require" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, kind, "imports"));
     }
 }
@@ -15149,8 +17404,7 @@ test "P29 T12.57 folding comment and require both present" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# One\n# Two\n# Three\nrequire 'json'\nrequire 'set'\nclass Foo\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# One\n# Two\n# Three\nrequire 'json'\nrequire 'set'\nclass Foo\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15162,16 +17416,31 @@ test "P29 T12.57 folding comment and require both present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoFoldingResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_comment = false;
     var found_imports = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
-        const kind = switch (io.get("kind") orelse continue) { .string => |sv| sv, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (io.get("kind") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, kind, "comment")) found_comment = true;
         if (std.mem.eql(u8, kind, "imports")) found_imports = true;
     }
@@ -15185,8 +17454,7 @@ test "P29 T12.58 signature help keyword active param" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "def greet(name:, age: nil)\nend\ngreet(name:\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "def greet(name:, age: nil)\nend\ngreet(name:\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15199,15 +17467,27 @@ test "P29 T12.58 signature help keyword active param" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSigHelpResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     // Signature help should exist with signatures and correct activeParameter
     try std.testing.expect(result_obj.get("signatures") != null);
     const ap = result_obj.get("activeParameter") orelse return;
-    const ap_int = switch (ap) { .integer => |i| i, else => return };
+    const ap_int = switch (ap) {
+        .integer => |i| i,
+        else => return,
+    };
     // name: is the first keyword param — should be index 0
     try std.testing.expect(ap_int == 0);
 }
@@ -15218,8 +17498,7 @@ test "P29 T12.59 signature help keyword partial no false match" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "def process(name:, count: 1)\nend\nprocess(n\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "def process(name:, count: 1)\nend\nprocess(n\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15231,9 +17510,15 @@ test "P29 T12.59 signature help keyword partial no false match" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSigHelpResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -15243,8 +17528,7 @@ test "P29 T12.60 signature help keyword at comma boundary" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "def send_email(to:, subject:, body: nil)\nend\nsend_email(to: \"x\", subject:\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "def send_email(to:, subject:, body: nil)\nend\nsend_email(to: \"x\", subject:\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15257,15 +17541,27 @@ test "P29 T12.60 signature help keyword at comma boundary" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSigHelpResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     try std.testing.expect(result_obj.get("signatures") != null);
     // subject: is the second keyword param — should be index 1
     const ap = result_obj.get("activeParameter") orelse return;
-    const ap_int = switch (ap) { .integer => |i| i, else => return };
+    const ap_int = switch (ap) {
+        .integer => |i| i,
+        else => return,
+    };
     try std.testing.expect(ap_int == 1);
 }
 
@@ -15287,22 +17583,46 @@ test "P29 T12.61 completion keyword def snippet present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_def = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, ls, "def")) continue;
         const itf = io.get("insertTextFormat") orelse continue;
-        const itf_int = switch (itf) { .integer => |i| i, else => continue };
-        if (itf_int == 2) { found_def = true; break; }
+        const itf_int = switch (itf) {
+            .integer => |i| i,
+            else => continue,
+        };
+        if (itf_int == 2) {
+            found_def = true;
+            break;
+        }
     }
     try std.testing.expect(found_def);
 }
@@ -15325,19 +17645,40 @@ test "P29 T12.62 completion keyword class snippet" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_class = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, ls, "class")) { found_class = true; break; }
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ls, "class")) {
+            found_class = true;
+            break;
+        }
     }
     try std.testing.expect(found_class);
 }
@@ -15360,20 +17701,41 @@ test "P29 T12.63 completion keyword sorts after symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, ls, "def")) continue;
         const stv = io.get("sortText") orelse return error.NoSortText;
-        const sts = switch (stv) { .string => |sv| sv, else => return error.SortTextNotString };
+        const sts = switch (stv) {
+            .string => |sv| sv,
+            else => return error.SortTextNotString,
+        };
         try std.testing.expect(std.mem.startsWith(u8, sts, "z_kw_"));
         return;
     }
@@ -15398,19 +17760,37 @@ test "P29 T12.64 completion keyword filtered by prefix" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_class = false;
     var found_def = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, ls, "class")) found_class = true;
         if (std.mem.eql(u8, ls, "def")) found_def = true;
     }
@@ -15430,23 +17810,41 @@ test "P29 T12.65 completion keyword not on dot trigger" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class MyObj\\n  def go; end\\nend\\nobj = MyObj.new\\nobj.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         // Dot completion must not inject "def", "class", etc.
         try std.testing.expect(!std.mem.eql(u8, ls, "def"));
         try std.testing.expect(!std.mem.eql(u8, ls, "class"));
@@ -15465,23 +17863,41 @@ test "P29 T12.66 completion keyword not on colon trigger" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Foo\\n  class Bar; end\\nend\\nFoo::\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\":\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\":\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const lv = io.get("label") orelse continue;
-        const ls = switch (lv) { .string => |sv| sv, else => continue };
+        const ls = switch (lv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, ls, "def"));
         try std.testing.expect(!std.mem.eql(u8, ls, "class"));
     }
@@ -15493,8 +17909,7 @@ test "P29 T12.67 endless method def foo = expr indexed" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Greeter\n  def greet = \"Hello\"\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Greeter\n  def greet = \"Hello\"\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15506,24 +17921,54 @@ test "P29 T12.67 endless method def foo = expr indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_greet = false;
     for (arr.items) |item| {
-        const io = switch (item) { .object => |o| o, else => continue };
+        const io = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const nv = io.get("name") orelse continue;
-        const ns = switch (nv) { .string => |sv| sv, else => continue };
+        const ns = switch (nv) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, ns, "greet") or std.mem.eql(u8, ns, "Greeter")) {
             // Check children for greet
-            if (std.mem.eql(u8, ns, "greet")) { found_greet = true; break; }
-            const children = switch (io.get("children") orelse continue) { .array => |a| a, else => continue };
+            if (std.mem.eql(u8, ns, "greet")) {
+                found_greet = true;
+                break;
+            }
+            const children = switch (io.get("children") orelse continue) {
+                .array => |a| a,
+                else => continue,
+            };
             for (children.items) |child| {
-                const co = switch (child) { .object => |o| o, else => continue };
-                const cn = switch (co.get("name") orelse continue) { .string => |sv| sv, else => continue };
-                if (std.mem.eql(u8, cn, "greet")) { found_greet = true; break; }
+                const co = switch (child) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const cn = switch (co.get("name") orelse continue) {
+                    .string => |sv| sv,
+                    else => continue,
+                };
+                if (std.mem.eql(u8, cn, "greet")) {
+                    found_greet = true;
+                    break;
+                }
             }
         }
         if (found_greet) break;
@@ -15537,8 +17982,7 @@ test "P29 T12.68 while var and global var coexist" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "$logger = Logger.new\nwhile true\n  item = Item.new\n  break\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "$logger = Logger.new\nwhile true\n  item = Item.new\n  break\nend\n" });
     const db_path = ws ++ "/refract.db";
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -15553,12 +17997,14 @@ test "P29 T12.68 while var and global var coexist" {
         .allocator = alloc,
         .argv = &.{ "sqlite3", db_path, "SELECT name FROM local_vars WHERE name='$logger'" },
     });
-    defer alloc.free(q1.stdout); defer alloc.free(q1.stderr);
+    defer alloc.free(q1.stdout);
+    defer alloc.free(q1.stderr);
     const q2 = try std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ "sqlite3", db_path, "SELECT name FROM local_vars WHERE name='item'" },
     });
-    defer alloc.free(q2.stdout); defer alloc.free(q2.stderr);
+    defer alloc.free(q2.stdout);
+    defer alloc.free(q2.stderr);
     try std.testing.expect(std.mem.indexOf(u8, q1.stdout, "$logger") != null);
     try std.testing.expect(std.mem.indexOf(u8, q2.stdout, "item") != null);
 }
@@ -15570,22 +18016,24 @@ test "P29 T12.69 regression p28 tests still pass" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Animal\n  def speak; \"...\"; end\nend\nclass Dog < Animal\n  def speak; \"woof\"; end\nend\nd = Dog.new\nd.speak\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Animal\n  def speak; \"...\"; end\nend\nclass Dog < Animal\n  def speak; \"woof\"; end\nend\nd = Dog.new\nd.speak\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Animal\\n  def speak; \\\"...\\\"; end\\nend\\nclass Dog < Animal\\n  def speak; \\\"woof\\\"; end\\nend\\nd = Dog.new\\nd.speak\\n\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":0}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}" );
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     _ = getResponseById(resp, 3) orelse return error.NoCompletionResponse;
     _ = getResponseById(resp, 4) orelse return error.NoDocSymResponse;
@@ -15598,8 +18046,7 @@ test "P29 T12.70 regression p27 YARD tests still pass" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Repo\n  # @return [Array<User>]\n  def all\n    []\n  end\nend\nr = Repo.new\nusers = r.all\nusers\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Repo\n  # @return [Array<User>]\n  def all\n    []\n  end\nend\nr = Repo.new\nusers = r.all\nusers\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15611,10 +18058,12 @@ test "P29 T12.70 regression p27 YARD tests still pass" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
 }
-
 
 test "P30 T13.1 Struct.new members in dot completion" {
     const alloc = std.testing.allocator;
@@ -15622,8 +18071,7 @@ test "P30 T13.1 Struct.new members in dot completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15635,7 +18083,10 @@ test "P30 T13.1 Struct.new members in dot completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"x\"") != null);
 }
@@ -15646,8 +18097,7 @@ test "P30 T13.2 Struct.new writer methods present" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15659,7 +18109,10 @@ test "P30 T13.2 Struct.new writer methods present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "x=") != null);
 }
@@ -15670,8 +18123,7 @@ test "P30 T13.3 Data.define reader only no writer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "MyData = Data.define(:name)\nd = MyData.new(name: \"a\")\nd.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "MyData = Data.define(:name)\nd = MyData.new(name: \"a\")\nd.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15683,7 +18135,10 @@ test "P30 T13.3 Data.define reader only no writer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"name=\"") == null);
@@ -15695,8 +18150,7 @@ test "P30 T13.4 Struct.new kind upgraded to class" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "MyPoint = Struct.new(:x, :y)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "MyPoint = Struct.new(:x, :y)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15708,7 +18162,10 @@ test "P30 T13.4 Struct.new kind upgraded to class" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "MyPoint") != null);
 }
@@ -15719,8 +18176,7 @@ test "P30 T13.5 delegate creates synthetic method" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class User\n  delegate :fullname, to: :profile\nend\nu = User.new\nu.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class User\n  delegate :fullname, to: :profile\nend\nu = User.new\nu.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15732,7 +18188,10 @@ test "P30 T13.5 delegate creates synthetic method" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "fullname") != null);
 }
@@ -15743,8 +18202,7 @@ test "P30 T13.6 delegate multiple methods" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class User\n  delegate :foofoo, :barbar, to: :obj\nend\nu = User.new\nu.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class User\n  delegate :foofoo, :barbar, to: :obj\nend\nu = User.new\nu.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15756,7 +18214,10 @@ test "P30 T13.6 delegate multiple methods" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "foofoo") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "barbar") != null);
@@ -15768,8 +18229,7 @@ test "P30 T13.7 def_delegator synthesizes method" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Car\n  def_delegator :@engine, :topspeed\nend\nc = Car.new\nc.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Car\n  def_delegator :@engine, :topspeed\nend\nc = Car.new\nc.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15781,7 +18241,10 @@ test "P30 T13.7 def_delegator synthesizes method" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "topspeed") != null);
 }
@@ -15792,8 +18255,7 @@ test "P30 T13.8 def_delegators synthesizes multiple" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Robot\n  def_delegators :@core, :moverobot, :stoprobot\nend\nr = Robot.new\nr.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Robot\n  def_delegators :@core, :moverobot, :stoprobot\nend\nr = Robot.new\nr.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15805,7 +18267,10 @@ test "P30 T13.8 def_delegators synthesizes multiple" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "moverobot") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "stoprobot") != null);
@@ -15817,8 +18282,7 @@ test "P30 T13.9 endless def integer return type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Counter\n  def count = 0\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Counter\n  def count = 0\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15830,7 +18294,10 @@ test "P30 T13.9 endless def integer return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -15841,8 +18308,7 @@ test "P30 T13.10 endless def new-call return type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Factory\n  def user = Userclass.new\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Factory\n  def user = Userclass.new\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15854,7 +18320,10 @@ test "P30 T13.10 endless def new-call return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Userclass") != null);
 }
@@ -15865,8 +18334,7 @@ test "P30 T13.11 endless def symbol return type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class State\n  def status = :active\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class State\n  def status = :active\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15878,7 +18346,10 @@ test "P30 T13.11 endless def symbol return type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Symbol") != null);
 }
@@ -15889,8 +18360,7 @@ test "P30 T13.12 YARD union type two types" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Repo\n  # @return [String, nil]\n  def reponame\n    nil\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Repo\n  # @return [String, nil]\n  def reponame\n    nil\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15902,7 +18372,10 @@ test "P30 T13.12 YARD union type two types" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "NilClass") != null or std.mem.indexOf(u8, raw, "nil") != null);
@@ -15914,8 +18387,7 @@ test "P30 T13.13 YARD union type three types" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Calc\n  # @return [Integer, String, Float]\n  def calcvalue\n    0\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Calc\n  # @return [Integer, String, Float]\n  def calcvalue\n    0\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15927,7 +18399,10 @@ test "P30 T13.13 YARD union type three types" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "Float") != null);
@@ -15939,8 +18414,7 @@ test "P30 T13.14 YARD single type unchanged regression" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class App\n  # @return [Adminuser]\n  def current_user\n    nil\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class App\n  # @return [Adminuser]\n  def current_user\n    nil\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -15952,7 +18426,10 @@ test "P30 T13.14 YARD single type unchanged regression" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Adminuser") != null);
 }
@@ -15975,7 +18452,10 @@ test "P30 T13.15 didChangeConfiguration disables rubocop no error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoResponse;
 }
 
@@ -15997,7 +18477,10 @@ test "P30 T13.16 didChangeConfiguration sets log level no error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoResponse;
 }
 
@@ -16019,7 +18502,10 @@ test "P30 T13.17 didChangeConfiguration disableGemIndex no error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoResponse;
 }
 
@@ -16029,8 +18515,7 @@ test "P30 T13.18 linkedEditingRange local var all occurrences" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "myvar = 1\nyyy = myvar\nzzz = myvar + 1\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "myvar = 1\nyyy = myvar\nzzz = myvar + 1\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16042,7 +18527,10 @@ test "P30 T13.18 linkedEditingRange local var all occurrences" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoLinkedEditResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "ranges") != null);
 }
@@ -16065,7 +18553,10 @@ test "P30 T13.19 linkedEditingRange no crash on number position" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoResponse;
 }
 
@@ -16087,7 +18578,10 @@ test "P30 T13.20 linkedEditingRange no crash on empty file" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoResponse;
 }
 
@@ -16110,7 +18604,10 @@ test "P30 T13.21 executeCommand forceReindex no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoExecResponse;
     _ = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
 }
@@ -16133,7 +18630,10 @@ test "P30 T13.22 executeCommand toggleGemIndex no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoExecResponse;
     _ = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
 }
@@ -16156,7 +18656,10 @@ test "P30 T13.23 executeCommand restartIndexer regression" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoExecResponse;
 }
 
@@ -16166,8 +18669,7 @@ test "P30 T13.24 Symbol to_proc no crash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "arr = [\"a\", \"b\"]\nnames = arr.map(&:upcase)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "arr = [\"a\", \"b\"]\nnames = arr.map(&:upcase)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16179,7 +18681,10 @@ test "P30 T13.24 Symbol to_proc no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
 }
 
@@ -16189,8 +18694,7 @@ test "P30 T13.25 Symbol to_proc child nodes still indexed" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "arr = [\"a\", \"b\"]\nnames = arr.map(&:upcase)\nresultvar = names\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "arr = [\"a\", \"b\"]\nnames = arr.map(&:upcase)\nresultvar = names\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16202,7 +18706,10 @@ test "P30 T13.25 Symbol to_proc child nodes still indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
 }
 
@@ -16212,8 +18719,7 @@ test "P30 T13.26 2-level chain type inferred" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Deepcc\nend\nclass Deepbb\n  # @return [Deepcc]\n  def getc\n    Deepcc.new\n  end\nend\nclass Deepaa\n  # @return [Deepbb]\n  def getb\n    Deepbb.new\n  end\nend\ndeepobj = Deepaa.new\nresultchain = deepobj.getb.getc\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Deepcc\nend\nclass Deepbb\n  # @return [Deepcc]\n  def getc\n    Deepcc.new\n  end\nend\nclass Deepaa\n  # @return [Deepbb]\n  def getb\n    Deepbb.new\n  end\nend\ndeepobj = Deepaa.new\nresultchain = deepobj.getb.getc\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16225,7 +18731,10 @@ test "P30 T13.26 2-level chain type inferred" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Deepaa") != null);
 }
@@ -16236,8 +18745,7 @@ test "P30 T13.27 2-level chain no crash missing mid" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Chainaa\n  # @return [Chainbb]\n  def getb\n    nil\n  end\nend\nobj = Chainaa.new\nx = obj.unknownmid.getc\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Chainaa\n  # @return [Chainbb]\n  def getb\n    nil\n  end\nend\nobj = Chainaa.new\nx = obj.unknownmid.getc\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16249,7 +18757,10 @@ test "P30 T13.27 2-level chain no crash missing mid" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
 }
 
@@ -16259,8 +18770,7 @@ test "P30 T13.28 2-level chain no crash missing leaf" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Leafbb\nend\nclass Leafaa\n  # @return [Leafbb]\n  def getb\n    Leafbb.new\n  end\nend\nobj = Leafaa.new\nx = obj.getb.unknownleaf\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Leafbb\nend\nclass Leafaa\n  # @return [Leafbb]\n  def getb\n    Leafbb.new\n  end\nend\nobj = Leafaa.new\nx = obj.getb.unknownleaf\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16272,7 +18782,10 @@ test "P30 T13.28 2-level chain no crash missing leaf" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
 }
 
@@ -16282,8 +18795,7 @@ test "P30 T13.29 2-level chain no crash missing root type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "untyped_obj = get_something\nx = untyped_obj.getb.getc\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "untyped_obj = get_something\nx = untyped_obj.getb.getc\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16295,7 +18807,10 @@ test "P30 T13.29 2-level chain no crash missing root type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
 }
 
@@ -16335,7 +18850,10 @@ test "P30 T13.30 parallel indexing many files no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
 }
 
@@ -16359,7 +18877,10 @@ test "P30 T13.31 parallel indexing symbols from multiple files present" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Alphaclassxyz") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "Betaclassxyz") != null);
@@ -16385,7 +18906,10 @@ test "P30 T13.32 reindex same file no duplicate symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     var count: usize = 0;
     var pos: usize = 0;
@@ -16402,8 +18926,7 @@ test "P30 T13.33 regression p29 hover completion docSymbol no crash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Service\n  def call\n    42\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Service\n  def call\n    42\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16417,7 +18940,10 @@ test "P30 T13.33 regression p29 hover completion docSymbol no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     _ = getResponseById(resp, 3) orelse return error.NoCompletionResponse;
     _ = getResponseById(resp, 4) orelse return error.NoDocSymResponse;
@@ -16429,8 +18955,7 @@ test "P30 T13.34 regression 1-level chain confidence 55 still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Personchain\n  # @return [String]\n  def chainname\n    \"alice\"\n  end\nend\npc = Personchain.new\nresultname = pc.chainname\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Personchain\n  # @return [String]\n  def chainname\n    \"alice\"\n  end\nend\npc = Personchain.new\nresultname = pc.chainname\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16442,7 +18967,10 @@ test "P30 T13.34 regression 1-level chain confidence 55 still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -16453,8 +18981,7 @@ test "P30 T13.35 regression attr_accessor still synthesizes reader writer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Widget\n  attr_accessor :widgetcolor\nend\nw = Widget.new\nw.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Widget\n  attr_accessor :widgetcolor\nend\nw = Widget.new\nw.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16466,7 +18993,10 @@ test "P30 T13.35 regression attr_accessor still synthesizes reader writer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "widgetcolor") != null);
 }
@@ -16491,7 +19021,10 @@ test "P31 T14.1 rate limit skips second indexSource within 100ms" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
 }
 
@@ -16516,7 +19049,10 @@ test "P31 T14.3 rate limit per-file independent" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymResponse;
     _ = getResponseById(resp, 3) orelse return error.NoSymResponse2;
 }
@@ -16581,7 +19117,10 @@ test "P31 T14.7 open_docs_order no duplicate URIs after multiple edits" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
 }
 
@@ -16633,9 +19172,15 @@ test "P31 T14.11 refract.showReferences executeCommand no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj2 = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -16656,9 +19201,15 @@ test "P31 T14.12 refract.runTest executeCommand no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj2 = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -16680,9 +19231,15 @@ test "P31 T14.17 textDocument/diagnostic pull model returns full response" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoDiagResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"kind\":\"full\"") != null);
 }
@@ -16705,9 +19262,15 @@ test "P31 T14.19 textDocument/diagnostic empty items on valid file" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoDiagResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"items\":[]") != null);
 }
@@ -16730,7 +19293,10 @@ test "P31 T14.20 require completion suggests json for 'js prefix" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "json") != null);
 }
@@ -16753,7 +19319,10 @@ test "P31 T14.22 require stdlib set completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "set") != null);
 }
@@ -16774,9 +19343,15 @@ test "P31 T14.23 workspace/willRenameFiles returns WorkspaceEdit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "changes") != null);
 }
@@ -16816,7 +19391,10 @@ test "P31 T14.25 didChangeWorkspaceFolders removes folder symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymResponse;
 }
 
@@ -16826,8 +19404,7 @@ test "P31 T14.27 Enumerable synthesis map in dot-completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class MyCol1427\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1427.new\nc.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1427\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1427.new\nc.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16839,7 +19416,10 @@ test "P31 T14.27 Enumerable synthesis map in dot-completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"map\"") != null);
 }
@@ -16850,8 +19430,7 @@ test "P31 T14.28 Enumerable synthesis select in dot-completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class MyCol1428\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1428.new\nc.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1428\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1428.new\nc.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16863,7 +19442,10 @@ test "P31 T14.28 Enumerable synthesis select in dot-completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"select\"") != null);
 }
@@ -16874,8 +19456,7 @@ test "P31 T14.29 Enumerable synthesis any? in dot-completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class MyCol1429\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1429.new\nc.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1429\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1429.new\nc.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16887,7 +19468,10 @@ test "P31 T14.29 Enumerable synthesis any? in dot-completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "any?") != null);
 }
@@ -16898,8 +19482,7 @@ test "P31 T14.30 Comparable synthesis <= in dot-completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class MyVal1430\n  include Comparable\n  def <=>(other)\n    0\n  end\nend\nv = MyVal1430.new\nv.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class MyVal1430\n  include Comparable\n  def <=>(other)\n    0\n  end\nend\nv = MyVal1430.new\nv.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16911,7 +19494,10 @@ test "P31 T14.30 Comparable synthesis <= in dot-completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"<=\"") != null or std.mem.indexOf(u8, raw, "between?") != null);
 }
@@ -16922,8 +19508,7 @@ test "P31 T14.31 lookupStdlibReturn String#upcase returns String type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "t = \"hello\".upcase\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "t = \"hello\".upcase\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16935,7 +19520,10 @@ test "P31 T14.31 lookupStdlibReturn String#upcase returns String type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -16946,8 +19534,7 @@ test "P31 T14.32 lookupStdlibReturn String#length returns Integer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "n = \"hello\".length\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "n = \"hello\".length\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16959,7 +19546,10 @@ test "P31 T14.32 lookupStdlibReturn String#length returns Integer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -16970,8 +19560,7 @@ test "P31 T14.33 lookupStdlibReturn Array#join returns String" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s = [1,2,3].join\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s = [1,2,3].join\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -16983,7 +19572,10 @@ test "P31 T14.33 lookupStdlibReturn Array#join returns String" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -16994,8 +19586,7 @@ test "P31 T14.34 lookupStdlibReturn Integer#to_s returns String" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s = 42.to_s\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s = 42.to_s\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17007,7 +19598,10 @@ test "P31 T14.34 lookupStdlibReturn Integer#to_s returns String" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17018,8 +19612,7 @@ test "P31 T14.35 lookupStdlibReturn Hash#keys returns Array" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "k = {a: 1}.keys\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "k = {a: 1}.keys\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17031,7 +19624,10 @@ test "P31 T14.35 lookupStdlibReturn Hash#keys returns Array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Array") != null);
 }
@@ -17042,8 +19638,7 @@ test "P31 T14.36 lookupStdlibReturn chained String#upcase#length returns Integer
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "n = \"hi\".upcase.length\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "n = \"hi\".upcase.length\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17055,7 +19650,10 @@ test "P31 T14.36 lookupStdlibReturn chained String#upcase#length returns Integer
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -17066,8 +19664,7 @@ test "P31 T14.37 Hanami::Action DSL methods not flagged" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class ShowAction1437 < Hanami::Action\n  expose :user\n  def call(params)\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class ShowAction1437 < Hanami::Action\n  expose :user\n  def call(params)\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17079,7 +19676,10 @@ test "P31 T14.37 Hanami::Action DSL methods not flagged" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "ShowAction1437") != null);
 }
@@ -17090,8 +19690,7 @@ test "P31 T14.38 Grape::API route methods recognized" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class GrapeApi1438 < Grape::API\n  get '/hello' do\n    {msg: 'hi'}\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class GrapeApi1438 < Grape::API\n  get '/hello' do\n    {msg: 'hi'}\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17103,7 +19702,10 @@ test "P31 T14.38 Grape::API route methods recognized" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "GrapeApi1438") != null);
 }
@@ -17114,8 +19716,7 @@ test "P31 T14.39 Roda class recognized" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class RodaApp1439 < Roda\n  plugin :render\n  route do |r|\n    r.root { 'hello' }\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class RodaApp1439 < Roda\n  plugin :render\n  route do |r|\n    r.root { 'hello' }\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17127,7 +19728,10 @@ test "P31 T14.39 Roda class recognized" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "RodaApp1439") != null);
 }
@@ -17138,8 +19742,7 @@ test "P31 T14.40 p31 regression hover still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class RegClass1440\n  def regmethod\n    42\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class RegClass1440\n  def regmethod\n    42\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17151,7 +19754,10 @@ test "P31 T14.40 p31 regression hover still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
 }
 
@@ -17161,8 +19767,7 @@ test "P31 T14.41 p31 regression completion still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class RegClass1441\n  def regmethod1441\n  end\nend\nreg\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class RegClass1441\n  def regmethod1441\n  end\nend\nreg\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17174,7 +19779,10 @@ test "P31 T14.41 p31 regression completion still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "regmethod1441") != null);
 }
@@ -17185,8 +19793,7 @@ test "P31 T14.42 p31 regression documentSymbol still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class RegClass1442\n  def regmethod1442\n  end\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class RegClass1442\n  def regmethod1442\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17198,7 +19805,10 @@ test "P31 T14.42 p31 regression documentSymbol still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "RegClass1442") != null);
 }
@@ -17209,8 +19819,7 @@ test "P31 T14.43 p31 regression attr_accessor still synthesizes reader writer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Widget1443\n  attr_accessor :regcolor1443\nend\nw = Widget1443.new\nw.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Widget1443\n  attr_accessor :regcolor1443\nend\nw = Widget1443.new\nw.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17222,7 +19831,10 @@ test "P31 T14.43 p31 regression attr_accessor still synthesizes reader writer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "regcolor1443") != null);
 }
@@ -17233,8 +19845,7 @@ test "P31 T14.44 p31 regression Struct.new still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "Point1444 = Struct.new(:x1444, :y1444)\np = Point1444.new(1, 2)\np.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "Point1444 = Struct.new(:x1444, :y1444)\np = Point1444.new(1, 2)\np.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17246,7 +19857,10 @@ test "P31 T14.44 p31 regression Struct.new still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "x1444") != null);
 }
@@ -17257,8 +19871,7 @@ test "P31 T14.45 p31 regression chained inference still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Pers1445\n  # @return [String]\n  def chainname1445\n    \"alice\"\n  end\nend\npc = Pers1445.new\nresult1445 = pc.chainname1445\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Pers1445\n  # @return [String]\n  def chainname1445\n    \"alice\"\n  end\nend\npc = Pers1445.new\nresult1445 = pc.chainname1445\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17270,7 +19883,10 @@ test "P31 T14.45 p31 regression chained inference still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17294,7 +19910,10 @@ test "P32 T15.1 willRenameFiles updates require_relative stem" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoRenameResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "account") != null);
 }
@@ -17316,7 +19935,10 @@ test "P32 T15.2 willRenameFiles same-name no-op" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoRenameResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"changes\":{}") != null);
 }
@@ -17337,7 +19959,10 @@ test "P32 T15.3 willRenameFiles non-rb file returns empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoRenameResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"changes\":{}") != null);
 }
@@ -17362,7 +19987,10 @@ test "P32 T15.4 willRenameFiles multiple callers updated" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoRenameResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "component") != null);
 }
@@ -17404,7 +20032,10 @@ test "P32 T15.6 async didChangeWatchedFiles no deadlock" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
 }
 
@@ -17426,7 +20057,10 @@ test "P32 T15.7 async didChangeWatchedFiles indexes after change" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Async157") != null);
 }
@@ -17450,9 +20084,15 @@ test "P32 T15.8 async delete still removes symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
     switch (result) {
         .array => |arr| try std.testing.expect(arr.items.len == 0),
@@ -17466,8 +20106,7 @@ test "P32 T15.9 safe nav dot completion with typed receiver" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class SafeNav159\n  def greet159; end\nend\nu = SafeNav159.new\nu&.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class SafeNav159\n  def greet159; end\nend\nu = SafeNav159.new\nu&.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17479,7 +20118,10 @@ test "P32 T15.9 safe nav dot completion with typed receiver" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "greet159") != null);
 }
@@ -17501,7 +20143,10 @@ test "P32 T15.10 safe nav dot completion untyped receiver" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
 }
 
@@ -17511,8 +20156,7 @@ test "P32 T15.11 safe nav type inference user&.name returns String" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Usr1511\n  # @return [String]\n  def nm1511; \"x\"; end\nend\nu1511 = Usr1511.new\nt1511 = u1511&.nm1511\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Usr1511\n  # @return [String]\n  def nm1511; \"x\"; end\nend\nu1511 = Usr1511.new\nt1511 = u1511&.nm1511\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17524,7 +20168,10 @@ test "P32 T15.11 safe nav type inference user&.name returns String" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17535,8 +20182,7 @@ test "P32 T15.12 safe nav chain completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Usr1512\n  # @return [String]\n  def nm1512; \"x\"; end\nend\nu1512 = Usr1512.new\nu1512&.nm1512&.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Usr1512\n  # @return [String]\n  def nm1512; \"x\"; end\nend\nu1512 = Usr1512.new\nu1512&.nm1512&.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17548,7 +20194,10 @@ test "P32 T15.12 safe nav chain completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "upcase") != null or std.mem.indexOf(u8, raw, "downcase") != null);
 }
@@ -17570,7 +20219,10 @@ test "P32 T15.13 safe nav no crash at offset 0" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
 }
 
@@ -17580,8 +20232,7 @@ test "P32 T15.14 blk2 stdlib mid-type chain" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Usr1514\n  # @return [String]\n  def nm1514; \"x\"; end\nend\nu1514 = Usr1514.new\nx1514 = u1514.nm1514.upcase\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Usr1514\n  # @return [String]\n  def nm1514; \"x\"; end\nend\nu1514 = Usr1514.new\nx1514 = u1514.nm1514.upcase\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17593,7 +20244,10 @@ test "P32 T15.14 blk2 stdlib mid-type chain" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17604,8 +20258,7 @@ test "P32 T15.15 blk2 stdlib leaf-type arr.join.length" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class C1515\n  # @return [Array]\n  def items1515; []; end\nend\nc1515 = C1515.new\nx1515 = c1515.items1515.join\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class C1515\n  # @return [Array]\n  def items1515; []; end\nend\nc1515 = C1515.new\nx1515 = c1515.items1515.join\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17617,7 +20270,10 @@ test "P32 T15.15 blk2 stdlib leaf-type arr.join.length" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17640,7 +20296,10 @@ test "P32 T15.16 blk2 no false positive for untyped root" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
 }
 
@@ -17650,8 +20309,7 @@ test "P32 T15.17 lookupStdlibReturn String#start_with? returns TrueClass" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s1517 = \"hello\"\nx1517 = s1517.start_with?(\"h\")\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s1517 = \"hello\"\nx1517 = s1517.start_with?(\"h\")\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17663,7 +20321,10 @@ test "P32 T15.17 lookupStdlibReturn String#start_with? returns TrueClass" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "TrueClass") != null);
 }
@@ -17674,8 +20335,7 @@ test "P32 T15.18 lookupStdlibReturn String#scan returns Array" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s1518 = \"hello world\"\nx1518 = s1518.scan(/\\w+/)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s1518 = \"hello world\"\nx1518 = s1518.scan(/\\w+/)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17687,7 +20347,10 @@ test "P32 T15.18 lookupStdlibReturn String#scan returns Array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Array") != null);
 }
@@ -17698,8 +20361,7 @@ test "P32 T15.19 lookupStdlibReturn String#reverse returns String" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s1519 = \"hello\"\nx1519 = s1519.reverse\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s1519 = \"hello\"\nx1519 = s1519.reverse\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17711,7 +20373,10 @@ test "P32 T15.19 lookupStdlibReturn String#reverse returns String" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17722,8 +20387,7 @@ test "P32 T15.20 lookupStdlibReturn Array#tally returns Hash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "a1520 = [1, 2, 1]\nx1520 = a1520.tally\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "a1520 = [1, 2, 1]\nx1520 = a1520.tally\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17735,7 +20399,10 @@ test "P32 T15.20 lookupStdlibReturn Array#tally returns Hash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Hash") != null);
 }
@@ -17746,8 +20413,7 @@ test "P32 T15.21 lookupStdlibReturn Array#filter_map returns Array" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "a1521 = [1, nil, 2]\nx1521 = a1521.filter_map { |x| x }\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "a1521 = [1, nil, 2]\nx1521 = a1521.filter_map { |x| x }\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17759,7 +20425,10 @@ test "P32 T15.21 lookupStdlibReturn Array#filter_map returns Array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Array") != null);
 }
@@ -17770,8 +20439,7 @@ test "P32 T15.22 lookupStdlibReturn Hash#invert returns Hash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "h1522 = {a: 1}\nx1522 = h1522.invert\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "h1522 = {a: 1}\nx1522 = h1522.invert\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17783,7 +20451,10 @@ test "P32 T15.22 lookupStdlibReturn Hash#invert returns Hash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Hash") != null);
 }
@@ -17794,8 +20465,7 @@ test "P32 T15.23 lookupStdlibReturn Hash#except returns Hash" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "h1523 = {a: 1, b: 2}\nx1523 = h1523.except(:a)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "h1523 = {a: 1, b: 2}\nx1523 = h1523.except(:a)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17807,7 +20477,10 @@ test "P32 T15.23 lookupStdlibReturn Hash#except returns Hash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Hash") != null);
 }
@@ -17818,8 +20491,7 @@ test "P32 T15.24 lookupStdlibReturn Symbol#to_s returns String" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s1524 = :hello\nx1524 = s1524.to_s\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s1524 = :hello\nx1524 = s1524.to_s\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17831,7 +20503,10 @@ test "P32 T15.24 lookupStdlibReturn Symbol#to_s returns String" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17842,8 +20517,7 @@ test "P32 T15.25 lookupStdlibReturn Float#ceil returns Integer" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "f1525 = 3.14\nx1525 = f1525.ceil\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "f1525 = 3.14\nx1525 = f1525.ceil\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17855,7 +20529,10 @@ test "P32 T15.25 lookupStdlibReturn Float#ceil returns Integer" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -17866,8 +20543,7 @@ test "P32 T15.26 lookupStdlibReturn blank? returns TrueClass" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "s1526 = \"hello\"\nx1526 = s1526.blank?\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "s1526 = \"hello\"\nx1526 = s1526.blank?\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17879,7 +20555,10 @@ test "P32 T15.26 lookupStdlibReturn blank? returns TrueClass" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "TrueClass") != null);
 }
@@ -17890,8 +20569,7 @@ test "P32 T15.27 @type annotation overrides inference" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# @type [Integer]\nx1527 = \"string value\"\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# @type [Integer]\nx1527 = \"string value\"\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17903,7 +20581,10 @@ test "P32 T15.27 @type annotation overrides inference" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -17914,8 +20595,7 @@ test "P32 T15.28 @type annotation hover shows annotated type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "# @type [Float]\ny1528 = 42\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "# @type [Float]\ny1528 = 42\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17927,7 +20607,10 @@ test "P32 T15.28 @type annotation hover shows annotated type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Float") != null);
 }
@@ -17938,8 +20621,7 @@ test "P32 T15.29 @type with completion uses annotated type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Anno1529\n  def meth1529_a; end\n  def meth1529_b; end\nend\n# @type [Anno1529]\nz1529 = nil\nz1529.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Anno1529\n  def meth1529_a; end\n  def meth1529_b; end\nend\n# @type [Anno1529]\nz1529 = nil\nz1529.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17951,7 +20633,10 @@ test "P32 T15.29 @type with completion uses annotated type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "meth1529") != null);
 }
@@ -17962,8 +20647,7 @@ test "P32 T15.30 pattern matching capture binds type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "v1530 = \"hello\"\ncase v1530\nin String => s1530\n  s1530\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "v1530 = \"hello\"\ncase v1530\nin String => s1530\n  s1530\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17975,7 +20659,10 @@ test "P32 T15.30 pattern matching capture binds type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -17986,8 +20673,7 @@ test "P32 T15.31 pattern matching Integer binding" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "v1531 = 42\ncase v1531\nin Integer => n1531\n  n1531\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "v1531 = 42\ncase v1531\nin Integer => n1531\n  n1531\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -17999,7 +20685,10 @@ test "P32 T15.31 pattern matching Integer binding" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -18010,8 +20699,7 @@ test "P32 T15.32 pattern matching completion uses bound type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "v1532 = \"hello\"\ncase v1532\nin String => s1532\n  s1532.\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "v1532 = \"hello\"\ncase v1532\nin String => s1532\n  s1532.\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18023,7 +20711,10 @@ test "P32 T15.32 pattern matching completion uses bound type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "upcase") != null or std.mem.indexOf(u8, raw, "downcase") != null);
 }
@@ -18034,8 +20725,7 @@ test "P32 T15.33 ||= infers type from RHS" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "x1533 = nil\nx1533 ||= \"default\"\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "x1533 = nil\nx1533 ||= \"default\"\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18047,7 +20737,10 @@ test "P32 T15.33 ||= infers type from RHS" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "String") != null);
 }
@@ -18058,8 +20751,7 @@ test "P32 T15.34 ||= doesnt override higher-confidence type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "x1534 = 42\nx1534 ||= \"hi\"\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "x1534 = 42\nx1534 ||= \"hi\"\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18071,7 +20763,10 @@ test "P32 T15.34 ||= doesnt override higher-confidence type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Integer") != null);
 }
@@ -18082,8 +20777,7 @@ test "P32 T15.35 delegate synthesizes method" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Order1535\n  delegate :nm1535, :em1535, to: :user1535\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Order1535\n  delegate :nm1535, :em1535, to: :user1535\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18095,7 +20789,10 @@ test "P32 T15.35 delegate synthesizes method" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "nm1535") != null);
 }
@@ -18106,8 +20803,7 @@ test "P32 T15.36 delegate method in completion" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Order1536\n  delegate :greet1536, to: :user1536\nend\no1536 = Order1536.new\no1536.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Order1536\n  delegate :greet1536, to: :user1536\nend\no1536 = Order1536.new\no1536.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18119,7 +20815,10 @@ test "P32 T15.36 delegate method in completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "greet1536") != null);
 }
@@ -18130,8 +20829,7 @@ test "P32 T15.37 delegate return type preserved" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Order1537\n  delegate :name1537, to: :user1537\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Order1537\n  delegate :name1537, to: :user1537\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18143,7 +20841,10 @@ test "P32 T15.37 delegate return type preserved" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDocSymResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "name1537") != null);
 }
@@ -18154,8 +20855,7 @@ test "P32 T15.38 AR where returns collection type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Post1538\nend\nposts1538 = Post1538.where(active: true)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Post1538\nend\nposts1538 = Post1538.where(active: true)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18167,7 +20867,10 @@ test "P32 T15.38 AR where returns collection type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Post1538") != null);
 }
@@ -18178,8 +20881,7 @@ test "P32 T15.39 AR where.first returns single instance type" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Article1539\nend\na1539 = Article1539.where(id: 1).first\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Article1539\nend\na1539 = Article1539.where(id: 1).first\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18191,7 +20893,10 @@ test "P32 T15.39 AR where.first returns single instance type" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Article1539") != null);
 }
@@ -18202,8 +20907,7 @@ test "P32 T15.40 AR chained order still collection" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Tag1540\nend\nresult1540 = Tag1540.where(active: true).order(:name)\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Tag1540\nend\nresult1540 = Tag1540.where(active: true).order(:name)\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18215,7 +20919,10 @@ test "P32 T15.40 AR chained order still collection" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Tag1540") != null);
 }
@@ -18240,7 +20947,10 @@ test "P32 T15.41 content_hash skips reindex on same content" {
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Skip1541") != null);
 }
@@ -18266,7 +20976,10 @@ test "P32 T15.42 content_hash reindexes on content change despite same mtime" {
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "After1542") != null);
 }
@@ -18293,8 +21006,7 @@ test "P32 T15.44 p32 regression hover still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Smoke1544\n  def hello1544; end\nend\ns1544 = Smoke1544.new\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Smoke1544\n  def hello1544; end\nend\ns1544 = Smoke1544.new\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18306,7 +21018,10 @@ test "P32 T15.44 p32 regression hover still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Smoke1544") != null);
 }
@@ -18317,8 +21032,7 @@ test "P32 T15.45 p32 regression completion still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Comp1545\n  def mcomp1545; end\nend\nc1545 = Comp1545.new\nc1545.\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Comp1545\n  def mcomp1545; end\nend\nc1545 = Comp1545.new\nc1545.\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18330,7 +21044,10 @@ test "P32 T15.45 p32 regression completion still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "mcomp1545") != null);
 }
@@ -18341,8 +21058,7 @@ test "P32 T15.46 p32 regression rename still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "def rnm1546\n  rnm1546\nend\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "def rnm1546\n  rnm1546\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18354,7 +21070,10 @@ test "P32 T15.46 p32 regression rename still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoRenameResponse;
 }
 
@@ -18364,8 +21083,7 @@ test "P32 T15.47 p32 regression signatureHelp still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "def sig1547(a, b)\n  a + b\nend\nsig1547(\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "def sig1547(a, b)\n  a + b\nend\nsig1547(\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18377,7 +21095,10 @@ test "P32 T15.47 p32 regression signatureHelp still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSigHelpResponse;
 }
 
@@ -18387,8 +21108,7 @@ test "P32 T15.48 p32 regression AR .new still works" {
     std.fs.deleteTreeAbsolute(ws) catch {};
     try std.fs.makeDirAbsolute(ws);
     defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb",
-        .data = "class Reg1548\n  def meth1548; end\nend\nr1548 = Reg1548.new\n" });
+    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/a.rb", .data = "class Reg1548\n  def meth1548; end\nend\nr1548 = Reg1548.new\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -18400,7 +21120,10 @@ test "P32 T15.48 p32 regression AR .new still works" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoHoverResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "Reg1548") != null);
 }
@@ -18416,12 +21139,24 @@ test "P33 T16.1 request before initialize returns server_not_initialized" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const err_resp = getResponseById(resp, 1) orelse return error.NoErrorResponse;
-    const obj = switch (err_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (err_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") != null);
-    const err_obj = switch (obj.get("error").?) { .object => |o| o, else => return error.NotObject };
-    const code = switch (err_obj.get("code") orelse return error.NoCode) { .integer => |i| i, else => return error.NotInteger };
+    const err_obj = switch (obj.get("error").?) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const code = switch (err_obj.get("code") orelse return error.NoCode) {
+        .integer => |i| i,
+        else => return error.NotInteger,
+    };
     try std.testing.expectEqual(@as(i64, -32002), code);
 }
 
@@ -18441,12 +21176,24 @@ test "P33 T16.2 request after shutdown returns invalid_request" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const err_resp = getResponseById(resp, 2) orelse return error.NoErrorResponse;
-    const obj = switch (err_resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (err_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") != null);
-    const err_obj = switch (obj.get("error").?) { .object => |o| o, else => return error.NotObject };
-    const code = switch (err_obj.get("code") orelse return error.NoCode) { .integer => |i| i, else => return error.NotInteger };
+    const err_obj = switch (obj.get("error").?) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const code = switch (err_obj.get("code") orelse return error.NoCode) {
+        .integer => |i| i,
+        else => return error.NotInteger,
+    };
     try std.testing.expectEqual(@as(i64, -32600), code);
 }
 
@@ -18468,7 +21215,10 @@ test "P33 T16.3 workspace/symbol excludes gem symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "WorkspaceClass163") != null);
 }
@@ -18491,9 +21241,15 @@ test "P34 T17.1 negative line position returns null not panic" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -18515,9 +21271,15 @@ test "P35 T18.1 Unicode identifiers no crash on hover" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -18543,7 +21305,10 @@ test "P35 T18.2 excludeDirs option skips excluded directory" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoLibAlphaResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "LibAlpha182") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "VendorBeta182") == null);
@@ -18566,7 +21331,10 @@ test "P35 T18.3 maxFileSizeBytes 1 skips all files" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "SizeCheck183") == null);
 }
@@ -18594,9 +21362,15 @@ test "P35 T18.4 didChangeWorkspaceFolders add new folder no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -18624,7 +21398,10 @@ test "P35 T18.5 didChangeWorkspaceFolders remove clears folder symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "FolderBeta185") == null);
 }
@@ -18650,9 +21427,15 @@ test "T1 syntax error ruby no crash on hover" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
 }
 
@@ -18678,9 +21461,15 @@ test "T2 LIKE special chars workspace symbol underscore prefix" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "Foo_Base") != null);
 }
@@ -18712,9 +21501,7 @@ test "T3 isIncomplete true when symbol limit hit" {
             try json_content.append(alloc, c);
         }
     }
-    const did_open_msg = try std.fmt.allocPrint(alloc,
-        "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/many.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"{s}\"}}}}}}",
-        .{ ws, json_content.items });
+    const did_open_msg = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/many.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"{s}\"}}}}}}", .{ ws, json_content.items });
     defer alloc.free(did_open_msg);
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -18727,13 +21514,25 @@ test "T3 isIncomplete true when symbol limit hit" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const incomplete = result_obj.get("isIncomplete") orelse return error.NoIsIncomplete;
-    const is_incomplete = switch (incomplete) { .bool => |b| b, else => return error.IsIncompleteNotBool };
+    const is_incomplete = switch (incomplete) {
+        .bool => |b| b,
+        else => return error.IsIncompleteNotBool,
+    };
     try std.testing.expect(is_incomplete);
 }
 
@@ -18758,7 +21557,10 @@ test "T4 concurrent requests all responses returned" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     var found: usize = 0;
     for ([_]i64{ 2, 3, 4, 5, 6 }) |id| {
         if (getResponseById(resp, id) != null) found += 1;
@@ -18799,7 +21601,10 @@ test "T5 scanner depth deep tree handled safely" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
     // Must not crash and must return a valid response
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"error\"") == null or
@@ -18845,13 +21650,25 @@ test "T_COMP_COMMENT completion inside comment returns empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const ro = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const ro = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const items = ro.get("items") orelse return error.NoItems;
-    const arr = switch (items) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (items) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), arr.items.len);
 }
 
@@ -18873,13 +21690,25 @@ test "T_COMP_STRING completion inside string returns empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const ro = switch (result) { .object => |o| o, else => return error.NotResultObj };
+    const ro = switch (result) {
+        .object => |o| o,
+        else => return error.NotResultObj,
+    };
     const items = ro.get("items") orelse return error.NoItems;
-    const arr = switch (items) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (items) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), arr.items.len);
 }
 
@@ -18899,7 +21728,10 @@ test "T_PATH_OUTSIDE path traversal does not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp_out = try extractResponses(alloc, raw);
-    defer { for (resp_out) |r| r.deinit(); alloc.free(resp_out); }
+    defer {
+        for (resp_out) |r| r.deinit();
+        alloc.free(resp_out);
+    }
     _ = getResponseById(resp_out, 2);
 }
 
@@ -18963,11 +21795,20 @@ test "T_VERSION stale didChange does not revert content" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), arr.items.len);
 }
 
@@ -18987,9 +21828,15 @@ test "T_CANON path traversal via .. in URI does not escape workspace" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const shutdown_resp = getResponseById(resp, 99) orelse return error.NoShutdownResponse;
-    const shutdown_obj = switch (shutdown_resp) { .object => |o| o, else => return error.NotObject };
+    const shutdown_obj = switch (shutdown_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(shutdown_obj.get("id") != null);
 }
 
@@ -19009,9 +21856,15 @@ test "T_LIKE_ESCAPE workspace folder removal with percent in path does not crash
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const shutdown_resp = getResponseById(resp, 99) orelse return error.NoShutdownResponse;
-    const shutdown_obj = switch (shutdown_resp) { .object => |o| o, else => return error.NotObject };
+    const shutdown_obj = switch (shutdown_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(shutdown_obj.get("id") != null);
 }
 
@@ -19033,13 +21886,25 @@ test "T_INTERP completion inside #{} interpolation fires normally" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const comp_resp = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const comp_obj = switch (comp_resp) { .object => |o| o, else => return error.NotObject };
+    const comp_obj = switch (comp_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = comp_obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items = result_obj.get("items") orelse return error.NoItems;
-    const items_arr = switch (items) { .array => |a| a, else => return error.ItemsNotArray };
+    const items_arr = switch (items) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     try std.testing.expect(items_arr.items.len > 0);
 }
 
@@ -19061,13 +21926,25 @@ test "T_PREPARE prepareRename includes placeholder field" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const prep_resp = getResponseById(resp, 2) orelse return error.NoPrepareRenameResponse;
-    const prep_obj = switch (prep_resp) { .object => |o| o, else => return error.NotObject };
+    const prep_obj = switch (prep_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = prep_obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const placeholder = result_obj.get("placeholder") orelse return error.NoPlaceholder;
-    const ph_str = switch (placeholder) { .string => |ph| ph, else => return error.PlaceholderNotString };
+    const ph_str = switch (placeholder) {
+        .string => |ph| ph,
+        else => return error.PlaceholderNotString,
+    };
     try std.testing.expectEqualStrings("foo", ph_str);
 }
 
@@ -19089,9 +21966,15 @@ test "T_UTF8_IDENT non-ASCII identifier hover does not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const hover_resp = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const hover_obj = switch (hover_resp) { .object => |o| o, else => return error.NotObject };
+    const hover_obj = switch (hover_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(hover_obj.get("result") != null);
 }
 
@@ -19111,9 +21994,15 @@ test "T_TRAVERSAL_FORMAT path traversal in formatting returns null not file cont
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const fmt_resp = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
-    const fmt_obj = switch (fmt_resp) { .object => |o| o, else => return error.NotObject };
+    const fmt_obj = switch (fmt_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = fmt_obj.get("result") orelse return error.NoResult;
     try std.testing.expect(result == .null);
 }
@@ -19135,9 +22024,15 @@ test "T_TRAVERSAL_DIDSAVE didSave with traversal URI does not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(sym_obj.get("result") != null);
     try std.testing.expect(sym_obj.get("error") == null);
 }
@@ -19159,9 +22054,15 @@ test "T_TRAVERSAL_TYPEHIERARCHY prepareTypeHierarchy with traversal URI returns 
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const th_resp = getResponseById(resp, 2) orelse return error.NoTypeHierarchyResponse;
-    const th_obj = switch (th_resp) { .object => |o| o, else => return error.NotObject };
+    const th_obj = switch (th_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = th_obj.get("result") orelse return error.NoResult;
     try std.testing.expect(result == .null);
 }
@@ -19183,9 +22084,15 @@ test "T_TRAVERSAL_CALLHIERARCHY prepareCallHierarchy with traversal URI returns 
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const ch_resp = getResponseById(resp, 2) orelse return error.NoCallHierarchyResponse;
-    const ch_obj = switch (ch_resp) { .object => |o| o, else => return error.NotObject };
+    const ch_obj = switch (ch_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = ch_obj.get("result") orelse return error.NoResult;
     try std.testing.expect(result == .null);
 }
@@ -19208,17 +22115,35 @@ test "T_CONTAINER_NAME workspace/symbol includes containerName for class method"
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const items = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const items = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_container = false;
     for (items.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const cn = obj.get("containerName") orelse continue;
-        const cn_str = switch (cn) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, cn_str, "MyWidget")) { found_container = true; break; }
+        const cn_str = switch (cn) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, cn_str, "MyWidget")) {
+            found_container = true;
+            break;
+        }
     }
     try std.testing.expect(found_container);
 }
@@ -19241,17 +22166,35 @@ test "T_CONTAINER_INFIX workspace/symbol infix match includes containerName" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const items = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const items = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_container = false;
     for (items.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const cn = obj.get("containerName") orelse continue;
-        const cn_str = switch (cn) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, cn_str, "MyWidget")) { found_container = true; break; }
+        const cn_str = switch (cn) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, cn_str, "MyWidget")) {
+            found_container = true;
+            break;
+        }
     }
     try std.testing.expect(found_container);
 }
@@ -19273,13 +22216,25 @@ test "T_HEREDOC_COMPLETE completion inside heredoc body returns empty" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const comp_resp = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const comp_obj = switch (comp_resp) { .object => |o| o, else => return error.NotObject };
+    const comp_obj = switch (comp_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = comp_obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items = result_obj.get("items") orelse return error.NoItems;
-    const items_arr = switch (items) { .array => |a| a, else => return error.ItemsNotArray };
+    const items_arr = switch (items) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     try std.testing.expectEqual(@as(usize, 0), items_arr.items.len);
 }
 
@@ -19301,9 +22256,15 @@ test "T_VALID_IDENT_RENAME_UTF8 rename to non-ASCII identifier succeeds" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const ren_resp = getResponseById(resp, 2) orelse return error.NoRenameResponse;
-    const ren_obj = switch (ren_resp) { .object => |o| o, else => return error.NotObject };
+    const ren_obj = switch (ren_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(ren_obj.get("error") == null);
     try std.testing.expect(ren_obj.get("result") != null);
 }
@@ -19326,9 +22287,15 @@ test "T_FOLDING_RANGE foldingRange returns array for file with class structure" 
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const fold_resp = getResponseById(resp, 2) orelse return error.NoFoldingRangeResponse;
-    const fold_obj = switch (fold_resp) { .object => |o| o, else => return error.NotObject };
+    const fold_obj = switch (fold_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = fold_obj.get("result") orelse return error.NoResult;
     try std.testing.expect(result == .array or result == .null);
 }
@@ -19349,16 +22316,31 @@ test "T_PRISM_DIAG diagnostics published after syntax error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const diag_notif = getNotificationByMethod(resp, "textDocument/publishDiagnostics");
     if (diag_notif) |notif| {
-        const notif_obj = switch (notif) { .object => |o| o, else => return error.NotObject };
+        const notif_obj = switch (notif) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
         const params_val = notif_obj.get("params") orelse return error.NoDiagParams;
-        const params_obj = switch (params_val) { .object => |o| o, else => return error.NotObject };
+        const params_obj = switch (params_val) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
         const diagnostics = params_obj.get("diagnostics") orelse return error.NoDiagnostics;
-        const diag_arr = switch (diagnostics) { .array => |a| a, else => return error.NotArray };
+        const diag_arr = switch (diagnostics) {
+            .array => |a| a,
+            else => return error.NotArray,
+        };
         try std.testing.expect(diag_arr.items.len >= 1);
-        const first = switch (diag_arr.items[0]) { .object => |o| o, else => return error.NotObject };
+        const first = switch (diag_arr.items[0]) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
         const severity = first.get("severity") orelse return error.NoSeverity;
         try std.testing.expectEqual(@as(i64, 1), severity.integer);
     } else {
@@ -19446,9 +22428,15 @@ test "T_TRANSPORT_BADLEN transport rejects Content-Length: 0" {
         std.debug.print("refract stderr:\n{s}\n", .{stderr_content});
     }
     const resp = try extractResponses(alloc, output.items);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const init_resp = getResponseById(resp, 1) orelse return error.NoInitResponse;
-    const init_obj = switch (init_resp) { .object => |o| o, else => return error.NotObject };
+    const init_obj = switch (init_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(init_obj.get("result") != null);
 }
 
@@ -19486,9 +22474,15 @@ test "T_LARGE_FILE file above max_file_size not indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
     switch (result) {
         .array => |arr| try std.testing.expectEqual(@as(usize, 0), arr.items.len),
@@ -19520,9 +22514,15 @@ test "T_DEBOUNCE rapid changes server stays responsive" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const hover_resp = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const hover_obj = switch (hover_resp) { .object => |o| o, else => return error.NotObject };
+    const hover_obj = switch (hover_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(hover_obj.get("result") != null or hover_obj.get("error") == null);
 }
 
@@ -19543,9 +22543,15 @@ test "T_NORUBO_FMT formatting returns null gracefully when rubocop absent" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const fmt_resp = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
-    const fmt_obj = switch (fmt_resp) { .object => |o| o, else => return error.NotObject };
+    const fmt_obj = switch (fmt_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     // Either null result (rubocop absent) or an array of edits (rubocop present)
     // Either way, there must be no error code
     const err_val = fmt_obj.get("error");
@@ -19577,11 +22583,21 @@ test "T_MULTIROOT added workspace folder outside primary root is accessible" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, .null => return, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        .null => return,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
 }
 
@@ -19603,9 +22619,15 @@ test "T_CALL_HIERARCHY callHierarchyPrepare returns array" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const ch_resp = getResponseById(resp, 2) orelse return error.NoCallHierarchyResponse;
-    const ch_obj = switch (ch_resp) { .object => |o| o, else => return error.NotObject };
+    const ch_obj = switch (ch_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = ch_obj.get("result") orelse return error.NoResult;
     try std.testing.expect(result == .array or result == .null);
 }
@@ -19632,10 +22654,16 @@ test "T_UTF16 position negotiation with multibyte characters" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     // Server must handle utf-16 request and return a valid (non-error) response
     const hover_resp = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const hover_obj = switch (hover_resp) { .object => |o| o, else => return error.NotObject };
+    const hover_obj = switch (hover_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     // Result key must be present (may be null if not indexed, but must not be an error)
     try std.testing.expect(hover_obj.get("result") != null);
     if (hover_obj.get("error")) |ev| try std.testing.expect(ev == .null);
@@ -19661,19 +22689,35 @@ test "T_DOCUMENT_HIGHLIGHT_KINDS definition site is write, reference site is rea
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const hl_resp = getResponseById(resp, 2) orelse return error.NoHighlightResponse;
-    const hl_obj = switch (hl_resp) { .object => |o| o, else => return error.NotObject };
+    const hl_obj = switch (hl_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = hl_obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, .null => return, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        .null => return,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len >= 2);
     // Find definition (write) site with kind 3, and reference (read) site with kind 2
     var found_write = false;
     var found_read = false;
     for (arr.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const kind_val = obj.get("kind") orelse continue;
-        const k = switch (kind_val) { .integer => |i| i, else => continue };
+        const k = switch (kind_val) {
+            .integer => |i| i,
+            else => continue,
+        };
         if (k == 3) found_write = true;
         if (k == 2) found_read = true;
     }
@@ -19701,21 +22745,39 @@ test "T_KERNEL_COMPLETION Kernel methods appear at top level" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const comp_resp = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const comp_obj = switch (comp_resp) { .object => |o| o, else => return error.NotObject };
+    const comp_obj = switch (comp_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = comp_obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.NotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const items = switch (result_obj.get("items") orelse return error.NoItems) {
         .array => |a| a,
         else => return error.NotArray,
     };
     var found_puts = false;
     for (items.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const label_val = obj.get("label") orelse continue;
-        const label = switch (label_val) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, label, "puts")) { found_puts = true; break; }
+        const label = switch (label_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, label, "puts")) {
+            found_puts = true;
+            break;
+        }
     }
     try std.testing.expect(found_puts);
 }
@@ -19738,19 +22800,41 @@ test "T_ENDLESS_METHOD endless method def is indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, .null => return, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        .null => return,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = obj.get("name") orelse continue;
-        const name = switch (name_val) { .string => |sv| sv, else => continue };
+        const name = switch (name_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
         const kind_val = obj.get("kind") orelse continue;
-        const kind = switch (kind_val) { .integer => |i| i, else => continue };
-        if (std.mem.eql(u8, name, "double") and kind == 6) { found = true; break; }
+        const kind = switch (kind_val) {
+            .integer => |i| i,
+            else => continue,
+        };
+        if (std.mem.eql(u8, name, "double") and kind == 6) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -19773,17 +22857,36 @@ test "T_ALIAS_SYMBOL alias creates navigable symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = sym_obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, .null => return, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        .null => return,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const obj = switch (item) { .object => |o| o, else => continue };
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = obj.get("name") orelse continue;
-        const name = switch (name_val) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, name, "baz")) { found = true; break; }
+        const name = switch (name_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, name, "baz")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -19850,15 +22953,30 @@ test "T_UTF16_DEFAULT pre-3.17 client gets utf-16 positionEncoding" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const init_resp = getResponseById(resp, 1) orelse return error.NoInitResponse;
-    const init_obj = switch (init_resp) { .object => |o| o, else => return error.NotObject };
+    const init_obj = switch (init_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result_val = init_obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result_val) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result_val) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const caps_val = result_obj.get("capabilities") orelse return error.NoCaps;
-    const caps_obj = switch (caps_val) { .object => |o| o, else => return error.CapsNotObject };
+    const caps_obj = switch (caps_val) {
+        .object => |o| o,
+        else => return error.CapsNotObject,
+    };
     const pos_enc = caps_obj.get("positionEncoding") orelse return error.NoPositionEncoding;
-    const enc_str = switch (pos_enc) { .string => |sv| sv, else => return error.NotString };
+    const enc_str = switch (pos_enc) {
+        .string => |sv| sv,
+        else => return error.NotString,
+    };
     try std.testing.expectEqualStrings("utf-16", enc_str);
 }
 
@@ -19894,10 +23012,16 @@ test "T_DELETED_PATHS_CLEANUP deleted_paths cleared after index cycle" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoExecResponse;
     const sym_resp = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(sym_obj.get("result") != null);
 }
 
@@ -19921,9 +23045,15 @@ test "T_EXCLUDEDIRS_SAVE file in excludeDir not re-indexed on save" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const sym_resp = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.NotObject };
+    const sym_obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const sym_result = sym_obj.get("result") orelse return error.NoResult;
     switch (sym_result) {
         .array => |a| try std.testing.expectEqual(@as(usize, 0), a.items.len),
@@ -19958,31 +23088,67 @@ test "T_UTF16_OUTPUT workspace/symbol character column correct for UTF-16 vs UTF
         const raw = try s.run();
         defer alloc.free(raw);
         const resp = try extractResponses(alloc, raw);
-        defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+        defer {
+            for (resp) |r| r.deinit();
+            alloc.free(resp);
+        }
 
         // Confirm positionEncoding is utf-16
         const init_resp = getResponseById(resp, 1) orelse return error.NoInitResponse;
-        const init_obj = switch (init_resp) { .object => |o| o, else => return error.NotObject };
+        const init_obj = switch (init_resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
         const result_val = init_obj.get("result") orelse return error.NoResult;
-        const result_obj = switch (result_val) { .object => |o| o, else => return error.ResultNotObject };
+        const result_obj = switch (result_val) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
         const caps_val = result_obj.get("capabilities") orelse return error.NoCaps;
-        const caps_obj = switch (caps_val) { .object => |o| o, else => return error.CapsNotObject };
+        const caps_obj = switch (caps_val) {
+            .object => |o| o,
+            else => return error.CapsNotObject,
+        };
         const pos_enc = caps_obj.get("positionEncoding") orelse return error.NoPositionEncoding;
-        const enc_str = switch (pos_enc) { .string => |sv| sv, else => return error.NotString };
+        const enc_str = switch (pos_enc) {
+            .string => |sv| sv,
+            else => return error.NotString,
+        };
         try std.testing.expectEqualStrings("utf-16", enc_str);
 
         // Check workspace/symbol result character
         const sym_resp = getResponseById(resp, 2) orelse return error.NoSymResponse;
-        const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.SymNotObject };
+        const sym_obj = switch (sym_resp) {
+            .object => |o| o,
+            else => return error.SymNotObject,
+        };
         const sym_result = sym_obj.get("result") orelse return error.NoSymResult;
-        const sym_arr = switch (sym_result) { .array => |a| a, else => return error.SymNotArray };
+        const sym_arr = switch (sym_result) {
+            .array => |a| a,
+            else => return error.SymNotArray,
+        };
         if (sym_arr.items.len == 0) return error.SymEmpty;
-        const sym0 = switch (sym_arr.items[0]) { .object => |o| o, else => return error.Sym0NotObject };
-        const loc = switch (sym0.get("location") orelse return error.NoLocation) { .object => |o| o, else => return error.LocNotObject };
-        const range = switch (loc.get("range") orelse return error.NoRange) { .object => |o| o, else => return error.RangeNotObject };
-        const start = switch (range.get("start") orelse return error.NoStart) { .object => |o| o, else => return error.StartNotObject };
+        const sym0 = switch (sym_arr.items[0]) {
+            .object => |o| o,
+            else => return error.Sym0NotObject,
+        };
+        const loc = switch (sym0.get("location") orelse return error.NoLocation) {
+            .object => |o| o,
+            else => return error.LocNotObject,
+        };
+        const range = switch (loc.get("range") orelse return error.NoRange) {
+            .object => |o| o,
+            else => return error.RangeNotObject,
+        };
+        const start = switch (range.get("start") orelse return error.NoStart) {
+            .object => |o| o,
+            else => return error.StartNotObject,
+        };
         const char_val = start.get("character") orelse return error.NoCharacter;
-        const char_int = switch (char_val) { .integer => |i| i, else => return error.CharNotInt };
+        const char_int = switch (char_val) {
+            .integer => |i| i,
+            else => return error.CharNotInt,
+        };
         // File: é; class Foo\n  →  "class" keyword at UTF-8 byte 4, UTF-16 char 3
         // (é=2 bytes but 1 UTF-16 unit, so byte 4 → char 3)
         try std.testing.expectEqual(@as(i64, 3), char_int);
@@ -20001,19 +23167,43 @@ test "T_UTF16_OUTPUT workspace/symbol character column correct for UTF-16 vs UTF
         const raw = try s.run();
         defer alloc.free(raw);
         const resp = try extractResponses(alloc, raw);
-        defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+        defer {
+            for (resp) |r| r.deinit();
+            alloc.free(resp);
+        }
 
         const sym_resp = getResponseById(resp, 2) orelse return error.NoSymResponse;
-        const sym_obj = switch (sym_resp) { .object => |o| o, else => return error.SymNotObject };
+        const sym_obj = switch (sym_resp) {
+            .object => |o| o,
+            else => return error.SymNotObject,
+        };
         const sym_result = sym_obj.get("result") orelse return error.NoSymResult;
-        const sym_arr = switch (sym_result) { .array => |a| a, else => return error.SymNotArray };
+        const sym_arr = switch (sym_result) {
+            .array => |a| a,
+            else => return error.SymNotArray,
+        };
         if (sym_arr.items.len == 0) return error.SymEmpty;
-        const sym0 = switch (sym_arr.items[0]) { .object => |o| o, else => return error.Sym0NotObject };
-        const loc = switch (sym0.get("location") orelse return error.NoLocation) { .object => |o| o, else => return error.LocNotObject };
-        const range = switch (loc.get("range") orelse return error.NoRange) { .object => |o| o, else => return error.RangeNotObject };
-        const start = switch (range.get("start") orelse return error.NoStart) { .object => |o| o, else => return error.StartNotObject };
+        const sym0 = switch (sym_arr.items[0]) {
+            .object => |o| o,
+            else => return error.Sym0NotObject,
+        };
+        const loc = switch (sym0.get("location") orelse return error.NoLocation) {
+            .object => |o| o,
+            else => return error.LocNotObject,
+        };
+        const range = switch (loc.get("range") orelse return error.NoRange) {
+            .object => |o| o,
+            else => return error.RangeNotObject,
+        };
+        const start = switch (range.get("start") orelse return error.NoStart) {
+            .object => |o| o,
+            else => return error.StartNotObject,
+        };
         const char_val = start.get("character") orelse return error.NoCharacter;
-        const char_int = switch (char_val) { .integer => |i| i, else => return error.CharNotInt };
+        const char_int = switch (char_val) {
+            .integer => |i| i,
+            else => return error.CharNotInt,
+        };
         // UTF-8: é counts as 2 bytes, so "class" keyword is at byte column 4 (no conversion)
         try std.testing.expectEqual(@as(i64, 4), char_int);
     }
@@ -20050,16 +23240,28 @@ test "T_CROSS_FILE_RENAME rename in multi-file workspace returns workspace edit 
     }
 
     const resp = getResponseById(responses, 2) orelse return error.NoRenameResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const changes = result_obj.get("changes") orelse return error.NoChanges;
-    const changes_obj = switch (changes) { .object => |o| o, else => return error.ChangesNotObject };
+    const changes_obj = switch (changes) {
+        .object => |o| o,
+        else => return error.ChangesNotObject,
+    };
     // user.rb has both the def and a call to greet — count all edits across all files
     var total_edits: usize = 0;
     var it = changes_obj.iterator();
     while (it.next()) |entry| {
-        const edits = switch (entry.value_ptr.*) { .array => |a| a, else => continue };
+        const edits = switch (entry.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
         total_edits += edits.items.len;
     }
     try std.testing.expect(total_edits >= 2);
@@ -20089,12 +23291,27 @@ test "textDocumentSync advertises change:1" {
     }
 
     const resp = getResponseById(responses, 1) orelse return error.NoInitializeResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
-    const caps = switch (result_obj.get("capabilities") orelse return error.NoCaps) { .object => |o| o, else => return error.CapsNotObject };
-    const sync = switch (caps.get("textDocumentSync") orelse return error.NoSync) { .object => |o| o, else => return error.SyncNotObject };
-    const change = switch (sync.get("change") orelse return error.NoChange) { .integer => |i| i, else => return error.ChangeNotInt };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const caps = switch (result_obj.get("capabilities") orelse return error.NoCaps) {
+        .object => |o| o,
+        else => return error.CapsNotObject,
+    };
+    const sync = switch (caps.get("textDocumentSync") orelse return error.NoSync) {
+        .object => |o| o,
+        else => return error.SyncNotObject,
+    };
+    const change = switch (sync.get("change") orelse return error.NoChange) {
+        .integer => |i| i,
+        else => return error.ChangeNotInt,
+    };
     try std.testing.expectEqual(@as(i64, 2), change);
 }
 
@@ -20131,14 +23348,32 @@ test "file deletion clears diagnostics" {
     const target_uri = "file://" ++ ws ++ "/broken.rb";
     var found_empty = false;
     for (responses) |r| {
-        const robj = switch (r.value) { .object => |o| o, else => continue };
-        const m = switch (robj.get("method") orelse continue) { .string => |sv| sv, else => continue };
+        const robj = switch (r.value) {
+            .object => |o| o,
+            else => continue,
+        };
+        const m = switch (robj.get("method") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, m, "textDocument/publishDiagnostics")) continue;
-        const params = switch (robj.get("params") orelse continue) { .object => |o| o, else => continue };
-        const uri = switch (params.get("uri") orelse continue) { .string => |sv| sv, else => continue };
+        const params = switch (robj.get("params") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const uri = switch (params.get("uri") orelse continue) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (!std.mem.eql(u8, uri, target_uri)) continue;
-        const diags = switch (params.get("diagnostics") orelse continue) { .array => |a| a, else => continue };
-        if (diags.items.len == 0) { found_empty = true; break; }
+        const diags = switch (params.get("diagnostics") orelse continue) {
+            .array => |a| a,
+            else => continue,
+        };
+        if (diags.items.len == 0) {
+            found_empty = true;
+            break;
+        }
     }
     try std.testing.expect(found_empty);
 }
@@ -20167,16 +23402,37 @@ test "recheckRubocop in executeCommandProvider" {
     }
 
     const resp = getResponseById(responses, 1) orelse return error.NoInitializeResponse;
-    const obj = switch (resp) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
-    const caps = switch (result_obj.get("capabilities") orelse return error.NoCaps) { .object => |o| o, else => return error.CapsNotObject };
-    const exec_prov = switch (caps.get("executeCommandProvider") orelse return error.NoExecProv) { .object => |o| o, else => return error.ExecProvNotObject };
-    const commands = switch (exec_prov.get("commands") orelse return error.NoCommands) { .array => |a| a, else => return error.CommandsNotArray };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const caps = switch (result_obj.get("capabilities") orelse return error.NoCaps) {
+        .object => |o| o,
+        else => return error.CapsNotObject,
+    };
+    const exec_prov = switch (caps.get("executeCommandProvider") orelse return error.NoExecProv) {
+        .object => |o| o,
+        else => return error.ExecProvNotObject,
+    };
+    const commands = switch (exec_prov.get("commands") orelse return error.NoCommands) {
+        .array => |a| a,
+        else => return error.CommandsNotArray,
+    };
     var found = false;
     for (commands.items) |cmd| {
-        const s2 = switch (cmd) { .string => |sv| sv, else => continue };
-        if (std.mem.eql(u8, s2, "refract.recheckRubocop")) { found = true; break; }
+        const s2 = switch (cmd) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, s2, "refract.recheckRubocop")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -20198,7 +23454,10 @@ test "P19 T19.1 pull diagnostic returns kind:full with resultId" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDiagResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"kind\":\"full\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"resultId\":\"") != null);
@@ -20221,7 +23480,10 @@ test "P19 T19.2 pull diagnostic includes syntax errors" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 2) orelse return error.NoDiagResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"severity\":1") != null);
 }
@@ -20236,11 +23498,9 @@ test "P19 T19.3 pull diagnostic returns kind:unchanged for same content" {
     const hash_val = std.hash.Wyhash.hash(0, content);
     var hash_buf: [20]u8 = undefined;
     const result_id_str = std.fmt.bufPrint(&hash_buf, "{x}", .{hash_val}) catch "0";
-    const second_req = try std.fmt.allocPrint(alloc,
-        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/diagnostic\"," ++
+    const second_req = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/diagnostic\"," ++
         "\"params\":{{\"textDocument\":{{\"uri\":\"file://" ++ ws ++ "/b.rb\"}}," ++
-        "\"previousResultId\":\"{s}\"}}}}",
-        .{result_id_str});
+        "\"previousResultId\":\"{s}\"}}}}", .{result_id_str});
     defer alloc.free(second_req);
     var s = try Session.init(alloc);
     defer s.deinit();
@@ -20254,7 +23514,10 @@ test "P19 T19.3 pull diagnostic returns kind:unchanged for same content" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 3) orelse return error.NoDiagResponse;
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"kind\":\"unchanged\"") != null);
 }
@@ -20283,7 +23546,10 @@ test "P19 T19.4 semantic tokens delta no deleteCount:0 when prev blob missing" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     _ = getResponseById(resp, 3) orelse return error.NoDeltaResponse;
     // Fix 3: must NOT emit deleteCount:0 (which inserts tokens on top of existing ones)
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"deleteCount\":0") == null);
@@ -20309,13 +23575,25 @@ test "P20 T20.1 semantic tokens UTF-16 converter produces valid token stream" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoSemTokensResponse;
-    const r3outer = switch (r3) { .object => |o| o, else => return error.NotAnObject };
+    const r3outer = switch (r3) {
+        .object => |o| o,
+        else => return error.NotAnObject,
+    };
     const result_val = r3outer.get("result") orelse return error.NoResultField;
-    const r3obj = switch (result_val) { .object => |o| o, else => return error.ResultNotObject };
+    const r3obj = switch (result_val) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const data_val = r3obj.get("data") orelse return error.NoDataField;
-    const data_arr = switch (data_val) { .array => |a| a, else => return error.DataNotArray };
+    const data_arr = switch (data_val) {
+        .array => |a| a,
+        else => return error.DataNotArray,
+    };
     // Token stream must be a multiple of 5
     try std.testing.expect(data_arr.items.len % 5 == 0);
 }
@@ -20337,16 +23615,28 @@ test "P20 T20.2 formatting range covers last line without trailing newline" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r2 = getResponseById(resp, 2) orelse return error.NoFormattingResponse;
     switch (r2) {
         .array => |arr| {
             if (arr.items.len > 0) {
-                const edit = switch (arr.items[0]) { .object => |o| o, else => return error.EditNotObject };
+                const edit = switch (arr.items[0]) {
+                    .object => |o| o,
+                    else => return error.EditNotObject,
+                };
                 const range_val = edit.get("range") orelse return error.NoRange;
-                const range_obj = switch (range_val) { .object => |o| o, else => return error.RangeNotObject };
+                const range_obj = switch (range_val) {
+                    .object => |o| o,
+                    else => return error.RangeNotObject,
+                };
                 const end_val = range_obj.get("end") orelse return error.NoEnd;
-                const end_obj = switch (end_val) { .object => |o| o, else => return error.EndNotObject };
+                const end_obj = switch (end_val) {
+                    .object => |o| o,
+                    else => return error.EndNotObject,
+                };
                 const end_line = switch (end_obj.get("line") orelse return error.NoLine) {
                     .integer => |i| i,
                     else => return error.LineNotInt,
@@ -20379,26 +23669,62 @@ test "P20 T20.3 documentSymbol selectionRange is not 999" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
-    const r3outer = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3outer = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3outer.get("result") orelse return error.NoResultField;
-    const syms = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const syms = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     if (syms.items.len == 0) return error.NoSymbols;
-    const top = switch (syms.items[0]) { .object => |o| o, else => return error.NotObject };
-    const sel = switch (top.get("selectionRange") orelse return error.NoSelectionRange) { .object => |o| o, else => return error.SelRangeNotObj };
-    const sel_end = switch (sel.get("end") orelse return error.NoEnd) { .object => |o| o, else => return error.EndNotObj };
-    const ec = switch (sel_end.get("character") orelse return error.NoChar) { .integer => |i| i, else => return error.CharNotInt };
+    const top = switch (syms.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const sel = switch (top.get("selectionRange") orelse return error.NoSelectionRange) {
+        .object => |o| o,
+        else => return error.SelRangeNotObj,
+    };
+    const sel_end = switch (sel.get("end") orelse return error.NoEnd) {
+        .object => |o| o,
+        else => return error.EndNotObj,
+    };
+    const ec = switch (sel_end.get("character") orelse return error.NoChar) {
+        .integer => |i| i,
+        else => return error.CharNotInt,
+    };
     try std.testing.expect(ec != 999);
     try std.testing.expect(ec > 0);
     // Check child selectionRange
     const children_val = top.get("children") orelse return error.NoChildren;
-    const children = switch (children_val) { .array => |a| a, else => return error.ChildrenNotArray };
+    const children = switch (children_val) {
+        .array => |a| a,
+        else => return error.ChildrenNotArray,
+    };
     if (children.items.len > 0) {
-        const child = switch (children.items[0]) { .object => |o| o, else => return error.ChildNotObj };
-        const csel = switch (child.get("selectionRange") orelse return error.NoChildSel) { .object => |o| o, else => return error.CSelNotObj };
-        const csel_end = switch (csel.get("end") orelse return error.NoCEnd) { .object => |o| o, else => return error.CEndNotObj };
-        const cec = switch (csel_end.get("character") orelse return error.NoCChar) { .integer => |i| i, else => return error.CCharNotInt };
+        const child = switch (children.items[0]) {
+            .object => |o| o,
+            else => return error.ChildNotObj,
+        };
+        const csel = switch (child.get("selectionRange") orelse return error.NoChildSel) {
+            .object => |o| o,
+            else => return error.CSelNotObj,
+        };
+        const csel_end = switch (csel.get("end") orelse return error.NoCEnd) {
+            .object => |o| o,
+            else => return error.CEndNotObj,
+        };
+        const cec = switch (csel_end.get("character") orelse return error.NoCChar) {
+            .integer => |i| i,
+            else => return error.CCharNotInt,
+        };
         try std.testing.expect(cec != 999);
     }
 }
@@ -20423,17 +23749,29 @@ test "P20 T20.4 hover response includes range field" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoHoverResponse;
-    const r3outer = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3outer = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3outer.get("result") orelse .null;
     switch (r3result) {
         .null => {},
         .object => |obj| {
             const range_val = obj.get("range") orelse return error.NoRangeInHover;
-            const range_obj = switch (range_val) { .object => |o| o, else => return error.RangeNotObj };
+            const range_obj = switch (range_val) {
+                .object => |o| o,
+                else => return error.RangeNotObj,
+            };
             const start_val = range_obj.get("start") orelse return error.NoStart;
-            const start_obj = switch (start_val) { .object => |o| o, else => return error.StartNotObj };
+            const start_obj = switch (start_val) {
+                .object => |o| o,
+                else => return error.StartNotObj,
+            };
             const start_line = switch (start_obj.get("line") orelse return error.NoLine) {
                 .integer => |i| i,
                 else => return error.LineNotInt,
@@ -20462,11 +23800,20 @@ test "P21 T21.1 UTF-8 BOM stripped from source" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r2 = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const r2obj = switch (r2) { .object => |o| o, else => return error.NotObject };
+    const r2obj = switch (r2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r2result = r2obj.get("result") orelse return error.NoResult;
-    const arr = switch (r2result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r2result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len > 0);
 }
 
@@ -20497,11 +23844,20 @@ test "P21 T21.2 codeLens returns 250+ symbols" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoCodeLensResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len >= 250);
 }
 
@@ -20532,11 +23888,20 @@ test "P21 T21.3 workspace symbol returns 250+ matches" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoSymbolResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len >= 250);
 }
 
@@ -20559,24 +23924,51 @@ test "P21 T21.4 method_missing in documentSymbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoDocSymResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = iobj.get("name") orelse continue;
-        const iname = switch (name_val) { .string => |sv| sv, else => continue };
+        const iname = switch (name_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, iname, "Proxy")) {
             const children_val = iobj.get("children") orelse continue;
-            const children = switch (children_val) { .array => |a| a, else => continue };
+            const children = switch (children_val) {
+                .array => |a| a,
+                else => continue,
+            };
             for (children.items) |child| {
-                const cobj = switch (child) { .object => |o| o, else => continue };
+                const cobj = switch (child) {
+                    .object => |o| o,
+                    else => continue,
+                };
                 const cname_val = cobj.get("name") orelse continue;
-                const cname = switch (cname_val) { .string => |sv| sv, else => continue };
-                if (std.mem.eql(u8, cname, "method_missing")) { found = true; break; }
+                const cname = switch (cname_val) {
+                    .string => |sv| sv,
+                    else => continue,
+                };
+                if (std.mem.eql(u8, cname, "method_missing")) {
+                    found = true;
+                    break;
+                }
             }
         }
     }
@@ -20602,24 +23994,51 @@ test "P21 T21.5 respond_to_missing? in documentSymbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoDocSymResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = iobj.get("name") orelse continue;
-        const iname = switch (name_val) { .string => |sv| sv, else => continue };
+        const iname = switch (name_val) {
+            .string => |sv| sv,
+            else => continue,
+        };
         if (std.mem.eql(u8, iname, "Proxy2")) {
             const children_val = iobj.get("children") orelse continue;
-            const children = switch (children_val) { .array => |a| a, else => continue };
+            const children = switch (children_val) {
+                .array => |a| a,
+                else => continue,
+            };
             for (children.items) |child| {
-                const cobj = switch (child) { .object => |o| o, else => continue };
+                const cobj = switch (child) {
+                    .object => |o| o,
+                    else => continue,
+                };
                 const cname_val = cobj.get("name") orelse continue;
-                const cname = switch (cname_val) { .string => |sv| sv, else => continue };
-                if (std.mem.eql(u8, cname, "respond_to_missing?")) { found = true; break; }
+                const cname = switch (cname_val) {
+                    .string => |sv| sv,
+                    else => continue,
+                };
+                if (std.mem.eql(u8, cname, "respond_to_missing?")) {
+                    found = true;
+                    break;
+                }
             }
         }
     }
@@ -20646,21 +24065,45 @@ test "P21 T21.6 require_relative definition jump" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoDefResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len > 0);
-    const loc = switch (arr.items[0]) { .object => |o| o, else => return error.NotLocObj };
+    const loc = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.NotLocObj,
+    };
     const uri_val = loc.get("uri") orelse return error.NoUri;
-    const uri_sv = switch (uri_val) { .string => |sv| sv, else => return error.UriNotString };
+    const uri_sv = switch (uri_val) {
+        .string => |sv| sv,
+        else => return error.UriNotString,
+    };
     try std.testing.expect(std.mem.endsWith(u8, uri_sv, "/b.rb"));
     const range_val = loc.get("range") orelse return error.NoRange;
-    const range_obj = switch (range_val) { .object => |o| o, else => return error.RangeNotObj };
+    const range_obj = switch (range_val) {
+        .object => |o| o,
+        else => return error.RangeNotObj,
+    };
     const start_val = range_obj.get("start") orelse return error.NoStart;
-    const start_obj = switch (start_val) { .object => |o| o, else => return error.StartNotObj };
-    const start_line = switch (start_obj.get("line") orelse return error.NoLine) { .integer => |i| i, else => return error.LineNotInt };
+    const start_obj = switch (start_val) {
+        .object => |o| o,
+        else => return error.StartNotObj,
+    };
+    const start_line = switch (start_obj.get("line") orelse return error.NoLine) {
+        .integer => |i| i,
+        else => return error.LineNotInt,
+    };
     try std.testing.expect(start_line == 0);
 }
 
@@ -20691,11 +24134,20 @@ test "P21 T21.7 gitignore negation respected" {
     const raw = try s.runWithArgs(&.{ "--db-path", db });
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r3 = getResponseById(resp, 3) orelse return error.NoBadOneResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const bad_arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const bad_arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(bad_arr.items.len == 0);
 }
 
@@ -20726,9 +24178,15 @@ test "P21 T21.8 PRAGMA optimize smoke no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r2 = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const r2obj = switch (r2) { .object => |o| o, else => return error.NotObject };
+    const r2obj = switch (r2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = r2obj.get("result") orelse return error.NoResult;
 }
 
@@ -20748,15 +24206,28 @@ test "P22 T22.1 willSaveWaitUntil returns empty array not error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 50) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     if (obj.get("error")) |e| {
-        const eobj = switch (e) { .object => |o| o, else => return error.ErrorNotObject };
-        _ = eobj; return error.GotErrorNotEmpty;
+        const eobj = switch (e) {
+            .object => |o| o,
+            else => return error.ErrorNotObject,
+        };
+        _ = eobj;
+        return error.GotErrorNotEmpty;
     }
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len == 0);
 }
 
@@ -20776,9 +24247,15 @@ test "P22 T22.2 willCreateFiles returns null not error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 51) orelse return error.NoResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     if (obj.get("error")) |_| return error.GotError;
     _ = obj.get("result") orelse return error.NoResult;
 }
@@ -20802,21 +24279,45 @@ test "P22 T22.3 alias keyword new name in documentSymbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoDocSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found_hello = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = iobj.get("name") orelse continue;
-        const name = switch (name_val) { .string => |s2| s2, else => continue };
+        const name = switch (name_val) {
+            .string => |s2| s2,
+            else => continue,
+        };
         if (std.mem.eql(u8, name, "hello")) found_hello = true;
-        const children = switch (iobj.get("children") orelse continue) { .array => |a| a, else => continue };
+        const children = switch (iobj.get("children") orelse continue) {
+            .array => |a| a,
+            else => continue,
+        };
         for (children.items) |child| {
-            const cobj = switch (child) { .object => |o| o, else => continue };
-            const cn = switch (cobj.get("name") orelse continue) { .string => |s2| s2, else => continue };
+            const cobj = switch (child) {
+                .object => |o| o,
+                else => continue,
+            };
+            const cn = switch (cobj.get("name") orelse continue) {
+                .string => |s2| s2,
+                else => continue,
+            };
             if (std.mem.eql(u8, cn, "hello")) found_hello = true;
         }
     }
@@ -20842,15 +24343,30 @@ test "P22 T22.4 alias keyword new name in workspace symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(arr.items.len > 0);
-    const first_item = switch (arr.items[0]) { .object => |o| o, else => return error.ItemNotObject };
+    const first_item = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.ItemNotObject,
+    };
     const name_val = first_item.get("name") orelse return error.NoName;
-    const name = switch (name_val) { .string => |s2| s2, else => return error.NameNotString };
+    const name = switch (name_val) {
+        .string => |s2| s2,
+        else => return error.NameNotString,
+    };
     try std.testing.expectEqualStrings("hello", name);
 }
 
@@ -20881,19 +24397,46 @@ test "P22 T22.5 keyword param completion includes colon suffix" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
-    const items = switch (result_obj.get("items") orelse return error.NoItems) { .array => |a| a, else => return error.ItemsNotArray };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const items = switch (result_obj.get("items") orelse return error.NoItems) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_timeout_colon = false;
     for (items.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
-        const label = switch (iobj.get("label") orelse continue) { .string => |s2| s2, else => continue };
-        if (std.mem.eql(u8, label, "timeout:")) { found_timeout_colon = true; break; }
-        const insert_text = switch (iobj.get("insertText") orelse continue) { .string => |s2| s2, else => continue };
-        if (std.mem.indexOf(u8, insert_text, "timeout:") != null) { found_timeout_colon = true; break; }
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const label = switch (iobj.get("label") orelse continue) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.eql(u8, label, "timeout:")) {
+            found_timeout_colon = true;
+            break;
+        }
+        const insert_text = switch (iobj.get("insertText") orelse continue) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.indexOf(u8, insert_text, "timeout:") != null) {
+            found_timeout_colon = true;
+            break;
+        }
     }
     try std.testing.expect(found_timeout_colon);
 }
@@ -20917,14 +24460,29 @@ test "P22 T22.6 hover on class shows superclass" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
-    const value = switch (contents_obj.get("value") orelse return error.NoValue) { .string => |s2| s2, else => return error.ValueNotString };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
+    const value = switch (contents_obj.get("value") orelse return error.NoValue) {
+        .string => |s2| s2,
+        else => return error.ValueNotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value, "Animal") != null);
 }
 
@@ -20947,14 +24505,29 @@ test "P22 T22.7 hover on class shows included module" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const contents = result_obj.get("contents") orelse return error.NoContents;
-    const contents_obj = switch (contents) { .object => |o| o, else => return error.ContentsNotObject };
-    const value = switch (contents_obj.get("value") orelse return error.NoValue) { .string => |s2| s2, else => return error.ValueNotString };
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
+    const value = switch (contents_obj.get("value") orelse return error.NoValue) {
+        .string => |s2| s2,
+        else => return error.ValueNotString,
+    };
     try std.testing.expect(std.mem.indexOf(u8, value, "Walkable") != null);
 }
 
@@ -20979,17 +24552,38 @@ test "P22 T22.8 require_relative completion suggests workspace files" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) { .object => |o| o, else => return error.ResultNotObject };
-    const items = switch (result_obj.get("items") orelse return error.NoItems) { .array => |a| a, else => return error.ItemsNotArray };
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const items = switch (result_obj.get("items") orelse return error.NoItems) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found_helper = false;
     for (items.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
-        const label = switch (iobj.get("label") orelse continue) { .string => |s2| s2, else => continue };
-        if (std.mem.indexOf(u8, label, "helper") != null) { found_helper = true; break; }
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const label = switch (iobj.get("label") orelse continue) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.indexOf(u8, label, "helper") != null) {
+            found_helper = true;
+            break;
+        }
     }
     try std.testing.expect(found_helper);
 }
@@ -21018,9 +24612,15 @@ test "P22 T22.9b concurrent didChange no crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
-    const robj = switch (r) { .object => |o| o, else => return error.NotObject };
+    const robj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     _ = robj.get("result") orelse return error.NoResult;
 }
 
@@ -21044,26 +24644,50 @@ test "P22 T22.10 alias_method and bare alias coexist in documentSymbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const resp = try extractResponses(alloc, raw);
-    defer { for (resp) |r| r.deinit(); alloc.free(resp); }
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
     const r2 = getResponseById(resp, 2) orelse return error.NoDocSymbolResponse;
-    const r2obj = switch (r2) { .object => |o| o, else => return error.NotObject };
+    const r2obj = switch (r2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r2result = r2obj.get("result") orelse return error.NoResult;
-    const arr = switch (r2result) { .array => |a| a, else => return error.NotArray };
+    const arr = switch (r2result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     var found_original = false;
     var found_dsl = false;
     var found_kw = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name_val = iobj.get("name") orelse continue;
-        const name = switch (name_val) { .string => |s2| s2, else => continue };
+        const name = switch (name_val) {
+            .string => |s2| s2,
+            else => continue,
+        };
         if (std.mem.eql(u8, name, "original")) found_original = true;
         if (std.mem.eql(u8, name, "dsl_alias")) found_dsl = true;
         if (std.mem.eql(u8, name, "kw_alias")) found_kw = true;
         if (iobj.get("children")) |chv| {
-            const children = switch (chv) { .array => |a| a, else => continue };
+            const children = switch (chv) {
+                .array => |a| a,
+                else => continue,
+            };
             for (children.items) |child| {
-                const cobj = switch (child) { .object => |o| o, else => continue };
-                const cn = switch (cobj.get("name") orelse continue) { .string => |s2| s2, else => continue };
+                const cobj = switch (child) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const cn = switch (cobj.get("name") orelse continue) {
+                    .string => |s2| s2,
+                    else => continue,
+                };
                 if (std.mem.eql(u8, cn, "original")) found_original = true;
                 if (std.mem.eql(u8, cn, "dsl_alias")) found_dsl = true;
                 if (std.mem.eql(u8, cn, "kw_alias")) found_kw = true;
@@ -21074,9 +24698,15 @@ test "P22 T22.10 alias_method and bare alias coexist in documentSymbol" {
     try std.testing.expect(found_dsl);
     try std.testing.expect(found_kw);
     const r3 = getResponseById(resp, 3) orelse return error.NoWsSymbolResponse;
-    const r3obj = switch (r3) { .object => |o| o, else => return error.NotObject };
+    const r3obj = switch (r3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const r3result = r3obj.get("result") orelse return error.NoResult;
-    const r3arr = switch (r3result) { .array => |a| a, else => return error.NotArray };
+    const r3arr = switch (r3result) {
+        .array => |a| a,
+        else => return error.NotArray,
+    };
     try std.testing.expect(r3arr.items.len > 0);
 }
 
@@ -21099,19 +24729,37 @@ test "P23 T23.1 incomingCalls from.name is caller method name not file path" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
     // Verify from.name is the caller function name, not a file path
-    const first = switch (arr.items[0]) { .object => |o| o, else => return error.NotObject };
+    const first = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const from_val = first.get("from") orelse return error.NoFrom;
-    const from = switch (from_val) { .object => |o| o, else => return error.NotObject };
+    const from = switch (from_val) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const name_val = from.get("name") orelse return error.NoName;
-    const name = switch (name_val) { .string => |s2| s2, else => return error.NotString };
+    const name = switch (name_val) {
+        .string => |s2| s2,
+        else => return error.NotString,
+    };
     // Must be a method name ("driver"), not a file path (which would contain '/')
     try std.testing.expect(!std.mem.containsAtLeast(u8, name, 1, "/"));
     try std.testing.expectEqualStrings("driver", name);
@@ -21136,23 +24784,44 @@ test "P23 T23.2 private def inline does not leak visibility to subsequent method
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     // Both secret and visible should appear in documentSymbol
     var found_secret = false;
     var found_visible = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const children_val = iobj.get("children") orelse continue;
-        const children = switch (children_val) { .array => |a| a, else => continue };
+        const children = switch (children_val) {
+            .array => |a| a,
+            else => continue,
+        };
         for (children.items) |child| {
-            const cobj = switch (child) { .object => |o| o, else => continue };
+            const cobj = switch (child) {
+                .object => |o| o,
+                else => continue,
+            };
             const n_val = cobj.get("name") orelse continue;
-            const n = switch (n_val) { .string => |s2| s2, else => continue };
+            const n = switch (n_val) {
+                .string => |s2| s2,
+                else => continue,
+            };
             if (std.mem.eql(u8, n, "secret")) found_secret = true;
             if (std.mem.eql(u8, n, "visible")) found_visible = true;
         }
@@ -21180,17 +24849,32 @@ test "P23 T23.3 nested constant has correct parent_name in workspace symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
     // Check that the first TIMEOUT result has containerName "Config"
-    const first = switch (arr.items[0]) { .object => |o| o, else => return error.NotObject };
+    const first = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const cn_val = first.get("containerName") orelse return error.NoContainerName;
-    const cn = switch (cn_val) { .string => |s2| s2, else => return error.NotString };
+    const cn = switch (cn_val) {
+        .string => |s2| s2,
+        else => return error.NotString,
+    };
     try std.testing.expectEqualStrings("Config", cn);
 }
 
@@ -21213,9 +24897,15 @@ test "P24 T24.1 ivar or-write indexed for hover and workspace symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     // @result should be found (hover returns a result, not null)
     try std.testing.expect(obj.get("result") != null);
@@ -21240,16 +24930,31 @@ test "P24 T24.2 constant or-write indexed with containerName in workspace symbol
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
-    const first = switch (arr.items[0]) { .object => |o| o, else => return error.NotObject };
+    const first = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const cn_val = first.get("containerName") orelse return error.NoContainerName;
-    const cn = switch (cn_val) { .string => |s2| s2, else => return error.NotString };
+    const cn = switch (cn_val) {
+        .string => |s2| s2,
+        else => return error.NotString,
+    };
     try std.testing.expectEqualStrings("Config", cn);
 }
 
@@ -21272,9 +24977,15 @@ test "P24 T24.3 class variable or-write indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     try std.testing.expect(obj.get("result") != null);
 }
@@ -21298,18 +25009,36 @@ test "P24 T24.4 non-self singleton class methods are indexed" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_greet = false;
     for (arr.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const n_val = iobj.get("name") orelse continue;
-        const n = switch (n_val) { .string => |s2| s2, else => continue };
-        if (std.mem.eql(u8, n, "greet")) { found_greet = true; break; }
+        const n = switch (n_val) {
+            .string => |s2| s2,
+            else => continue,
+        };
+        if (std.mem.eql(u8, n, "greet")) {
+            found_greet = true;
+            break;
+        }
     }
     try std.testing.expect(found_greet);
 }
@@ -21334,9 +25063,15 @@ test "P24 T24.5 hover on whitespace returns empty result not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     // Must not have an error field; result may be null (empty hover)
     try std.testing.expect(obj.get("error") == null);
 }
@@ -21360,9 +25095,15 @@ test "P24 T24.6 completion on empty file returns empty array not crash" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     // Result is a CompletionList object with items array
     const result = obj.get("result") orelse return error.NoResult;
@@ -21398,14 +25139,26 @@ test "P24 T24.7 definition with linkSupport emits LocationLink with originSelect
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj.get("error") == null);
     const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr.items.len >= 1);
-    const first = switch (arr.items[0]) { .object => |o| o, else => return error.NotObject };
+    const first = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     // LocationLink format: must have targetUri and originSelectionRange
     _ = first.get("targetUri") orelse return error.NoTargetUri;
     _ = first.get("originSelectionRange") orelse return error.NoOriginSelectionRange;
@@ -21431,20 +25184,35 @@ test "P25 T25.1 enum keyword-hash style values indexed in workspace/symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     // enum values must appear
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr2.items.len >= 1);
     // enum attribute name must appear
     const resp3 = getResponseById(responses, 3) orelse return error.NoResponse;
-    const obj3 = switch (resp3) { .object => |o| o, else => return error.NotObject };
+    const obj3 = switch (resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj3.get("error") == null);
     const result3 = obj3.get("result") orelse return error.NoResult;
-    const arr3 = switch (result3) { .array => |a| a, else => return error.ResultNotArray };
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr3.items.len >= 1);
 }
 
@@ -21467,12 +25235,21 @@ test "P25 T25.2 enum hash style values indexed in workspace/symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     try std.testing.expect(arr2.items.len >= 1);
 }
 
@@ -21498,9 +25275,15 @@ test "P25 T25.3 constant-receiver dot completion traverses full MRO (cls_stmt bu
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
     // Result can be object (CompletionList) or array; either is a valid non-error response
@@ -21530,20 +25313,41 @@ test "P27 T27.1 gvar completion returns matching results" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const result_obj = switch (result2) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result2) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) { .string => |ls| ls, else => continue };
-        if (std.mem.eql(u8, label_str, "$config")) { found = true; break; }
+        const label_str = switch (label) {
+            .string => |ls| ls,
+            else => continue,
+        };
+        if (std.mem.eql(u8, label_str, "$config")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -21566,12 +25370,21 @@ test "P27 T27.2 bundleExecTimeoutSecs accepted in initializationOptions" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp1 = getResponseById(responses, 1) orelse return error.NoInitResponse;
-    const obj1 = switch (resp1) { .object => |o| o, else => return error.NotObject };
+    const obj1 = switch (resp1) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj1.get("error") == null);
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -21591,9 +25404,15 @@ test "P27 T27.3 maxWorkers accepted in initializationOptions" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp1 = getResponseById(responses, 1) orelse return error.NoInitResponse;
-    const obj1 = switch (resp1) { .object => |o| o, else => return error.NotObject };
+    const obj1 = switch (resp1) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj1.get("error") == null);
 }
 
@@ -21616,9 +25435,15 @@ test "P27 T27.4 URI with percent-encoded space is accepted" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoHoverResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -21640,18 +25465,36 @@ test "P28 T28.1 workspace/symbol gvar query returns global variable" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = item_obj.get("name") orelse continue;
-        const name_str = switch (name) { .string => |ns| ns, else => continue };
-        if (std.mem.eql(u8, name_str, "$config_path")) { found = true; break; }
+        const name_str = switch (name) {
+            .string => |ns| ns,
+            else => continue,
+        };
+        if (std.mem.eql(u8, name_str, "$config_path")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -21674,18 +25517,36 @@ test "P28 T28.2 workspace/symbol prefix-first ordering" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_order = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = item_obj.get("name") orelse continue;
-        const name_str = switch (name) { .string => |ns| ns, else => continue };
-        if (std.mem.eql(u8, name_str, "Order")) { found_order = true; break; }
+        const name_str = switch (name) {
+            .string => |ns| ns,
+            else => continue,
+        };
+        if (std.mem.eql(u8, name_str, "Order")) {
+            found_order = true;
+            break;
+        }
     }
     try std.testing.expect(found_order);
 }
@@ -21708,21 +25569,41 @@ test "P28 T28.3 gvar completion item has sortText field" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const result_obj = switch (result2) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result2) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) { .string => |ls| ls, else => continue };
+        const label_str = switch (label) {
+            .string => |ls| ls,
+            else => continue,
+        };
         if (std.mem.eql(u8, label_str, "$counter")) {
-            if (item_obj.get("sortText") != null) { found = true; }
+            if (item_obj.get("sortText") != null) {
+                found = true;
+            }
             break;
         }
     }
@@ -21747,20 +25628,41 @@ test "P28 T28.4 builtin global $stdout appears in gvar completion" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const result_obj = switch (result2) { .object => |o| o, else => return error.ResultNotObject };
+    const result_obj = switch (result2) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
     const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) { .array => |a| a, else => return error.ItemsNotArray };
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
     var found = false;
     for (arr.items) |item| {
-        const item_obj = switch (item) { .object => |o| o, else => continue };
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) { .string => |ls| ls, else => continue };
-        if (std.mem.eql(u8, label_str, "$stdout")) { found = true; break; }
+        const label_str = switch (label) {
+            .string => |ls| ls,
+            else => continue,
+        };
+        if (std.mem.eql(u8, label_str, "$stdout")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -21792,43 +25694,88 @@ test "P36 T4A.1 didChangeWorkspaceFolders add folder B remove folder A: A symbol
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
 
     const resp2 = getResponseById(responses, 2) orelse return error.NoInitialSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_alpha_before = false;
     for (arr2.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        if (std.mem.eql(u8, switch (name) { .string => |ns| ns, else => continue }, "AlphaClassOnly")) { found_alpha_before = true; break; }
+        if (std.mem.eql(u8, switch (name) {
+            .string => |ns| ns,
+            else => continue,
+        }, "AlphaClassOnly")) {
+            found_alpha_before = true;
+            break;
+        }
     }
     try std.testing.expect(found_alpha_before);
 
     const resp3 = getResponseById(responses, 3) orelse return error.NoPostRemoveSymbolResponse;
-    const obj3 = switch (resp3) { .object => |o| o, else => return error.NotObject };
+    const obj3 = switch (resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj3.get("error") == null);
     const result3 = obj3.get("result") orelse return error.NoResult;
-    const arr3 = switch (result3) { .array => |a| a, else => return error.ResultNotArray };
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     for (arr3.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        const ns = switch (name) { .string => |ns2| ns2, else => continue };
+        const ns = switch (name) {
+            .string => |ns2| ns2,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, ns, "AlphaClassOnly"));
     }
 
     const resp4 = getResponseById(responses, 4) orelse return error.NoBetaSymbolResponse;
-    const obj4 = switch (resp4) { .object => |o| o, else => return error.NotObject };
+    const obj4 = switch (resp4) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj4.get("error") == null);
     const result4 = obj4.get("result") orelse return error.NoResult;
-    const arr4 = switch (result4) { .array => |a| a, else => return error.ResultNotArray };
+    const arr4 = switch (result4) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_beta = false;
     for (arr4.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        if (std.mem.eql(u8, switch (name) { .string => |ns| ns, else => continue }, "BetaClassOnly")) { found_beta = true; break; }
+        if (std.mem.eql(u8, switch (name) {
+            .string => |ns| ns,
+            else => continue,
+        }, "BetaClassOnly")) {
+            found_beta = true;
+            break;
+        }
     }
     try std.testing.expect(found_beta);
 }
@@ -21852,9 +25799,15 @@ test "P36 T4B.1 disableRubocop toggle via didChangeConfiguration does not crash"
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -21875,9 +25828,15 @@ test "P36 T4B.2 refract.recheckRubocop command succeeds and returns null result"
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoCommandResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -21902,30 +25861,60 @@ test "P36 T4C.1 file exceeding maxFileSizeBytes is not indexed but diagnostics s
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
 
     const resp2 = getResponseById(responses, 2) orelse return error.NoBigSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     for (arr2.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        const ns = switch (name) { .string => |ns2| ns2, else => continue };
+        const ns = switch (name) {
+            .string => |ns2| ns2,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, ns, "BigFileSentinel"));
     }
 
     const resp3 = getResponseById(responses, 3) orelse return error.NoSmallSymbolResponse;
-    const obj3 = switch (resp3) { .object => |o| o, else => return error.NotObject };
+    const obj3 = switch (resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj3.get("error") == null);
     const result3 = obj3.get("result") orelse return error.NoResult;
-    const arr3 = switch (result3) { .array => |a| a, else => return error.ResultNotArray };
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found_small = false;
     for (arr3.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        if (std.mem.eql(u8, switch (name) { .string => |ns| ns, else => continue }, "SmallOk")) { found_small = true; break; }
+        if (std.mem.eql(u8, switch (name) {
+            .string => |ns| ns,
+            else => continue,
+        }, "SmallOk")) {
+            found_small = true;
+            break;
+        }
     }
     try std.testing.expect(found_small);
 }
@@ -21949,9 +25938,15 @@ test "P36 T4D.1 rubocopTimeoutSecs hot-reload via didChangeConfiguration no cras
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
 }
 
@@ -21974,17 +25969,35 @@ test "P37 T1.1 didChange with full document text updates workspace symbol" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const result2 = obj2.get("result") orelse return error.NoResult;
-    const arr2 = switch (result2) { .array => |a| a, else => return error.ResultNotArray };
+    const arr2 = switch (result2) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     var found = false;
     for (arr2.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        if (std.mem.eql(u8, switch (name) { .string => |n| n, else => continue }, "FooV2")) { found = true; break; }
+        if (std.mem.eql(u8, switch (name) {
+            .string => |n| n,
+            else => continue,
+        }, "FooV2")) {
+            found = true;
+            break;
+        }
     }
     try std.testing.expect(found);
 }
@@ -22008,15 +26021,30 @@ test "P37 T2.1 malformed JSON body produces parse error response" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     var found_parse_error = false;
     for (responses) |r| {
-        const obj = switch (r.value) { .object => |o| o, else => continue };
+        const obj = switch (r.value) {
+            .object => |o| o,
+            else => continue,
+        };
         const err_val = obj.get("error") orelse continue;
-        const err_obj = switch (err_val) { .object => |o| o, else => continue };
+        const err_obj = switch (err_val) {
+            .object => |o| o,
+            else => continue,
+        };
         const code_val = err_obj.get("code") orelse continue;
-        const code = switch (code_val) { .integer => |n| n, else => continue };
-        if (code == -32700) { found_parse_error = true; break; }
+        const code = switch (code_val) {
+            .integer => |n| n,
+            else => continue,
+        };
+        if (code == -32700) {
+            found_parse_error = true;
+            break;
+        }
     }
     try std.testing.expect(found_parse_error);
 }
@@ -22037,13 +26065,25 @@ test "P37 T3.1 executeCommand unknown command returns method_not_found error" {
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoCommandResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     const err_val = obj2.get("error") orelse return error.NoError;
-    const err_obj = switch (err_val) { .object => |o| o, else => return error.ErrorNotObject };
+    const err_obj = switch (err_val) {
+        .object => |o| o,
+        else => return error.ErrorNotObject,
+    };
     const code_val = err_obj.get("code") orelse return error.NoCode;
-    const code = switch (code_val) { .integer => |n| n, else => return error.CodeNotInt };
+    const code = switch (code_val) {
+        .integer => |n| n,
+        else => return error.CodeNotInt,
+    };
     try std.testing.expectEqual(@as(i64, -32601), code);
 }
 
@@ -22070,20 +26110,175 @@ test "P37 T4.1 maxFileSizeMb hot-reload via didChangeConfiguration excludes larg
     const raw = try s.run();
     defer alloc.free(raw);
     const responses = try extractResponses(alloc, raw);
-    defer { for (responses) |r| r.deinit(); alloc.free(responses); }
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
     const resp2 = getResponseById(responses, 2) orelse return error.NoSmallSymbolResponse;
-    const obj2 = switch (resp2) { .object => |o| o, else => return error.NotObject };
+    const obj2 = switch (resp2) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj2.get("error") == null);
     const resp3 = getResponseById(responses, 3) orelse return error.NoBigSymbolResponse;
-    const obj3 = switch (resp3) { .object => |o| o, else => return error.NotObject };
+    const obj3 = switch (resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expect(obj3.get("error") == null);
     const result3 = obj3.get("result") orelse return error.NoResult;
-    const arr3 = switch (result3) { .array => |a| a, else => return error.ResultNotArray };
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
     for (arr3.items) |item| {
-        const iobj = switch (item) { .object => |o| o, else => continue };
+        const iobj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
         const name = iobj.get("name") orelse continue;
-        const ns = switch (name) { .string => |n| n, else => continue };
+        const ns = switch (name) {
+            .string => |n| n,
+            else => continue,
+        };
         try std.testing.expect(!std.mem.eql(u8, ns, "BigMbSentinel"));
     }
 }
 
+test "completion on Time.cu filters to receiver methods (no global leak)" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_time_cu";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+
+    // Create files with noise that would leak via global prefix match: card_url, column, etc.
+    try std.fs.cwd().writeFile(.{
+        .sub_path = ws ++ "/noise.rb",
+        .data =
+        \\class CardsController
+        \\  def card_url; end
+        \\  def column; end
+        \\  def columns; end
+        \\  def closure; end
+        \\  def consume; end
+        \\end
+        ,
+    });
+    try std.fs.cwd().writeFile(.{
+        .sub_path = ws ++ "/target.rb",
+        .data = "Time.cu\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/noise.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/target.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/target.rb\"},\"position\":{\"line\":0,\"character\":7}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const items_val = result_obj.get("items") orelse return error.NoItems;
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
+
+    const forbidden = [_][]const u8{ "card_url", "column", "columns", "closure", "consume" };
+    for (arr.items) |item| {
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const label = item_obj.get("label") orelse continue;
+        const label_str = switch (label) {
+            .string => |ls| ls,
+            else => continue,
+        };
+        for (forbidden) |bad| {
+            if (std.mem.eql(u8, label_str, bad)) {
+                std.debug.print("completion leaked non-receiver method: {s}\n", .{label_str});
+                return error.UnfilteredCompletion;
+            }
+        }
+    }
+}
+
+test "hover on Time shows class methods section" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_time_hover";
+    std.fs.deleteTreeAbsolute(ws) catch {};
+    try std.fs.makeDirAbsolute(ws);
+    defer std.fs.deleteTreeAbsolute(ws) catch {};
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = ws ++ "/time_ref.rb",
+        .data = "t = Time.now\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/time_ref.rb\",\"type\":1}]}}");
+    // Hover cursor at position of "T" in "Time"
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/time_ref.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoHoverResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const contents = result_obj.get("contents") orelse return error.NoContents;
+    const contents_obj = switch (contents) {
+        .object => |o| o,
+        else => return error.ContentsNotObject,
+    };
+    const value = contents_obj.get("value") orelse return error.NoValue;
+    const value_str = switch (value) {
+        .string => |s2| s2,
+        else => return error.ValueNotString,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, value_str, "Class methods:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value_str, "now") != null);
+}

@@ -3,24 +3,69 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
+      - uses: actions/cache@v5
         with:
-          submodules: recursive
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: "0.15.2"
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
       - run: zig build
       - run: zig fmt --check src/
-      - run: zig build test
+      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: ${{ runner.os }}-zig-cross-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-cross-
+      - run: zig build -Dtarget=aarch64-linux-gnu
+      - run: zig build -Dtarget=x86_64-linux-musl
+      - run: zig build -Dtarget=aarch64-macos
+  alpine:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - run: apk add --no-cache git curl xz
+      - uses: actions/checkout@v6
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
+      - run: zig build
+      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz | tar -xJ
+          echo "$PWD/zig-aarch64-macos-0.15.2" >> $GITHUB_PATH
+      - uses: actions/cache@v5
         with:
-          submodules: recursive
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: "0.15.2"
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
       - run: zig build
       - run: zig fmt --check src/
-      - run: zig build test
+      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log

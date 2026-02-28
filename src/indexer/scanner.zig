@@ -3,8 +3,8 @@ const std = @import("std");
 fn shouldSkipDir(root: []const u8, parent: []const u8, name: []const u8, extra_excludes: []const []const u8, negations: []const []const u8) bool {
     if (name.len > 0 and name[0] == '.') return true;
     const skip = [_][]const u8{
-        "node_modules", "tmp", "log",
-        "coverage", "public", ".bundle",
+        "node_modules", "tmp",    "log",
+        "coverage",     "public", ".bundle",
     };
     for (skip) |s| {
         if (std.mem.eql(u8, name, s)) return true;
@@ -18,10 +18,16 @@ fn shouldSkipDir(root: []const u8, parent: []const u8, name: []const u8, extra_e
     for (extra_excludes) |e| {
         if (std.mem.startsWith(u8, e, "**/")) {
             // **/foo — match this directory name at any depth
-            if (std.mem.eql(u8, name, e[3..])) { matched = true; break; }
+            if (std.mem.eql(u8, name, e[3..])) {
+                matched = true;
+                break;
+            }
         } else if (std.mem.endsWith(u8, e, "/**")) {
             // foo/** — skip all contents of directory foo
-            if (std.mem.eql(u8, name, e[0 .. e.len - 3])) { matched = true; break; }
+            if (std.mem.eql(u8, name, e[0 .. e.len - 3])) {
+                matched = true;
+                break;
+            }
         } else if (std.mem.indexOfScalar(u8, e, '/') != null) {
             // Path-relative pattern: compare against root-relative path of this dir
             const rel_parent: []const u8 = if (parent.len > root.len and std.mem.startsWith(u8, parent, root))
@@ -33,15 +39,27 @@ fn shouldSkipDir(root: []const u8, parent: []const u8, name: []const u8, extra_e
                 (std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ rel_parent, name }) catch name)
             else
                 name;
-            if (std.mem.eql(u8, rel_path, e)) { matched = true; break; }
+            if (std.mem.eql(u8, rel_path, e)) {
+                matched = true;
+                break;
+            }
         } else if (e.len > 1 and e[0] == '*') {
             // Leading-star pattern: suffix match (e.g. *.log matches foo.log)
-            if (std.mem.endsWith(u8, name, e[1..])) { matched = true; break; }
+            if (std.mem.endsWith(u8, name, e[1..])) {
+                matched = true;
+                break;
+            }
         } else if (e.len > 0 and e[e.len - 1] == '*') {
             // Trailing-star pattern: prefix match (e.g. tmp* matches tmp_cache)
-            if (std.mem.startsWith(u8, name, e[0 .. e.len - 1])) { matched = true; break; }
+            if (std.mem.startsWith(u8, name, e[0 .. e.len - 1])) {
+                matched = true;
+                break;
+            }
         } else {
-            if (std.mem.eql(u8, name, e)) { matched = true; break; }
+            if (std.mem.eql(u8, name, e)) {
+                matched = true;
+                break;
+            }
         }
     }
     if (matched) {
@@ -81,7 +99,9 @@ fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), 
                     if (line.len == 0 or line[0] == '#' or line[0] == '!') continue;
                     const pat = parsePattern(raw) orelse continue;
                     const duped = alloc.dupe(u8, pat) catch continue;
-                    local_patterns.append(alloc, duped) catch { alloc.free(duped); };
+                    local_patterns.append(alloc, duped) catch {
+                        alloc.free(duped);
+                    };
                 }
             } else |_| {}
         }
@@ -90,8 +110,7 @@ fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), 
     // Merge parent excludes + local patterns into effective_excludes for this level and below.
     const effective_excludes: []const []const u8 = blk: {
         if (local_patterns.items.len == 0) break :blk extra_excludes;
-        const merged = alloc.alloc([]const u8, extra_excludes.len + local_patterns.items.len)
-            catch break :blk extra_excludes;
+        const merged = alloc.alloc([]const u8, extra_excludes.len + local_patterns.items.len) catch break :blk extra_excludes;
         @memcpy(merged[0..extra_excludes.len], extra_excludes);
         @memcpy(merged[extra_excludes.len..], local_patterns.items);
         break :blk merged;

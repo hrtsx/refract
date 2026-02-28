@@ -7,39 +7,36 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: "0.15.2"
+      - uses: actions/checkout@v6
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
       - name: Build x86_64-linux-musl
         run: |
-          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
-          zig objcopy --strip-all zig-out/bin/refract
+          zig build -Dtarget=x86_64-linux-musl --release=safe
           mv zig-out/bin/refract refract-x86_64-linux
       - name: Build aarch64-linux-musl
         run: |
-          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe
-          zig objcopy --strip-all zig-out/bin/refract
+          zig build -Dtarget=aarch64-linux-musl --release=safe
           mv zig-out/bin/refract refract-aarch64-linux
       - name: Build x86_64-macos
         run: |
-          zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
-          zig objcopy --strip-all zig-out/bin/refract
+          zig build -Dtarget=x86_64-macos --release=safe
           mv zig-out/bin/refract refract-x86_64-macos
       - name: Build aarch64-macos
         run: |
-          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
-          zig objcopy --strip-all zig-out/bin/refract
+          zig build -Dtarget=aarch64-macos --release=safe
           mv zig-out/bin/refract refract-aarch64-macos
       - name: Create checksums
         run: sha256sum refract-* > refract-checksums.txt
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          generate_notes: true
+          generate_release_notes: true
           files: |
             refract-x86_64-linux
             refract-aarch64-linux
