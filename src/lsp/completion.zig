@@ -47,6 +47,102 @@ pub fn detectRequireContext(source: []const u8, offset: usize) ?RequireKind {
     return null;
 }
 
+pub fn detectEnvContext(source: []const u8, offset: usize) ?[]const u8 {
+    if (offset < 5) return null;
+    // Walk back from cursor to find the opening quote
+    var i = offset;
+    while (i > 0 and source[i - 1] != '\'' and source[i - 1] != '"' and source[i - 1] != '[') i -= 1;
+    if (i == 0) return null;
+    const prefix_start = i;
+    // At quote or bracket — if at quote, skip it and look for [
+    if (source[i - 1] == '\'' or source[i - 1] == '"') {
+        i -= 1;
+        if (i == 0 or source[i - 1] != '[') return null;
+    } else if (source[i - 1] != '[') return null;
+    // Now at [, check for ENV before it
+    i -= 1;
+    if (i < 3) return null;
+    if (!std.mem.eql(u8, source[i - 3 .. i], "ENV")) return null;
+    // Make sure ENV isn't part of a larger identifier
+    if (i > 3 and isRubyIdent(source[i - 4])) return null;
+    return source[prefix_start..offset];
+}
+
+pub fn completeEnvKeys(self: *Server, msg: types.RequestMessage, prefix: []const u8) !types.ResponseMessage {
+    var aw = std.Io.Writer.Allocating.init(self.alloc);
+    const w = &aw.writer;
+    try w.writeAll("{\"isIncomplete\":false,\"items\":[");
+    var first = true;
+    var count: u32 = 0;
+
+    const file_stmt = self.db.prepare("SELECT path FROM files WHERE is_gem = 0") catch {
+        try w.writeAll("]}");
+        return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+    };
+    defer file_stmt.finalize();
+
+    var seen = std.StringHashMap(void).init(self.alloc);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| self.alloc.free(k.*);
+        seen.deinit();
+    }
+
+    while (file_stmt.step() catch false) {
+        const fpath = file_stmt.column_text(0);
+        const fsrc = std.Io.Dir.cwd().readFileAllocOptions(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(512 * 1024), .@"1", 0) catch continue;
+        defer self.alloc.free(fsrc);
+
+        var pos: usize = 0;
+        while (pos + 4 < fsrc.len) {
+            const idx = std.mem.indexOf(u8, fsrc[pos..], "ENV") orelse break;
+            pos += idx + 3;
+            if (pos >= fsrc.len) break;
+            // Check ENV[' or ENV[" or ENV.fetch('
+            var key_start: usize = 0;
+            var key_end: usize = 0;
+            if (fsrc[pos] == '[' and pos + 2 < fsrc.len and (fsrc[pos + 1] == '\'' or fsrc[pos + 1] == '"')) {
+                const q = fsrc[pos + 1];
+                key_start = pos + 2;
+                key_end = key_start;
+                while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
+            } else if (pos + 8 < fsrc.len and std.mem.startsWith(u8, fsrc[pos..], ".fetch(")) {
+                const fpos = pos + 7;
+                if (fpos < fsrc.len and (fsrc[fpos] == '\'' or fsrc[fpos] == '"')) {
+                    const q = fsrc[fpos];
+                    key_start = fpos + 1;
+                    key_end = key_start;
+                    while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
+                } else continue;
+            } else continue;
+
+            if (key_end > key_start and key_end - key_start < 128) {
+                const key = fsrc[key_start..key_end];
+                if (!seen.contains(key)) {
+                    if (prefix.len == 0 or std.mem.startsWith(u8, key, prefix)) {
+                        const owned = self.alloc.dupe(u8, key) catch continue;
+                        seen.put(owned, {}) catch {
+                            self.alloc.free(owned);
+                            continue;
+                        };
+                        if (!first) try w.writeByte(',');
+                        first = false;
+                        try w.writeAll("{\"label\":");
+                        try writeEscapedJson(w, key);
+                        try w.writeAll(",\"kind\":6}");
+                        count += 1;
+                        if (count >= 100) break;
+                    }
+                }
+            }
+        }
+        if (count >= 100) break;
+    }
+
+    try w.writeAll("]}");
+    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+}
+
 pub fn completeRequirePath(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, offset: usize) !types.ResponseMessage {
     const req_kind = detectRequireContext(source, offset).?;
     const prefix_start = blk: {
@@ -80,13 +176,13 @@ pub fn completeRequirePath(self: *Server, msg: types.RequestMessage, path: []con
     }
     if (req_kind == .require_relative) {
         const dir_path = std.fs.path.dirname(path) orelse ".";
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+        var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, dir_path, .{ .iterate = true }) catch {
             try wr.writeAll("]}");
             return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_req.toOwnedSlice(), .@"error" = null };
         };
-        defer dir.close();
+        defer dir.close(std.Options.debug_io);
         var it = dir.iterate();
-        while (it.next() catch null) |entry| {
+        while (it.next(std.Options.debug_io) catch null) |entry| {
             if (!std.mem.endsWith(u8, entry.name, ".rb")) continue;
             const stem = entry.name[0 .. entry.name.len - 3];
             const rel = try std.fmt.allocPrint(self.alloc, "./{s}", .{stem});
@@ -107,6 +203,7 @@ pub fn completeRequirePath(self: *Server, msg: types.RequestMessage, path: []con
 pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, line: u32, character: u32, offset: usize, word: []const u8) !?types.ResponseMessage {
     _ = word;
     var recv_offset = if (offset >= 2) offset - 2 else 0;
+    while (recv_offset > 0 and (source[recv_offset] == ' ' or source[recv_offset] == '\t')) : (recv_offset -= 1) {}
     var recv_word = extractWord(source, recv_offset);
     if (recv_word.len == 0 and recv_offset > 0 and source[recv_offset] == '&') {
         recv_offset = if (recv_offset >= 1) recv_offset - 1 else 0;
@@ -145,7 +242,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             const outer_type = oth_stmt.column_text(0);
                             if (outer_type.len > 0) {
                                 const resolved_outer = extractBaseClass(outer_type);
-                                const ret_stmt = try self.cachedStmt("SELECT return_type FROM symbols WHERE name=? AND kind='def' AND return_type IS NOT NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) LIMIT 1");
+                                const ret_stmt = try self.cachedStmt("SELECT return_type FROM symbols WHERE name=?1 AND kind='def' AND return_type IS NOT NULL AND (parent_name=?2 OR (parent_name IS NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2))) LIMIT 1");
                                 defer ret_stmt.reset();
                                 ret_stmt.bind_text(1, recv_word);
                                 ret_stmt.bind_text(2, resolved_outer);
@@ -232,11 +329,18 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
                             \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
                             \\    ELSE p.name END, ', ')
-                            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position)
+                            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
+                            \\  s.return_type,
+                            \\  (SELECT GROUP_CONCAT(
+                            \\    CASE p.kind WHEN 'keyword' THEN p.name||': '||COALESCE(p.type_hint,'?')
+                            \\    WHEN 'rest' THEN '*'||p.name||': '||COALESCE(p.type_hint,'?')
+                            \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
+                            \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
+                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
                             \\FROM symbols s
-                            \\WHERE s.kind='def' AND s.file_id IN (
-                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?
-                            \\)
+                            \\WHERE s.kind='def' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
+                            \\)))
                         ) catch null
                     else
                         self.db.prepare(
@@ -245,19 +349,26 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
                             \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
                             \\    ELSE p.name END, ', ')
-                            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position)
+                            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
+                            \\  s.return_type,
+                            \\  (SELECT GROUP_CONCAT(
+                            \\    CASE p.kind WHEN 'keyword' THEN p.name||': '||COALESCE(p.type_hint,'?')
+                            \\    WHEN 'rest' THEN '*'||p.name||': '||COALESCE(p.type_hint,'?')
+                            \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
+                            \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
+                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
                             \\FROM symbols s
-                            \\WHERE s.kind='def' AND s.file_id IN (
-                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?
-                            \\) AND (s.visibility IS NULL OR s.visibility = 'public')
+                            \\WHERE s.kind='def' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
+                            \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
                         ) catch null;
                     defer if (own_stmt_hoisted) |s2| s2.finalize();
                     const cls_stmt_hoisted = if (is_constant_recv)
                         self.db.prepare(
                             \\SELECT s.name, s.doc FROM symbols s
-                            \\WHERE s.kind='classdef' AND s.file_id IN (
-                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?
-                            \\) AND (s.visibility IS NULL OR s.visibility = 'public')
+                            \\WHERE s.kind='classdef' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
+                            \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
                         ) catch null
                     else
                         null;
@@ -316,6 +427,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         const own_stmt = own_stmt_hoisted orelse continue;
                         own_stmt.reset();
                         own_stmt.bind_text(1, current);
+                        own_stmt.bind_text(2, current);
                         while (try own_stmt.step()) {
                             const mname2 = own_stmt.column_text(0);
                             if (seen_names.contains(mname2)) continue;
@@ -324,9 +436,25 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             first_dot = false;
                             const mdoc = own_stmt.column_text(1);
                             const msig = own_stmt.column_text(2);
+                            const mrt = own_stmt.column_text(3);
+                            const mtyped_sig = own_stmt.column_text(4); // typed param sig (may be empty)
                             try wd.writeAll("{\"label\":");
                             try writeEscapedJson(wd, mname2);
-                            try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"0_");
+                            // detail: "(typed_param: Type, ...) → ReturnType" when type info available
+                            if (mtyped_sig.len > 0 or mrt.len > 0) {
+                                try wd.writeAll(",\"kind\":3,\"detail\":\"(");
+                                if (mtyped_sig.len > 0) {
+                                    try writeEscapedJsonContent(wd, mtyped_sig);
+                                }
+                                try wd.writeAll(")");
+                                if (mrt.len > 0) {
+                                    try wd.writeAll(" \u{2192} ");
+                                    try writeEscapedJsonContent(wd, mrt);
+                                }
+                                try wd.writeAll("\",\"sortText\":\"0_");
+                            } else {
+                                try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"0_");
+                            }
                             try writeEscapedJsonContent(wd, mname2);
                             try wd.writeAll("\",\"filterText\":\"");
                             try writeEscapedJsonContent(wd, mname2);
@@ -357,6 +485,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             if (cls_stmt_hoisted) |cls_stmt| {
                                 cls_stmt.reset();
                                 cls_stmt.bind_text(1, current);
+                                cls_stmt.bind_text(2, current);
                                 while (try cls_stmt.step()) {
                                     const mname2 = cls_stmt.column_text(0);
                                     if (seen_names.contains(mname2)) continue;
@@ -510,7 +639,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
 
 pub fn completeNamespace(self: *Server, msg: types.RequestMessage, source: []const u8, offset: usize, word: []const u8) !?types.ResponseMessage {
     _ = word;
-    const ns_offset = if (offset >= 3) offset - 3 else 0;
+    var ns_offset = if (offset >= 3) offset - 3 else 0;
+    while (ns_offset > 0 and (source[ns_offset] == ' ' or source[ns_offset] == '\t')) : (ns_offset -= 1) {}
     const ns_word = extractWord(source, ns_offset);
     if (ns_word.len == 0) return null;
     const ns_stmt = try self.db.prepare(
@@ -544,6 +674,72 @@ pub fn completeNamespace(self: *Server, msg: types.RequestMessage, source: []con
         .raw_result = try aw_ns.toOwnedSlice(),
         .@"error" = null,
     };
+}
+
+pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, line: u32, offset: usize) !types.ResponseMessage {
+    _ = source;
+    _ = offset;
+    var aw = std.Io.Writer.Allocating.init(self.alloc);
+    const w = &aw.writer;
+    try w.writeAll("{\"isIncomplete\":true,\"items\":[");
+    var first = true;
+
+    // Local variables in scope
+    const fstmt = self.db.prepare("SELECT id FROM files WHERE path = ?") catch null;
+    if (fstmt) |fs| {
+        defer fs.finalize();
+        fs.bind_text(1, path);
+        if (fs.step() catch false) {
+            const fid = fs.column_int(0);
+            const cursor_line: i64 = @intCast(line + 1);
+            const lv_stmt = self.db.prepare("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id=? AND line<=? ORDER BY line DESC LIMIT 50") catch null;
+            if (lv_stmt) |lv| {
+                defer lv.finalize();
+                lv.bind_int(1, fid);
+                lv.bind_int(2, cursor_line);
+                while (lv.step() catch false) {
+                    if (!first) try w.writeByte(',');
+                    first = false;
+                    const lname = lv.column_text(0);
+                    const ltype = lv.column_text(1);
+                    try w.writeAll("{\"label\":");
+                    try writeEscapedJson(w, lname);
+                    try w.writeAll(",\"kind\":6,\"sortText\":\"0_");
+                    try writeEscapedJsonContent(w, lname);
+                    try w.writeByte('"');
+                    if (ltype.len > 0) {
+                        try w.writeAll(",\"detail\":\"");
+                        try writeEscapedJsonContent(w, ltype);
+                        try w.writeByte('"');
+                    }
+                    try w.writeByte('}');
+                }
+            }
+        }
+    }
+
+    // Then global symbols (methods, classes, constants)
+    const stmt = self.db.prepare(
+        \\SELECT DISTINCT name, kind FROM symbols WHERE kind IN ('def','classdef','class','module','constant') ORDER BY length(name), name LIMIT 200
+    ) catch null;
+    if (stmt) |s| {
+        defer s.finalize();
+        while (s.step() catch false) {
+            if (!first) try w.writeByte(',');
+            first = false;
+            const cname = s.column_text(0);
+            const ckind_str = s.column_text(1);
+            const ckind_num: u8 = if (std.mem.eql(u8, ckind_str, "class")) 7 else if (std.mem.eql(u8, ckind_str, "module")) 9 else if (std.mem.eql(u8, ckind_str, "def") or std.mem.eql(u8, ckind_str, "classdef")) 3 else if (std.mem.eql(u8, ckind_str, "constant")) 21 else 1;
+            try w.writeAll("{\"label\":");
+            try writeEscapedJson(w, cname);
+            try w.print(",\"kind\":{d},\"sortText\":\"1_", .{ckind_num});
+            try writeEscapedJsonContent(w, cname);
+            try w.writeAll("\"}");
+        }
+    }
+
+    try w.writeAll("]}");
+    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
 }
 
 pub fn completeAllSymbols(self: *Server, msg: types.RequestMessage) !types.ResponseMessage {
@@ -675,7 +871,7 @@ pub fn completeGlobalVars(self: *Server, msg: types.RequestMessage, word: []cons
     while (try gv_stmt.step()) {
         const gv_name = gv_stmt.column_text(0);
         if (gv_seen.contains(gv_name)) continue;
-        gv_seen.put(try gv_seen_arena.allocator().dupe(u8, gv_name), {}) catch {}; // OOM: seen set
+        gv_seen.put(try gv_seen_arena.allocator().dupe(u8, gv_name), {}) catch S.logOomOnce("completion.gv_seen");
         if (!gv_first) try wg.writeByte(',');
         gv_first = false;
         try wg.writeAll("{\"label\":");
@@ -837,7 +1033,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
         \\  s.doc
         \\FROM symbols s WHERE s.name LIKE ? ESCAPE '\'
-        \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 1000
+        \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 200
     );
     defer stmt.finalize();
     stmt.bind_text(1, pattern);
@@ -871,7 +1067,11 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
             try writeEscapedJsonContent(w, kind_str);
         }
         try w.writeAll(")\"");
-        const sort_prefix: []const u8 = if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) "0_" else if (std.mem.eql(u8, kind_str, "class") or std.mem.eql(u8, kind_str, "module")) "1_" else "2_";
+        // Deprecation-aware sort: push deprecated symbols after all other items.
+        // Exact-name boost: float exact-match to the top of its tier while preserving tier prefix.
+        const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
+        const is_exact = word.len > 0 and std.mem.eql(u8, name, word);
+        const sort_prefix: []const u8 = if (is_deprecated) "8_" else if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) (if (is_exact) "0_0_" else "0_1_") else if (std.mem.eql(u8, kind_str, "class") or std.mem.eql(u8, kind_str, "module")) (if (is_exact) "1_0_" else "1_1_") else (if (is_exact) "2_0_" else "2_1_");
         try w.writeAll(",\"sortText\":\"");
         try writeEscapedJsonContent(w, sort_prefix);
         try writeEscapedJsonContent(w, name);
@@ -898,7 +1098,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         try w.writeByte('}');
         try w.writeByte('}');
     }
-    const truncated = symbol_count >= 1000;
+    const truncated = symbol_count >= 200;
 
     if (word.len <= 9) {
         const kw_items = [_]struct { label: []const u8, snippet: []const u8, kind: u8 }{
@@ -1099,10 +1299,11 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
 }
 
 pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.flushDirtyUris();
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
+    const indexing_in_progress = !self.bg_started_event.load(.acquire);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
     const line: u32 = pos.line;
@@ -1143,15 +1344,51 @@ pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.Respon
         return try completeRequirePath(self, msg, path, source, offset);
     if (Server.detectI18nContext(source, offset))
         return try completeI18n(self, msg, source, offset);
+    if (detectEnvContext(source, offset)) |env_prefix|
+        return try completeEnvKeys(self, msg, env_prefix);
     if (isInStringOrComment(source, offset)) {
         var aw_empty = std.Io.Writer.Allocating.init(self.alloc);
         try aw_empty.writer.writeAll("{\"isIncomplete\":false,\"items\":[]}");
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_empty.toOwnedSlice(), .@"error" = null };
     }
-    if (word.len == 0 and offset > 0 and source[offset - 1] == '.')
-        if (try completeDot(self, msg, path, source, line, character, offset, word)) |r| return r;
-    if (word.len == 0 and offset >= 2 and source[offset - 1] == ':' and source[offset - 2] == ':')
-        if (try completeNamespace(self, msg, source, offset, word)) |r| return r;
+    var is_receiver_context = false;
+    if (word.len == 0 and offset > 0) {
+        var p: usize = offset - 1;
+        while (p > 0 and (source[p] == ' ' or source[p] == '\t' or source[p] == '\n' or source[p] == '\r')) : (p -= 1) {}
+        if (source[p] == '.') {
+            is_receiver_context = true;
+            if (try completeDot(self, msg, path, source, line, character, p + 1, word)) |r| return r;
+        } else if (p >= 1 and source[p] == ':' and source[p - 1] == ':') {
+            is_receiver_context = true;
+            if (try completeNamespace(self, msg, source, p + 1, word)) |r| return r;
+        }
+    }
+    if (word.len > 0) {
+        const word_start = @intFromPtr(word.ptr) - @intFromPtr(source.ptr);
+        if (word_start > 0) {
+            var p: usize = word_start - 1;
+            while (p > 0 and (source[p] == ' ' or source[p] == '\t' or source[p] == '\n' or source[p] == '\r')) : (p -= 1) {}
+            if (source[p] == '.') {
+                is_receiver_context = true;
+                if (try completeDot(self, msg, path, source, line, character, p + 1, word)) |r| return r;
+            } else if (p >= 1 and source[p] == ':' and source[p - 1] == ':') {
+                is_receiver_context = true;
+                if (try completeNamespace(self, msg, source, p + 1, word)) |r| return r;
+            }
+        }
+    }
+    if (is_receiver_context) {
+        var aw_empty = std.Io.Writer.Allocating.init(self.alloc);
+        try aw_empty.writer.writeAll("{\"isIncomplete\":true,\"items\":[]}");
+        return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_empty.toOwnedSlice(), .@"error" = null };
+    }
+    if (indexing_in_progress) {
+        var aw_busy = std.Io.Writer.Allocating.init(self.alloc);
+        try aw_busy.writer.writeAll("{\"isIncomplete\":true,\"items\":[]}");
+        return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_busy.toOwnedSlice(), .@"error" = null };
+    }
+    if (word.len == 0 and offset > 0 and (source[offset - 1] == '(' or source[offset - 1] == ',' or source[offset - 1] == '=' or source[offset - 1] == ' '))
+        return try completeArgContext(self, msg, path, source, line, offset);
     if (word.len == 0)
         return try completeAllSymbols(self, msg);
     if (word.len > 0 and word[0] == '@')
@@ -1164,8 +1401,8 @@ pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleCompletionItemResolve(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const item_obj = switch (params) {
         .object => |o| o,

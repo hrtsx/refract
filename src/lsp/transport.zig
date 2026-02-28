@@ -12,7 +12,7 @@ pub fn readMessage(reader: *std.Io.Reader, alloc: std.mem.Allocator) ![]u8 {
             error.EndOfStream => return error.EndOfStream,
             else => return error.InvalidHeader,
         };
-        const trimmed = std.mem.trimRight(u8, line, "\r\n");
+        const trimmed = std.mem.trimEnd(u8, line, "\r\n");
         if (trimmed.len == 0) break;
 
         if (std.mem.startsWith(u8, trimmed, "Content-Length: ")) {
