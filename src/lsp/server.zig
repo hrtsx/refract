@@ -444,7 +444,9 @@ const BgCtx = struct {
                         for (rbs_coll_paths, 0..) |p, i| rbs_const[i] = p;
                         self.server_ptr.db_mutex.lock();
                         defer self.server_ptr.db_mutex.unlock();
-                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic)) catch {};
+                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic)) catch |e| {
+                            std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                        };
                         var rbuf: [128]u8 = undefined;
                         const rmsg = std.fmt.bufPrint(&rbuf, "refract: indexed {d} RBS collection files", .{rbs_const.len}) catch "refract: indexed RBS collection";
                         self.server_ptr.sendLogMessage(3, rmsg);

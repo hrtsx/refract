@@ -41,7 +41,7 @@ Requires Zig 0.15.2+.
 ```sh
 git clone --recurse-submodules https://github.com/fedhtrsx/refract
 cd refract
-zig build -Doptimize=ReleaseSafe
+zig build --release=safe
 # binary at zig-out/bin/refract
 ```
 
@@ -166,14 +166,15 @@ Install the [LSP](https://packagecontrol.io/packages/LSP) package, then add to
 | textDocument/completion (type-aware, route helpers, i18n keys) | ✓ |
 | textDocument/references | ✓ |
 | textDocument/signatureHelp | ✓ |
-| textDocument/rename | ✓ |
+| textDocument/rename (MRO-aware, cross-file) | ✓ |
+| textDocument/prepareRename | ✓ |
 | textDocument/inlayHint (method types, block params) | ✓ |
 | textDocument/semanticTokens | ✓ |
 | textDocument/documentHighlight | ✓ |
 | textDocument/documentLink (clickable requires) | ✓ |
 | textDocument/formatting | ✓ (requires rubocop) |
 | textDocument/rangeFormatting | ✓ (requires rubocop) |
-| textDocument/codeAction | ✓ (requires rubocop) |
+| textDocument/codeAction (refactoring + rubocop quickfix) | ✓ |
 | textDocument/diagnostic (pull) | ✓ |
 | textDocument/codeLens | ✓ |
 | textDocument/foldingRange | ✓ |
@@ -269,7 +270,7 @@ Set `disableRubocop: true` in `initializationOptions` to disable RuboCop entirel
 
 ## MCP Server
 
-Start the MCP server with `refract --mcp`. The server exposes 28 tools, 3 compound tools, and 2 resources:
+Start the MCP server with `refract --mcp`. The server exposes 32 tools, 3 compound tools, and 2 resources:
 
 **Type & Symbol Resolution**
 
@@ -280,6 +281,8 @@ Start the MCP server with `refract --mcp`. The server exposes 28 tools, 3 compou
 | `method_signature` | `class_name`, `method_name` | Get full signature and parameter types of a method |
 | `explain_symbol` | `class_name`, `method_name` | Full picture: signature, callers, and diagnostics in one call |
 | `batch_resolve` | `positions[]` | Resolve types at multiple source positions (max 20) |
+| `explain_type_chain` | `file`, `line`, `col?` | Explain how a variable's type was inferred (RBS, YARD, literal, chain) |
+| `suggest_types` | `file`, `limit?` | Suggest YARD/RBS annotations for untyped methods in a file |
 
 **Navigation & Search**
 
@@ -312,6 +315,8 @@ Start the MCP server with `refract --mcp`. The server exposes 28 tools, 3 compou
 | `diagnostics` | `file?`, `offset?` | Get parse and semantic diagnostics |
 | `diagnostic_summary` | `file?`, `severity_filter?`, `code_filter?` | Diagnostics with filtering |
 | `workspace_health` | — | File counts, type coverage, schema version |
+| `type_coverage` | `file?`, `min_coverage?` | Type annotation coverage per file (percentage of methods with return types) |
+| `find_similar` | `method_name`, `max_distance?` | Find methods with similar names (typo detection, naming consistency) |
 | `find_unused` | `kind?`, `parent_name?` | Find symbols with no call sites (dead-code) |
 | `list_by_kind` | `kind`, `name_filter?`, `offset?` | List all symbols of a given kind |
 | `get_file_overview` | `file` | List all symbols in a file by line |
