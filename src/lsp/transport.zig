@@ -53,3 +53,9 @@ test "round-trip header parsing" {
     defer std.testing.allocator.free(msg);
     try std.testing.expectEqualStrings(body, msg);
 }
+
+test "truncated message returns EndOfStream" {
+    const frame = "Content-Length: 100\r\n\r\n{\"jsonrpc\":\"2.0\"}";
+    var r = std.Io.Reader.fixed(frame);
+    try std.testing.expectError(error.EndOfStream, readMessage(&r, std.testing.allocator));
+}

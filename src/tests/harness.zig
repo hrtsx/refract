@@ -64,7 +64,7 @@ pub const Session = struct {
 
         var timeout_done = std.atomic.Value(bool).init(false);
         const child_pid = child.id;
-        const thr = std.Thread.spawn(.{}, struct {
+        var thr = std.Thread.spawn(.{}, struct {
             fn run(pid: std.process.Child.Id, done: *std.atomic.Value(bool)) void {
                 var elapsed: u32 = 0;
                 while (elapsed < 15_000) : (elapsed += 100) {
@@ -100,12 +100,13 @@ pub const Session = struct {
         defer if (stderr_content.len > 0) self.alloc.free(stderr_content);
 
         timeout_done.store(true, .release);
-        if (thr) |t| t.join();
-        var wstatus: u32 = 0;
-        const raw_rc = std.os.linux.waitpid(child.id, &wstatus, 0);
-        const wait_errno = std.posix.errno(raw_rc);
-        if (wait_errno != .SUCCESS and wait_errno != .CHILD) {
-            std.debug.print("refract waitpid errno: {}\n", .{wait_errno});
+        if (thr) |t| {
+            t.join();
+            thr = null;
+        }
+        if (comptime @import("builtin").os.tag == .linux) {
+            var wstatus: u32 = 0;
+            _ = std.os.linux.waitpid(child.id, &wstatus, 0);
         }
         if (stderr_content.len > 0) {
             std.debug.print("refract stderr:\n{s}\n", .{stderr_content});

@@ -80,7 +80,7 @@ fn scanLocalsInRange(source: []const u8, start: usize, end: usize, alloc: std.me
             while (i < end and i < source.len and isRubyIdent(source[i])) i += 1;
             const word = source[word_start..i];
             if (word.len > 0 and !isUpperCase(word[0]) and !isKeyword(word)) {
-                locals.put(word, {}) catch {};
+                locals.put(word, {}) catch {}; // OOM: local set
             }
         } else {
             i += 1;
@@ -89,19 +89,19 @@ fn scanLocalsInRange(source: []const u8, start: usize, end: usize, alloc: std.me
     var result = std.ArrayList([]const u8){};
     var it = locals.keyIterator();
     while (it.next()) |k| {
-        result.append(alloc, k.*) catch {};
+        result.append(alloc, k.*) catch {}; // OOM: result list
     }
     return result.toOwnedSlice(alloc);
 }
 
 fn isKeyword(word: []const u8) bool {
     const keywords = [_][]const u8{
-        "def", "end", "class", "module", "if", "else", "elsif", "unless",
-        "while", "until", "for", "do", "begin", "rescue", "ensure", "raise",
-        "return", "yield", "self", "nil", "true", "false", "and", "or", "not",
-        "then", "when", "case", "in", "super", "require", "require_relative",
-        "include", "extend", "prepend", "private", "protected", "public",
-        "attr_reader", "attr_writer", "attr_accessor",
+        "def",           "end",    "class",   "module",  "if",        "else",   "elsif",       "unless",
+        "while",         "until",  "for",     "do",      "begin",     "rescue", "ensure",      "raise",
+        "return",        "yield",  "self",    "nil",     "true",      "false",  "and",         "or",
+        "not",           "then",   "when",    "case",    "in",        "super",  "require",     "require_relative",
+        "include",       "extend", "prepend", "private", "protected", "public", "attr_reader", "attr_writer",
+        "attr_accessor",
     };
     for (keywords) |kw| {
         if (std.mem.eql(u8, word, kw)) return true;
@@ -148,7 +148,7 @@ pub fn extractMethod(
     for (inner_locals) |local| {
         for (outer_locals) |outer| {
             if (std.mem.eql(u8, local, outer)) {
-                params.append(alloc, local) catch {};
+                params.append(alloc, local) catch {}; // OOM: param list
                 break;
             }
         }
@@ -159,8 +159,8 @@ pub fn extractMethod(
     for (inner_locals) |local| {
         if (sel_end < source.len) {
             const after_end = if (def_end_offset) |de| @min(de, source.len) else source.len;
-            if (std.mem.indexOf(u8, source[sel_end..after_end], local) != null) {
-                written_after.append(alloc, local) catch {};
+            if (sel_end <= after_end and std.mem.indexOf(u8, source[sel_end..after_end], local) != null) {
+                written_after.append(alloc, local) catch {}; // OOM: local list
             }
         }
     }
@@ -542,7 +542,10 @@ pub fn convertStringStyle(
             const inner = original[1 .. original.len - 1];
             var valid_sym = inner.len > 0;
             for (inner) |c| {
-                if (!isRubyIdent(c)) { valid_sym = false; break; }
+                if (!isRubyIdent(c)) {
+                    valid_sym = false;
+                    break;
+                }
             }
             if (valid_sym) {
                 try new_text.append(alloc, ':');
@@ -577,7 +580,9 @@ pub fn convertStringStyle(
 
 fn countNewlines(s: []const u8) u32 {
     var c: u32 = 0;
-    for (s) |ch| if (ch == '\n') { c += 1; };
+    for (s) |ch| if (ch == '\n') {
+        c += 1;
+    };
     return c;
 }
 
