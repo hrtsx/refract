@@ -32,6 +32,18 @@ pub const WORKSPACE_SYMBOL_LIMIT: usize = 500;
 const USER_ERROR_RATELIMIT_MS: i64 = 30_000;
 const INCR_WATCH_SLEEP_MS: u64 = 10;
 
+var last_oom_log_ms: std.atomic.Value(i64) = .{ .raw = 0 };
+
+pub fn logOomOnce(tag: []const u8) void {
+    const now_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
+    const prev = last_oom_log_ms.load(.monotonic);
+    if (now_ms - prev < 60_000) return;
+    if (last_oom_log_ms.cmpxchgStrong(prev, now_ms, .monotonic, .monotonic) != null) return;
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "refract: OOM drop at {s} (throttled to 1/min)\n", .{tag}) catch "refract: OOM drop\n";
+    std.debug.print("{s}", .{msg});
+}
+
 pub fn emitSelRange(wr: *std.Io.Writer, src: []const u8, srv: *const Server, ln: i64, col: i64, name: []const u8) void {
     const line_src = getLineSlice(src, @intCast(@max(ln - 1, 0)));
     const col_u: usize = @intCast(@max(col, 0));
@@ -50,6 +62,52 @@ pub fn computeDiagCol(src: ?[]const u8, enc_utf8: bool, line_0: i64, byte_col: u
     }
     const line_end = std.mem.indexOfPos(u8, src.?, i, "\n") orelse src.?.len;
     return utf8ColToUtf16(src.?[i..line_end], byte_col);
+}
+
+fn indexBundledRbsLsp(ctx: *BgCtx) void {
+    const db = ctx.server_ptr.db;
+    ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+    const bundled_count = indexer.indexBundledRbs(db) catch 0;
+    ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+    if (bundled_count > 0) {
+        var bbuf: [128]u8 = undefined;
+        const bmsg = std.fmt.bufPrint(&bbuf, "refract: indexed {d} bundled RBS files", .{bundled_count}) catch "refract: indexed bundled RBS";
+        ctx.server_ptr.sendLogMessage(3, bmsg);
+    }
+}
+
+fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
+    const db = ctx.server_ptr.db;
+    const stdlib_paths = gems.findRbsStdlibPaths(ctx.io, ctx.root_path, alloc, ctx.bundle_timeout_ms * std.time.ns_per_ms) catch |e| {
+        var ebuf2: [256]u8 = undefined;
+        const emsg2 = std.fmt.bufPrint(&ebuf2, "refract: stdlib path discovery failed: {s}", .{@errorName(e)}) catch "refract: stdlib path discovery failed";
+        ctx.server_ptr.sendLogMessage(2, emsg2);
+        return;
+    };
+    defer {
+        for (stdlib_paths) |p| alloc.free(p);
+        alloc.free(stdlib_paths);
+    }
+    if (stdlib_paths.len == 0) {
+        ctx.server_ptr.sendLogMessage(3, "refract: no stdlib RBS paths found (using bundled only)");
+        return;
+    }
+    const stdlib_const = alloc.alloc([]const u8, stdlib_paths.len) catch return;
+    defer alloc.free(stdlib_const);
+    for (stdlib_paths, 0..) |p, si| stdlib_const[si] = p;
+    ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+    indexer.reindex(db, stdlib_const, true, alloc, ctx.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
+        var ebuf3: [256]u8 = undefined;
+        const emsg3 = std.fmt.bufPrint(&ebuf3, "refract: stdlib reindex failed: {s}", .{@errorName(e)}) catch "refract: stdlib reindex failed";
+        ctx.server_ptr.sendLogMessage(2, emsg3);
+        ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+        return;
+    };
+    setMetaInt(db, "stdlib_rbs_indexed", 1, alloc);
+    ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+    var sbuf: [128]u8 = undefined;
+    const smsg = std.fmt.bufPrint(&sbuf, "refract: indexed {d} stdlib RBS files", .{stdlib_const.len}) catch "refract: indexed stdlib RBS";
+    ctx.server_ptr.sendLogMessage(3, smsg);
 }
 
 pub fn getMetaInt(db: db_mod.Db, key: []const u8) ?i64 {
@@ -73,7 +131,7 @@ pub fn setMetaInt(db: db_mod.Db, key: []const u8, val: i64, alloc: std.mem.Alloc
     _ = stmt.step() catch |e| {
         var buf: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&buf, "refract: setMetaInt failed: {s}\n", .{@errorName(e)}) catch "refract: setMetaInt failed\n";
-        std.fs.File.stderr().writeAll(m) catch {};
+        std.debug.print("{s}", .{m});
     };
 }
 
@@ -85,26 +143,26 @@ const IndexWork = struct {
 pub const MAX_QUEUE_SIZE: usize = 50_000;
 
 const WorkQueue = struct {
-    items: std.ArrayList(IndexWork) = .{},
+    items: std.ArrayList(IndexWork) = .empty,
     head: usize = 0,
-    mu: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    mu: std.Io.Mutex = std.Io.Mutex.init,
+    cond: std.Io.Condition = std.Io.Condition.init,
     done: bool = false,
 
     pub fn push(self: *WorkQueue, item: IndexWork) bool {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Options.debug_io);
+        defer self.mu.unlock(std.Options.debug_io);
         if (self.items.items.len >= MAX_QUEUE_SIZE) return false;
         self.items.append(std.heap.c_allocator, item) catch return false;
-        self.cond.signal();
+        self.cond.signal(std.Options.debug_io);
         return true;
     }
 
     pub fn pop(self: *WorkQueue) ?IndexWork {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Options.debug_io);
+        defer self.mu.unlock(std.Options.debug_io);
         while (self.head >= self.items.items.len and !self.done) {
-            self.cond.wait(&self.mu);
+            self.cond.waitUncancelable(std.Options.debug_io, &self.mu);
         }
         if (self.head >= self.items.items.len) return null;
         const item = self.items.items[self.head];
@@ -121,13 +179,6 @@ const BgWorkerCtx = struct {
 pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
-    const db = db_mod.Db.open(wctx.bg_ctx.db_pathz) catch return;
-    defer db.close();
-    db.exec("PRAGMA foreign_keys=ON") catch |err| {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "refract: warning: PRAGMA foreign_keys failed: {s}", .{@errorName(err)}) catch "refract: PRAGMA foreign_keys failed";
-        wctx.bg_ctx.server_ptr.sendLogMessage(3, msg);
-    };
     // Per-worker in-memory DB for the parse phase; no mutex needed during parse
     const mem_db = db_mod.Db.open(":memory:") catch return;
     defer mem_db.close();
@@ -135,7 +186,7 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     while (wctx.queue.pop()) |work| {
         if (wctx.bg_ctx.server_ptr.bg_cancelled.load(.acquire)) return;
         // File stat outside mutex
-        const stat = std.fs.cwd().statFile(work.path) catch {
+        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, work.path, .{}) catch {
             _ = arena.reset(.retain_capacity);
             continue;
         };
@@ -143,15 +194,23 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
             var size_buf: [512]u8 = undefined;
             const size_msg = std.fmt.bufPrint(&size_buf, "refract: skipping {s} (file too large)", .{work.path}) catch "refract: skipping file (too large)";
             wctx.bg_ctx.server_ptr.sendLogMessage(2, size_msg);
+            // Evict any previously-indexed symbols for this path so size-limit changes are observable
+            wctx.bg_ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            if (wctx.bg_ctx.server_ptr.db.prepare("DELETE FROM files WHERE path = ?")) |del_stmt| {
+                defer del_stmt.finalize();
+                del_stmt.bind_text(1, work.path);
+                _ = del_stmt.step() catch {};
+            } else |_| {}
+            wctx.bg_ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
             _ = arena.reset(.retain_capacity);
             continue;
         }
         // Quick mtime-based skip check under brief mutex
-        const disk_mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        const disk_mtime: i64 = stat.mtime.toMilliseconds();
         {
-            wctx.bg_ctx.server_ptr.db_mutex.lock();
-            defer wctx.bg_ctx.server_ptr.db_mutex.unlock();
-            const skip = indexer.shouldSkip(db, work.path, disk_mtime);
+            wctx.bg_ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            defer wctx.bg_ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            const skip = indexer.shouldSkip(wctx.bg_ctx.server_ptr.db, work.path, disk_mtime);
             if (skip) {
                 _ = arena.reset(.retain_capacity);
                 continue;
@@ -159,8 +218,8 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
         }
         // Skip files explicitly deleted via didDeleteFiles / didChangeWatchedFiles type=3
         {
-            wctx.bg_ctx.server_ptr.deleted_paths_mu.lock();
-            defer wctx.bg_ctx.server_ptr.deleted_paths_mu.unlock();
+            wctx.bg_ctx.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
+            defer wctx.bg_ctx.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
             const is_deleted = wctx.bg_ctx.server_ptr.deleted_paths.contains(work.path);
             if (is_deleted) {
                 _ = arena.reset(.retain_capacity);
@@ -169,7 +228,7 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
         }
         // Phase 1: parse into mem_db — outside mutex, fully parallel across workers
         const single_path = [1][]const u8{work.path};
-        indexer.reindex(mem_db, &single_path, work.is_gem, arena.allocator(), wctx.bg_ctx.server_ptr.max_file_size.load(.monotonic)) catch |err| {
+        indexer.reindex(mem_db, &single_path, work.is_gem, arena.allocator(), wctx.bg_ctx.server_ptr.max_file_size.load(.monotonic), null) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "refract: parse failed for {s}: {s}", .{ work.path, @errorName(err) }) catch "refract: parse failed";
             wctx.bg_ctx.server_ptr.sendLogMessage(2, msg);
@@ -178,11 +237,12 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
             _ = arena.reset(.retain_capacity);
             continue;
         };
-        // Phase 2: commit parsed data to real DB — brief mutex, fast write
+        // Phase 2: commit parsed data to real DB — use BgCtx's shared connection under mutex
         {
-            wctx.bg_ctx.server_ptr.db_mutex.lock();
-            defer wctx.bg_ctx.server_ptr.db_mutex.unlock();
-            indexer.commitParsed(db, mem_db, work.path, work.is_gem, arena.allocator()) catch |err| {
+            wctx.bg_ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            defer wctx.bg_ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            const shared_db = wctx.bg_ctx.server_ptr.db;
+            indexer.commitParsed(shared_db, mem_db, work.path, work.is_gem, arena.allocator()) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "refract: indexing failed for {s}: {s}", .{ work.path, @errorName(err) }) catch "refract: indexing failed";
                 wctx.bg_ctx.server_ptr.sendLogMessage(2, msg);
@@ -195,26 +255,55 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     }
 }
 
+pub fn serverLogSinkCb(ctx: ?*anyopaque, level: u8, msg: []const u8) void {
+    const srv_ptr = ctx orelse return;
+    const srv: *Server = @ptrCast(@alignCast(srv_ptr));
+    srv.sendLogMessage(level, msg);
+}
+
+pub fn flushWorkerFn(server: *Server) void {
+    const tick_ns: u64 = 75 * std.time.ns_per_ms;
+    while (!server.flush_thread_done.load(.acquire) and !server.bg_cancelled.load(.acquire)) {
+        {
+            var _sleep_ts: std.c.timespec = .{ .sec = @intCast((tick_ns) / std.time.ns_per_s), .nsec = @intCast((tick_ns) % std.time.ns_per_s) };
+            _ = std.c.nanosleep(&_sleep_ts, null);
+        }
+        if (server.flush_thread_done.load(.acquire) or server.bg_cancelled.load(.acquire)) break;
+        server.flushDirtyUrisDebounced();
+    }
+}
+
 pub fn rubocopWorkerFn(server: *Server) void {
     while (true) {
-        server.rubocop_queue_mu.lock();
+        server.rubocop_queue_mu.lockUncancelable(std.Options.debug_io);
         while (server.rubocop_pending.count() == 0 and !server.rubocop_thread_done.load(.acquire)) {
-            server.rubocop_queue_cond.wait(&server.rubocop_queue_mu);
+            server.rubocop_queue_cond.waitUncancelable(std.Options.debug_io, &server.rubocop_queue_mu);
         }
         if (server.rubocop_pending.count() == 0 and server.rubocop_thread_done.load(.acquire)) {
-            server.rubocop_queue_mu.unlock();
+            server.rubocop_queue_mu.unlock(std.Options.debug_io);
             return;
         }
         var key_it = server.rubocop_pending.keyIterator();
         const path_key = key_it.next().?.*;
         const path = server.alloc.dupe(u8, path_key) catch {
-            server.rubocop_queue_mu.unlock();
+            server.rubocop_queue_mu.unlock(std.Options.debug_io);
             continue;
         };
         _ = server.rubocop_pending.remove(path_key);
         server.alloc.free(path_key);
-        server.rubocop_queue_mu.unlock();
+        server.rubocop_queue_mu.unlock(std.Options.debug_io);
         defer server.alloc.free(path);
+
+        // Debounce: wait before running RuboCop so rapid saves coalesce into one run.
+        const debounce_ms = server.rubocop_debounce_ms.load(.monotonic);
+        if (debounce_ms > 0) {
+            const debounce_ns = debounce_ms * std.time.ns_per_ms;
+            var _deb_ts: std.c.timespec = .{
+                .sec = @intCast(debounce_ns / std.time.ns_per_s),
+                .nsec = @intCast(debounce_ns % std.time.ns_per_s),
+            };
+            _ = std.c.nanosleep(&_deb_ts, null);
+        }
 
         const uri = std.fmt.allocPrint(server.alloc, "file://{s}", .{path}) catch continue;
         defer server.alloc.free(uri);
@@ -232,8 +321,8 @@ pub fn rubocopWorkerFn(server: *Server) void {
         var open_source: ?[]u8 = null;
         defer if (open_source) |s| server.alloc.free(s);
         {
-            server.open_docs_mu.lock();
-            defer server.open_docs_mu.unlock();
+            server.open_docs_mu.lockUncancelable(std.Options.debug_io);
+            defer server.open_docs_mu.unlock(std.Options.debug_io);
             if (server.open_docs.get(uri)) |src|
                 open_source = server.alloc.dupe(u8, src) catch null;
         }
@@ -263,7 +352,6 @@ pub fn rubocopWorkerFn(server: *Server) void {
 }
 
 const BgCtx = struct {
-    db_pathz: [:0]u8,
     root_path: []u8,
     server_ptr: *Server,
     disable_gem_index: bool,
@@ -272,10 +360,10 @@ const BgCtx = struct {
     bundle_timeout_ms: u64 = 15_000,
     max_workers: usize = 8,
     index_failures: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    io: std.Io = std.Options.debug_io,
 
     pub fn run(self: *BgCtx) void {
         defer {
-            std.heap.c_allocator.free(self.db_pathz);
             std.heap.c_allocator.free(self.root_path);
             std.heap.c_allocator.destroy(self);
         }
@@ -284,13 +372,7 @@ const BgCtx = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        const db = db_mod.Db.open(self.db_pathz) catch return;
-        defer db.close();
-        db.exec("PRAGMA foreign_keys=ON") catch |err| {
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "refract: warning: PRAGMA foreign_keys failed: {s}", .{@errorName(err)}) catch "refract: PRAGMA foreign_keys failed";
-            self.server_ptr.sendLogMessage(3, msg);
-        };
+        const db = self.server_ptr.db;
 
         self.server_ptr.sendLogMessage(3, "refract: indexing workspace");
         self.server_ptr.sendProgressBegin();
@@ -309,55 +391,90 @@ const BgCtx = struct {
         defer alloc.free(const_paths);
         for (paths, 0..) |p, i| const_paths[i] = p;
 
-        const total_files = const_paths.len;
-
-        // Parallel indexing: spawn worker threads (default: min(ncpu, 8), configurable via maxWorkers)
-        var queue = WorkQueue{};
-        defer queue.items.deinit(std.heap.c_allocator);
-
-        const ncpu = std.Thread.getCpuCount() catch 1;
-        const nthreads = @min(ncpu, @min(self.max_workers, 16));
-        var threads: [16]?std.Thread = [_]?std.Thread{null} ** 16;
-        for (0..nthreads) |ti| {
-            const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &queue };
-            threads[ti] = std.Thread.spawn(.{}, bgWorkerFn, .{wctx}) catch null;
-        }
-
-        var file_count: usize = 0;
-        for (const_paths) |p| {
-            if (self.server_ptr.bg_cancelled.load(.acquire)) break;
-            std.fs.accessAbsolute(p, .{}) catch |e| {
-                var abuf: [512]u8 = undefined;
-                const amsg = std.fmt.bufPrint(&abuf, "refract: skipping inaccessible file {s}: {s}", .{ p, @errorName(e) }) catch "refract: skipping inaccessible file";
-                self.server_ptr.sendLogMessage(4, amsg);
-                continue;
-            };
-            if (!queue.push(.{ .path = p })) self.server_ptr.sendLogMessage(1, "refract: index queue full (OOM), file skipped");
-            file_count += 1;
-            if (file_count % 50 == 0) {
-                const dir_part = std.fs.path.dirname(p) orelse p;
-                const dir_name = std.fs.path.basename(dir_part);
-                self.server_ptr.sendProgressReportWithDir(file_count, total_files, dir_name);
-            }
-        }
-        // Signal workers that no more work is coming
-        queue.mu.lock();
-        queue.done = true;
-        queue.mu.unlock();
-        queue.cond.broadcast();
-
-        for (threads) |t_opt| {
-            if (t_opt) |t| t.join();
-        }
-
-        // Push diagnostics for indexed files
-        for (const_paths) |p| {
-            const bg_diags = indexer.getDiags(p, alloc) catch &.{};
+        // Filter scanned paths so bg's initial workspace reindex doesn't
+        // overwrite state the client already set via notifications:
+        //   - `deleted_paths`: didChangeWatchedFiles type=3 (explicit delete)
+        //   - `open_docs`: didOpen/didChange — client content is authoritative
+        // Without this, bg's reindex-from-disk races with the notification path
+        // and can silently clobber newer in-memory edits (observed on macOS).
+        var filtered_paths = std.ArrayList([]const u8).empty;
+        defer filtered_paths.deinit(alloc);
+        {
+            var open_set: std.StringHashMapUnmanaged(void) = .empty;
             defer {
-                for (bg_diags) |d| alloc.free(d.message);
-                alloc.free(bg_diags);
+                var it = open_set.keyIterator();
+                while (it.next()) |k| alloc.free(k.*);
+                open_set.deinit(alloc);
             }
-            if (bg_diags.len > 0) {
+            {
+                self.server_ptr.open_docs_mu.lockUncancelable(std.Options.debug_io);
+                defer self.server_ptr.open_docs_mu.unlock(std.Options.debug_io);
+                var uri_it = self.server_ptr.open_docs.keyIterator();
+                while (uri_it.next()) |uri_ptr| {
+                    const uri = uri_ptr.*;
+                    if (!std.mem.startsWith(u8, uri, "file://")) continue;
+                    const p = alloc.dupe(u8, uri["file://".len..]) catch continue;
+                    open_set.put(alloc, p, {}) catch alloc.free(p);
+                }
+            }
+            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
+            defer self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
+            for (const_paths) |p| {
+                if (self.server_ptr.deleted_paths.contains(p)) continue;
+                if (open_set.contains(p)) continue;
+                filtered_paths.append(alloc, p) catch {};
+            }
+        }
+
+        // Index workspace files — wire live progress into $/progress notifications
+        const ProgressCtx = struct {
+            server: *Server,
+            fn report(ctx_opaque: *anyopaque, done: usize, total: usize, path: []const u8) void {
+                const self_pg: *@This() = @ptrCast(@alignCast(ctx_opaque));
+                // Show the parent directory name in the status message
+                const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
+                const dir_part = if (slash > 0) blk: {
+                    const parent = path[0..slash];
+                    const prev_slash = std.mem.lastIndexOfScalar(u8, parent, '/') orelse 0;
+                    break :blk parent[if (prev_slash > 0) prev_slash + 1 else 0..];
+                } else path;
+                self_pg.server.sendProgressReportWithDir(done, total, dir_part);
+            }
+        };
+        var pg_ctx = ProgressCtx{ .server = self.server_ptr };
+        const progress_cb = indexer.ProgressCallback{
+            .ctx = &pg_ctx,
+            .report = ProgressCtx.report,
+        };
+        self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+        indexer.reindex(db, filtered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
+            var ebuf: [256]u8 = undefined;
+            const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
+            self.server_ptr.sendLogMessage(2, emsg);
+        };
+        self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+
+        // Push diagnostics only for currently-open documents
+        {
+            var open_paths_list = std.ArrayList([]const u8).empty;
+            defer {
+                for (open_paths_list.items) |op| alloc.free(op);
+                open_paths_list.deinit(alloc);
+            }
+            self.server_ptr.open_docs_mu.lockUncancelable(std.Options.debug_io);
+            var uri_it = self.server_ptr.open_docs.keyIterator();
+            while (uri_it.next()) |uri_ptr| {
+                const uri = uri_ptr.*;
+                if (std.mem.startsWith(u8, uri, "file://")) {
+                    if (alloc.dupe(u8, uri["file://".len..])) |p| {
+                        open_paths_list.append(alloc, p) catch alloc.free(p);
+                    } else |_| {}
+                }
+            }
+            self.server_ptr.open_docs_mu.unlock(std.Options.debug_io);
+
+            for (open_paths_list.items) |p| {
+                if (self.server_ptr.bg_cancelled.load(.acquire)) break;
                 var uri_buf: [4096]u8 = undefined;
                 if (std.fmt.bufPrint(&uri_buf, "file://{s}", .{p})) |file_uri| {
                     diagnostics_mod.publishDiagnostics(self.server_ptr, file_uri, p, false);
@@ -366,35 +483,52 @@ const BgCtx = struct {
         }
 
         if (!self.server_ptr.bg_cancelled.load(.acquire)) {
-            self.server_ptr.db_mutex.lock();
-            indexer.cleanupStale(db, const_paths, self.root_path, alloc) catch |e| {
+            var keep_paths: std.StringHashMapUnmanaged(void) = .empty;
+            defer {
+                var kit = keep_paths.keyIterator();
+                while (kit.next()) |k| alloc.free(k.*);
+                keep_paths.deinit(alloc);
+            }
+            {
+                self.server_ptr.open_docs_mu.lockUncancelable(std.Options.debug_io);
+                defer self.server_ptr.open_docs_mu.unlock(std.Options.debug_io);
+                var uri_it = self.server_ptr.open_docs.keyIterator();
+                while (uri_it.next()) |uri_ptr| {
+                    const uri = uri_ptr.*;
+                    if (!std.mem.startsWith(u8, uri, "file://")) continue;
+                    const p = alloc.dupe(u8, uri["file://".len..]) catch continue;
+                    keep_paths.put(alloc, p, {}) catch alloc.free(p);
+                }
+            }
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            indexer.cleanupStale(db, const_paths, self.root_path, alloc, &keep_paths) catch |e| {
                 var buf: [128]u8 = undefined;
                 const m = std.fmt.bufPrint(&buf, "refract: symbol cleanup failed: {s}", .{@errorName(e)}) catch "refract: symbol cleanup failed";
                 self.server_ptr.sendLogMessage(2, m);
             };
-            self.server_ptr.db_mutex.unlock();
-            self.server_ptr.deleted_paths_mu.lock();
+            indexer.ensureBundledRbs(db);
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
             var dp_it = self.server_ptr.deleted_paths.keyIterator();
             while (dp_it.next()) |k| self.server_ptr.alloc.free(k.*);
             self.server_ptr.deleted_paths.clearRetainingCapacity();
-            self.server_ptr.deleted_paths_mu.unlock();
+            self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
         }
 
         self.server_ptr.sendProgressEnd();
         if (!self.server_ptr.bg_cancelled.load(.acquire)) {
-            self.server_ptr.db_mutex.lock();
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
             var nfiles: i64 = 0;
             var nsyms: i64 = 0;
-            if (self.server_ptr.db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0")) |fs| {
+            if (db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0")) |fs| {
                 defer fs.finalize();
                 if (fs.step() catch false) nfiles = fs.column_int(0);
             } else |_| {}
-            if (self.server_ptr.db.prepare("SELECT COUNT(*) FROM symbols")) |ss| {
+            if (db.prepare("SELECT COUNT(*) FROM symbols")) |ss| {
                 defer ss.finalize();
                 if (ss.step() catch false) nsyms = ss.column_int(0);
             } else |_| {}
-            self.server_ptr.db.runOptimize();
-            self.server_ptr.db_mutex.unlock();
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
             const nfailures = self.index_failures.load(.monotonic);
             var stat_buf: [192]u8 = undefined;
             if (nfailures > 0) {
@@ -408,79 +542,91 @@ const BgCtx = struct {
                 self.server_ptr.sendLogMessage(3, stat_msg);
             }
         } else {
-            self.server_ptr.db_mutex.lock();
-            self.server_ptr.db.runOptimize();
-            self.server_ptr.db_mutex.unlock();
             self.server_ptr.sendLogMessage(3, "refract: indexing complete");
         }
 
-        if (!self.disable_gem_index and !self.server_ptr.bg_cancelled.load(.acquire)) {
+        // Always index bundled RBS — cheap, idempotent (keyed by <bundled>/... path).
+        // Ensures fresh hover/completion coverage after binary upgrades, regardless of DB age.
+        if (!self.server_ptr.bg_cancelled.load(.acquire)) {
+            indexBundledRbsLsp(self);
+        }
+
+        // Expensive: system RBS discovery + reindex — only once per DB.
+        if (!self.server_ptr.bg_cancelled.load(.acquire)) {
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            const stored_stdlib = getMetaInt(db, "stdlib_rbs_indexed") orelse 0;
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            if (stored_stdlib == 0) {
+                indexStdlibRbsLsp(self, alloc);
+            }
+        }
+
+        if (!self.disable_gem_index and !self.server_ptr.bg_cancelled.load(.acquire)) gems: {
             // Gem scan: only if Gemfile.lock has changed
-            const lock_path = std.fmt.allocPrint(alloc, "{s}/Gemfile.lock", .{self.root_path}) catch return;
-            const lock_stat = std.fs.cwd().statFile(lock_path) catch {
+            const lock_path = std.fmt.allocPrint(alloc, "{s}/Gemfile.lock", .{self.root_path}) catch break :gems;
+            const lock_stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, lock_path, .{}) catch {
                 self.server_ptr.sendLogMessage(3, "refract: no Gemfile.lock found; gem indexing skipped");
-                return;
+                break :gems;
             };
-            const lock_mtime: i64 = @truncate(@divTrunc(lock_stat.mtime, std.time.ns_per_ms));
+            const lock_mtime: i64 = lock_stat.mtime.toMilliseconds();
 
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
             const stored_mtime = getMetaInt(db, "gemfile_lock_mtime") orelse 0;
-            if (lock_mtime == stored_mtime) return;
-
-            self.server_ptr.db_mutex.lock();
+            if (lock_mtime == stored_mtime) {
+                self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+                break :gems;
+            }
             db.exec("DELETE FROM files WHERE is_gem=1") catch |e| {
                 var gbuf: [256]u8 = undefined;
                 const gmsg = std.fmt.bufPrint(&gbuf, "refract: gem table clear failed: {s}", .{@errorName(e)}) catch "refract: gem table clear failed";
                 self.server_ptr.sendLogMessage(2, gmsg);
             };
-            self.server_ptr.db_mutex.unlock();
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
 
-            const gem_paths = gems.findGemPaths(self.root_path, alloc, self.bundle_timeout_ms * std.time.ns_per_ms) catch {
+            const gem_paths = gems.findGemPaths(self.io, self.root_path, alloc, self.bundle_timeout_ms * std.time.ns_per_ms) catch {
                 self.server_ptr.sendLogMessage(2, "refract: gem index failed");
                 self.server_ptr.showUserError("refract: gem indexing failed — completion for gems may be unavailable");
-                return;
+                break :gems;
             };
-            const gem_const_paths = alloc.alloc([]const u8, gem_paths.len) catch return;
+            defer {
+                for (gem_paths) |p| alloc.free(p);
+                alloc.free(gem_paths);
+            }
+            const gem_const_paths = alloc.alloc([]const u8, gem_paths.len) catch break :gems;
+            defer alloc.free(gem_const_paths);
             for (gem_paths, 0..) |p, i| gem_const_paths[i] = p;
 
-            var gem_queue = WorkQueue{};
-            defer gem_queue.items.deinit(std.heap.c_allocator);
-            var gem_threads: [16]?std.Thread = [_]?std.Thread{null} ** 16;
-            for (0..nthreads) |ti| {
-                const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &gem_queue };
-                gem_threads[ti] = std.Thread.spawn(.{}, bgWorkerFn, .{wctx}) catch null;
-            }
-            for (gem_const_paths) |gp| {
-                if (self.server_ptr.bg_cancelled.load(.acquire)) break;
-                if (!gem_queue.push(.{ .path = gp, .is_gem = true })) self.server_ptr.sendLogMessage(1, "refract: gem index queue full (OOM), gem skipped");
-            }
-            gem_queue.mu.lock();
-            gem_queue.done = true;
-            gem_queue.mu.unlock();
-            gem_queue.cond.broadcast();
-            for (gem_threads) |t_opt| {
-                if (t_opt) |t| t.join();
-            }
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            indexer.reindex(db, gem_const_paths, true, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
+                std.debug.print("{s}", .{@errorName(e)});
+            };
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
             {
                 var gbuf: [128]u8 = undefined;
                 const gmsg = std.fmt.bufPrint(&gbuf, "refract: indexing gems: {d} files", .{gem_const_paths.len}) catch "refract: indexing gems";
                 self.server_ptr.sendLogMessage(3, gmsg);
             }
             if (!self.server_ptr.bg_cancelled.load(.acquire)) {
-                self.server_ptr.db_mutex.lock();
+                self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
                 setMetaInt(db, "gemfile_lock_mtime", lock_mtime, alloc);
-                self.server_ptr.db_mutex.unlock();
+                self.server_ptr.db_mutex.unlock(std.Options.debug_io);
             }
 
             // Index RBS collection paths (rbs_collection.lock.yaml)
             if (!self.server_ptr.bg_cancelled.load(.acquire)) {
                 if (gems.findRbsCollectionPaths(self.root_path, alloc)) |rbs_coll_paths| {
+                    defer {
+                        for (rbs_coll_paths) |p| alloc.free(p);
+                        alloc.free(rbs_coll_paths);
+                    }
                     if (rbs_coll_paths.len > 0) {
-                        const rbs_const = alloc.alloc([]const u8, rbs_coll_paths.len) catch return;
+                        const rbs_const = alloc.alloc([]const u8, rbs_coll_paths.len) catch break :gems;
+                        defer alloc.free(rbs_const);
                         for (rbs_coll_paths, 0..) |p, i| rbs_const[i] = p;
-                        self.server_ptr.db_mutex.lock();
-                        defer self.server_ptr.db_mutex.unlock();
-                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic)) catch |e| {
-                            std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                        self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+                        defer self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
+                            std.debug.print("{s}", .{@errorName(e)});
                         };
                         var rbuf: [128]u8 = undefined;
                         const rmsg = std.fmt.bufPrint(&rbuf, "refract: indexed {d} RBS collection files", .{rbs_const.len}) catch "refract: indexed RBS collection";
@@ -490,45 +636,52 @@ const BgCtx = struct {
             }
         }
 
+        self.server_ptr.bg_indexing_done.store(true, .release);
+
         // Incremental reindex watch loop: drain queued paths every 200ms
         while (!self.server_ptr.bg_cancelled.load(.acquire)) {
             var elapsed_ms: u32 = 0;
             while (elapsed_ms < 200) : (elapsed_ms += 10) {
                 if (self.server_ptr.bg_cancelled.load(.acquire)) break;
-                std.Thread.sleep(INCR_WATCH_SLEEP_MS * std.time.ns_per_ms);
+                {
+                    var _sleep_ts: std.c.timespec = .{ .sec = @intCast((INCR_WATCH_SLEEP_MS * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((INCR_WATCH_SLEEP_MS * std.time.ns_per_ms) % std.time.ns_per_s) };
+                    _ = std.c.nanosleep(&_sleep_ts, null);
+                }
             }
-            self.server_ptr.incr_paths_mu.lock();
+            self.server_ptr.incr_paths_mu.lockUncancelable(std.Options.debug_io);
             if (self.server_ptr.incr_paths.items.len == 0) {
-                self.server_ptr.incr_paths_mu.unlock();
+                self.server_ptr.incr_paths_mu.unlock(std.Options.debug_io);
                 continue;
             }
             const batch = self.server_ptr.incr_paths.toOwnedSlice(self.server_ptr.alloc) catch {
-                self.server_ptr.incr_paths_mu.unlock();
+                self.server_ptr.incr_paths_mu.unlock(std.Options.debug_io);
                 continue;
             };
-            self.server_ptr.incr_paths = .{};
-            self.server_ptr.incr_paths_mu.unlock();
+            self.server_ptr.incr_paths = .empty;
+            self.server_ptr.incr_paths_mu.unlock(std.Options.debug_io);
             defer {
                 for (batch) |p| self.server_ptr.alloc.free(p);
                 self.server_ptr.alloc.free(batch);
             }
-            // Filter out explicitly deleted paths
-            var filtered = std.ArrayList([]const u8){};
-            defer filtered.deinit(alloc);
-            self.server_ptr.deleted_paths_mu.lock();
+            // Filter out explicitly deleted paths.
+            // Use server alloc (not bg arena) — arena.reset below would invalidate
+            // arena-backed storage before the defer fires, causing a UAF on musl.
+            var filtered = std.ArrayList([]const u8).empty;
+            defer filtered.deinit(self.server_ptr.alloc);
+            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
             for (batch) |p| {
                 if (!self.server_ptr.deleted_paths.contains(p) and !self.server_ptr.isExcludedPath(p))
-                    filtered.append(alloc, p) catch {}; // OOM: filtered list
+                    filtered.append(self.server_ptr.alloc, p) catch logOomOnce("bgctx.filtered");
             }
-            self.server_ptr.deleted_paths_mu.unlock();
+            self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
             if (filtered.items.len == 0) continue;
-            self.server_ptr.db_mutex.lock();
-            indexer.reindex(db, filtered.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic)) catch |e| {
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            indexer.reindex(db, filtered.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "refract: incremental reindex failed: {s}", .{@errorName(e)}) catch "refract: incremental reindex failed";
                 self.server_ptr.sendLogMessage(2, emsg);
             };
-            self.server_ptr.db_mutex.unlock();
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
             _ = arena.reset(.retain_capacity);
         }
     }
@@ -542,11 +695,14 @@ pub const TimeoutCtx = struct {
     pub fn run(ctx: *TimeoutCtx) void {
         var elapsed: u64 = 0;
         while (elapsed < ctx.timeout_ns) {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            {
+                var _sleep_ts: std.c.timespec = .{ .sec = @intCast((100 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((100 * std.time.ns_per_ms) % std.time.ns_per_s) };
+                _ = std.c.nanosleep(&_sleep_ts, null);
+            }
             elapsed += 100 * std.time.ns_per_ms;
             if (ctx.done.load(.acquire)) return;
         }
-        _ = ctx.child.kill() catch {}; // cleanup
+        _ = ctx.child.kill(std.Options.debug_io); // cleanup
     }
 };
 
@@ -569,7 +725,7 @@ pub fn paramHintVisitor(node: ?*const prism_mod.Node, data: ?*anyopaque) callcon
     if (n.*.type != prism_mod.NODE_CALL) return true;
     const cn: *const prism_mod.CallNode = @ptrCast(@alignCast(n));
     if (cn.arguments == null) return true;
-    const args = cn.arguments.?[0].arguments;
+    const args = cn.arguments[0].arguments;
     if (args.size < 2) return true;
 
     const call_lc = prism_mod.lineOffsetListLineColumn(&ctx.parser.line_offsets, n.*.location.start, ctx.parser.start_line);
@@ -579,22 +735,99 @@ pub fn paramHintVisitor(node: ?*const prism_mod.Node, data: ?*anyopaque) callcon
     const ct = prism_mod.constantPoolIdToConstant(&ctx.parser.constant_pool, cn.name);
     const mname = ct[0].start[0..ct[0].length];
 
-    const cnt_stmt = ctx.db.prepare("SELECT COUNT(*) FROM params p JOIN symbols s ON p.symbol_id=s.id WHERE s.name=? AND s.kind='def' AND p.kind IN ('required','optional')") catch return true;
-    cnt_stmt.bind_text(1, mname);
-    const pcount: i64 = if (cnt_stmt.step() catch false) cnt_stmt.column_int(0) else 0;
-    cnt_stmt.finalize();
-    if (pcount < 2) return true;
+    // Only render hints when we can pin the call to a concrete receiver class.
+    // Unscoped hints pick any def with the same name and emit its param names —
+    // that's the ENV.fetch → "default:" bug. Resolve the receiver first; skip if we can't.
+    var recv_class_buf: [256]u8 = undefined;
+    const recv_class: ?[]const u8 = blk: {
+        const recv = cn.receiver orelse break :blk null;
+        switch (recv.*.type) {
+            prism_mod.NODE_CONSTANT => {
+                const rc: *const prism_mod.ConstReadNode = @ptrCast(@alignCast(recv));
+                const cc = prism_mod.constantPoolIdToConstant(&ctx.parser.constant_pool, rc.name);
+                if (cc[0].length == 0 or cc[0].length > recv_class_buf.len) break :blk null;
+                @memcpy(recv_class_buf[0..cc[0].length], cc[0].start[0..cc[0].length]);
+                break :blk recv_class_buf[0..cc[0].length];
+            },
+            prism_mod.NODE_CONSTANT_PATH => {
+                const cp: *const prism_mod.ConstantPathNode = @ptrCast(@alignCast(recv));
+                if (cp.name == 0) break :blk null;
+                const cc = prism_mod.constantPoolIdToConstant(&ctx.parser.constant_pool, cp.name);
+                if (cc[0].length == 0 or cc[0].length > recv_class_buf.len) break :blk null;
+                @memcpy(recv_class_buf[0..cc[0].length], cc[0].start[0..cc[0].length]);
+                break :blk recv_class_buf[0..cc[0].length];
+            },
+            prism_mod.NODE_LOCAL_VAR_READ => {
+                const rv: *const prism_mod.LocalVarReadNode = @ptrCast(@alignCast(recv));
+                const info = prism_mod.constantPoolIdToConstant(&ctx.parser.constant_pool, rv.name);
+                if (info[0].length == 0) break :blk null;
+                const rv_name = info[0].start[0..info[0].length];
+                const lv = ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=?1 AND name=?2 AND line<=?3 AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1") catch break :blk null;
+                defer lv.finalize();
+                lv.bind_int(1, ctx.file_id);
+                lv.bind_text(2, rv_name);
+                lv.bind_int(3, call_line);
+                if (lv.step() catch false) {
+                    const t_raw = lv.column_text(0);
+                    const t = extractBaseClass(t_raw);
+                    if (t.len > 0 and t.len <= recv_class_buf.len) {
+                        @memcpy(recv_class_buf[0..t.len], t);
+                        break :blk recv_class_buf[0..t.len];
+                    }
+                }
+                break :blk null;
+            },
+            prism_mod.NODE_INSTANCE_VAR_READ => {
+                const rv: *const prism_mod.InstanceVarReadNode = @ptrCast(@alignCast(recv));
+                const info = prism_mod.constantPoolIdToConstant(&ctx.parser.constant_pool, rv.name);
+                if (info[0].length == 0) break :blk null;
+                const rv_name = info[0].start[0..info[0].length];
+                const lv = ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=?1 AND name=?2 AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1") catch break :blk null;
+                defer lv.finalize();
+                lv.bind_int(1, ctx.file_id);
+                lv.bind_text(2, rv_name);
+                if (lv.step() catch false) {
+                    const t_raw = lv.column_text(0);
+                    const t = extractBaseClass(t_raw);
+                    if (t.len > 0 and t.len <= recv_class_buf.len) {
+                        @memcpy(recv_class_buf[0..t.len], t);
+                        break :blk recv_class_buf[0..t.len];
+                    }
+                }
+                break :blk null;
+            },
+            else => break :blk null,
+        }
+    };
+    if (recv_class == null) return true;
 
-    const mp_stmt = ctx.db.prepare("SELECT p.name FROM params p JOIN symbols s ON p.symbol_id=s.id WHERE s.name=? AND s.kind='def' AND p.kind IN ('required','optional') ORDER BY p.position LIMIT 20") catch return true;
+    const mp_stmt = ctx.db.prepare(
+        \\SELECT p.name, p.kind
+        \\FROM params p JOIN symbols s ON p.symbol_id=s.id
+        \\WHERE s.name=?1 AND s.kind IN ('def','classdef')
+        \\  AND (s.parent_name=?2 OR (s.parent_name IS NULL AND s.file_id IN (
+        \\    SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
+        \\  )))
+        \\  AND p.kind IN ('required','optional','positional')
+        \\ORDER BY (s.doc IS NOT NULL) DESC, p.symbol_id, p.position LIMIT 20
+    ) catch return true;
     mp_stmt.bind_text(1, mname);
+    mp_stmt.bind_text(2, recv_class.?);
     defer mp_stmt.finalize();
 
     var pidx: usize = 0;
     while (mp_stmt.step() catch false) {
         if (pidx >= args.size or pidx >= 20) break;
         const pname = mp_stmt.column_text(0);
+        const pkind = mp_stmt.column_text(1);
         const arg = args.nodes[pidx];
         if (arg.*.type == prism_mod.NODE_KEYWORD_HASH) break;
+        // Only label positional-style params. Keyword/rest/block are user-visible already
+        // or not expressible as a leading label.
+        if (!(std.mem.eql(u8, pkind, "required") or std.mem.eql(u8, pkind, "optional") or std.mem.eql(u8, pkind, "positional"))) {
+            pidx += 1;
+            continue;
+        }
         const arg_lc = prism_mod.lineOffsetListLineColumn(&ctx.parser.line_offsets, arg.*.location.start, ctx.parser.start_line);
         if (!ctx.first_ptr.*) ctx.w.writeByte(',') catch {}; // response building
         ctx.first_ptr.* = false;
@@ -614,32 +847,35 @@ pub const Server = struct {
     db_pathz: [:0]u8,
     bg_thread: ?std.Thread,
     alloc: std.mem.Allocator,
+    io: std.Io,
     initialized: bool,
     bg_started: bool,
     bg_started_event: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    bg_indexing_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     shutdown_requested: bool,
     root_uri: ?[]u8,
-    writer_mutex: std.Thread.Mutex,
-    db_mutex: std.Thread.Mutex,
-    log_mutex: std.Thread.Mutex,
+    writer_mutex: std.Io.Mutex,
+    db_mutex: std.Io.Mutex,
+    log_mutex: std.Io.Mutex,
     stdout_writer: ?*std.Io.Writer,
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     log_path: ?[]const u8 = null,
-    log_file: ?std.fs.File = null,
+    log_file: ?std.Io.File = null,
     log_level: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
     max_file_size: std.atomic.Value(usize) = std.atomic.Value(usize).init(8 * 1024 * 1024),
     client_caps_work_done_progress: bool = false,
     stmt_cache: std.AutoHashMapUnmanaged(usize, db_mod.CachedStmt) = .{},
     bg_cancelled: std.atomic.Value(bool) = .{ .raw = false },
     cancelled_ids: std.AutoHashMapUnmanaged(i64, void) = .{},
-    cancel_mutex: std.Thread.Mutex = .{},
+    cancel_mutex: std.Io.Mutex = std.Io.Mutex.init,
     open_docs: std.StringHashMapUnmanaged([]u8) = .{},
-    open_docs_order: std.ArrayList([]const u8) = .{},
-    open_docs_mu: std.Thread.Mutex = .{},
+    open_docs_order: std.ArrayList([]const u8) = .empty,
+    open_docs_mu: std.Io.Mutex = std.Io.Mutex.init,
     progress_req_counter: std.atomic.Value(i64) = std.atomic.Value(i64).init(1000),
     active_progress_token_id: i64 = 0,
     rubocop_timeout_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(30_000),
+    rubocop_debounce_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(1500),
     bundle_timeout_ms: u64 = 15_000,
     max_workers: usize = 8,
     extra_exclude_dirs: []const []const u8 = &.{},
@@ -649,41 +885,46 @@ pub const Server = struct {
     rubocop_bundle_probed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     rubocop_use_bundle: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     lock_db_path: bool = false,
-    last_index_mu: std.Thread.Mutex = .{},
+    last_index_mu: std.Io.Mutex = std.Io.Mutex.init,
     last_index_ms: std.StringHashMap(i64) = undefined,
     incr_paths: std.ArrayList([]u8) = undefined,
-    incr_paths_mu: std.Thread.Mutex = .{},
+    incr_paths_mu: std.Io.Mutex = std.Io.Mutex.init,
     open_docs_version: std.StringHashMapUnmanaged(i64) = .{},
     client_caps_doc_changes: bool = false,
     client_caps_def_link: bool = false,
     root_path: ?[]u8 = null,
     tmp_dir: ?[]u8 = null,
     fmt_counter: u32 = 0,
-    extra_roots: std.ArrayList([]u8) = .{},
+    extra_roots: std.ArrayList([]u8) = .empty,
     encoding_utf8: bool = false,
-    deleted_paths_mu: std.Thread.Mutex = .{},
+    deleted_paths_mu: std.Io.Mutex = std.Io.Mutex.init,
     deleted_paths: std.StringHashMapUnmanaged(void) = .{},
     exit_code: ?u8 = null,
     last_user_error_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     rubocop_thread: ?std.Thread = null,
-    rubocop_queue_mu: std.Thread.Mutex = .{},
-    rubocop_queue_cond: std.Thread.Condition = .{},
+    rubocop_queue_mu: std.Io.Mutex = std.Io.Mutex.init,
+    rubocop_queue_cond: std.Io.Condition = std.Io.Condition.init,
     rubocop_pending: std.StringHashMapUnmanaged(void) = .{},
     rubocop_thread_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    rubocop_mtime_cache: std.StringHashMapUnmanaged(i64) = .{},
+    rubocop_mtime_mu: std.Io.Mutex = std.Io.Mutex.init,
+    flush_thread: ?std.Thread = null,
+    flush_thread_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    pub fn init(db: db_mod.Db, db_pathz: [:0]const u8, alloc: std.mem.Allocator) !Server {
+    pub fn init(io: std.Io, db: db_mod.Db, db_pathz: [:0]const u8, alloc: std.mem.Allocator) !Server {
         var s = Server{
             .db = db,
             .db_pathz = try alloc.dupeZ(u8, db_pathz),
             .bg_thread = null,
             .alloc = alloc,
+            .io = io,
             .initialized = false,
             .bg_started = false,
             .shutdown_requested = false,
             .root_uri = null,
-            .writer_mutex = .{},
-            .db_mutex = .{},
-            .log_mutex = .{},
+            .writer_mutex = std.Io.Mutex.init,
+            .db_mutex = std.Io.Mutex.init,
+            .log_mutex = std.Io.Mutex.init,
             .stdout_writer = null,
             .disable_gem_index = std.atomic.Value(bool).init(false),
             .disable_rubocop = std.atomic.Value(bool).init(false),
@@ -693,12 +934,12 @@ pub const Server = struct {
             .client_caps_work_done_progress = false,
             .stmt_cache = .{},
             .last_index_ms = std.StringHashMap(i64).init(alloc),
-            .incr_paths = .{},
+            .incr_paths = .empty,
         };
         const pid = std.c.getpid();
         var rand_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&rand_bytes);
-        const tmp_base = std.posix.getenv("TMPDIR") orelse std.posix.getenv("TMP") orelse "/tmp";
+        std.Options.debug_io.random(&rand_bytes);
+        const tmp_base: []const u8 = if (std.c.getenv("TMPDIR")) |p| std.mem.span(p) else if (std.c.getenv("TMP")) |p| std.mem.span(p) else "/tmp";
         const tmp_dir = std.fmt.allocPrint(alloc, "{s}/refract-{d}-{x}", .{ tmp_base, pid, std.mem.readInt(u32, &rand_bytes, .little) }) catch null;
         s.tmp_dir = tmp_dir;
         return s;
@@ -708,17 +949,22 @@ pub const Server = struct {
         self.bg_cancelled.store(true, .seq_cst);
         if (self.bg_thread) |t| t.join();
         self.rubocop_thread_done.store(true, .seq_cst);
-        self.rubocop_queue_cond.signal();
+        self.rubocop_queue_cond.signal(std.Options.debug_io);
         if (self.rubocop_thread) |t| t.join();
+        self.flush_thread_done.store(true, .seq_cst);
+        if (self.flush_thread) |t| t.join();
         var rq_it = self.rubocop_pending.keyIterator();
         while (rq_it.next()) |k| self.alloc.free(k.*);
         self.rubocop_pending.deinit(self.alloc);
+        var rmc_it = self.rubocop_mtime_cache.keyIterator();
+        while (rmc_it.next()) |k| self.alloc.free(k.*);
+        self.rubocop_mtime_cache.deinit(self.alloc);
         self.db.runOptimize();
         self.db.runVacuum();
         if (self.root_uri) |uri| self.alloc.free(uri);
         if (self.root_path) |rp| self.alloc.free(rp);
         if (self.log_path) |lp| self.alloc.free(lp);
-        if (self.log_file) |f| f.close();
+        if (self.log_file) |f| f.close(std.Options.debug_io);
         var doc_it = self.open_docs.iterator();
         while (doc_it.next()) |e| {
             self.alloc.free(e.key_ptr.*);
@@ -746,10 +992,10 @@ pub const Server = struct {
         for (self.gitignore_negations) |n| self.alloc.free(@constCast(n));
         if (self.gitignore_negations.len > 0) self.alloc.free(@constCast(self.gitignore_negations));
         if (self.tmp_dir) |d| {
-            std.fs.deleteTreeAbsolute(d) catch |e| {
+            std.Io.Dir.cwd().deleteTree(std.Options.debug_io, d) catch |e| {
                 var tbuf: [256]u8 = undefined;
                 const tmsg = std.fmt.bufPrint(&tbuf, "refract: failed to delete tmp dir {s}: {s}\n", .{ d, @errorName(e) }) catch "refract: failed to delete tmp dir\n";
-                std.fs.File.stderr().writeAll(tmsg) catch {};
+                std.debug.print("{s}", .{tmsg});
             };
             self.alloc.free(d);
         }
@@ -763,15 +1009,12 @@ pub const Server = struct {
     }
 
     pub fn startBgIndexer(self: *Server) void {
+        indexer.log_sink = serverLogSinkCb;
+        indexer.log_sink_ctx = self;
         const uri = self.root_uri orelse return;
         const decoded_path = uriToPath(std.heap.c_allocator, uri) catch return;
         const ctx = std.heap.c_allocator.create(BgCtx) catch {
             std.heap.c_allocator.free(decoded_path);
-            return;
-        };
-        ctx.db_pathz = std.heap.c_allocator.dupeZ(u8, self.db_pathz) catch {
-            std.heap.c_allocator.free(decoded_path);
-            std.heap.c_allocator.destroy(ctx);
             return;
         };
         ctx.root_path = decoded_path;
@@ -781,10 +1024,14 @@ pub const Server = struct {
         ctx.gitignore_negations = self.gitignore_negations;
         ctx.bundle_timeout_ms = self.bundle_timeout_ms;
         ctx.max_workers = self.max_workers;
+        ctx.index_failures = std.atomic.Value(u32).init(0);
+        ctx.io = self.io;
         self.bg_cancelled.store(true, .seq_cst);
         if (self.bg_thread) |t| t.join();
         self.bg_thread = null;
         self.bg_cancelled.store(false, .seq_cst);
+        self.bg_indexing_done.store(false, .release);
+        self.bg_started_event.store(false, .release);
         self.bg_thread = std.Thread.spawn(.{}, BgCtx.run, .{ctx}) catch blk: {
             ctx.run();
             break :blk null;
@@ -853,7 +1100,7 @@ pub const Server = struct {
 
     pub fn readSourceForUri(self: *Server, uri: []const u8, path: []const u8) ![]u8 {
         if (self.open_docs.get(uri)) |cached| return self.alloc.dupe(u8, cached);
-        const raw = try std.fs.cwd().readFileAlloc(self.alloc, path, self.max_file_size.load(.monotonic));
+        const raw = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, self.alloc, std.Io.Limit.limited(self.max_file_size.load(.monotonic)));
         defer self.alloc.free(raw);
         const norm = normalizeCRLF(raw);
         var result = try self.alloc.dupe(u8, norm);
@@ -872,11 +1119,19 @@ pub const Server = struct {
             .float => |f| @intFromFloat(f),
             else => return false,
         };
-        self.cancel_mutex.lock();
-        defer self.cancel_mutex.unlock();
+        self.cancel_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.cancel_mutex.unlock(std.Options.debug_io);
         const found = self.cancelled_ids.contains(rid);
         if (found) _ = self.cancelled_ids.remove(rid);
         return found;
+    }
+
+    pub fn cancelledResponse(_: *Server, id: ?std.json.Value) types.ResponseMessage {
+        return .{
+            .id = id,
+            .result = null,
+            .@"error" = .{ .code = @intFromEnum(types.ErrorCode.request_cancelled), .message = "request cancelled" },
+        };
     }
 
     pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
@@ -913,6 +1168,9 @@ pub const Server = struct {
             if (self.rubocop_thread == null) {
                 self.rubocop_thread = std.Thread.spawn(.{}, rubocopWorkerFn, .{self}) catch null;
             }
+            if (self.flush_thread == null) {
+                self.flush_thread = std.Thread.spawn(.{}, flushWorkerFn, .{self}) catch null;
+            }
             self.requestWorkspaceConfiguration();
             return null;
         } else if (std.mem.eql(u8, msg.method, "$/cancelRequest")) {
@@ -927,11 +1185,11 @@ pub const Server = struct {
                     .float => |f| @intFromFloat(f),
                     else => return null,
                 };
-                self.cancel_mutex.lock();
+                self.cancel_mutex.lockUncancelable(std.Options.debug_io);
                 self.cancelled_ids.put(self.alloc, rid, {}) catch {
                     self.sendLogMessage(3, "refract: cancel tracking alloc failed");
                 };
-                self.cancel_mutex.unlock();
+                self.cancel_mutex.unlock(std.Options.debug_io);
             }
             return null;
         } else if (std.mem.eql(u8, msg.method, "workspace/symbol")) {
@@ -1025,11 +1283,11 @@ pub const Server = struct {
                 self.rubocop_checked.store(false, .monotonic);
                 self.rubocop_available.store(true, .monotonic);
                 if (self.disable_rubocop.load(.monotonic)) {
-                    self.rubocop_queue_mu.lock();
+                    self.rubocop_queue_mu.lockUncancelable(std.Options.debug_io);
                     var rq_it = self.rubocop_pending.keyIterator();
                     while (rq_it.next()) |k| self.alloc.free(k.*);
                     self.rubocop_pending.clearRetainingCapacity();
-                    self.rubocop_queue_mu.unlock();
+                    self.rubocop_queue_mu.unlock(std.Options.debug_io);
                 } else {
                     diagnostics_mod.enqueueAllOpenDocs(self);
                 }
@@ -1043,8 +1301,8 @@ pub const Server = struct {
             document_sync.handleDidDeleteFiles(self, msg);
             return null;
         } else if (std.mem.eql(u8, msg.method, "workspace/didRenameFiles")) {
-            self.db_mutex.lock();
-            defer self.db_mutex.unlock();
+            self.db_mutex.lockUncancelable(std.Options.debug_io);
+            defer self.db_mutex.unlock(std.Options.debug_io);
             document_sync.handleDidRenameFiles(self, msg);
             return null;
         } else if (std.mem.eql(u8, msg.method, "textDocument/codeAction")) {
@@ -1143,12 +1401,12 @@ pub const Server = struct {
                         };
                         const folder_path = uriToPath(self.alloc, folder_uri) catch continue;
                         defer self.alloc.free(folder_path);
-                        self.db_mutex.lock();
+                        self.db_mutex.lockUncancelable(std.Options.debug_io);
                         const del_stmt = self.db.prepare("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'") catch {
-                            self.db_mutex.unlock();
+                            self.db_mutex.unlock(std.Options.debug_io);
                             continue;
                         };
-                        var like_buf = std.ArrayList(u8){};
+                        var like_buf = std.ArrayList(u8).empty;
                         defer like_buf.deinit(self.alloc);
                         const oom_in_like: bool = blk: {
                             for (folder_path) |fc| {
@@ -1160,7 +1418,7 @@ pub const Server = struct {
                         };
                         if (oom_in_like) {
                             del_stmt.finalize();
-                            self.db_mutex.unlock();
+                            self.db_mutex.unlock(std.Options.debug_io);
                             continue;
                         }
                         del_stmt.bind_text(1, like_buf.items);
@@ -1171,8 +1429,8 @@ pub const Server = struct {
                             break :blk false;
                         };
                         del_stmt.finalize();
-                        self.db_mutex.unlock();
-                        self.incr_paths_mu.lock();
+                        self.db_mutex.unlock(std.Options.debug_io);
+                        self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
                         var ip_idx: usize = 0;
                         while (ip_idx < self.incr_paths.items.len) {
                             const p = self.incr_paths.items[ip_idx];
@@ -1185,7 +1443,7 @@ pub const Server = struct {
                                 ip_idx += 1;
                             }
                         }
-                        self.incr_paths_mu.unlock();
+                        self.incr_paths_mu.unlock(std.Options.debug_io);
                         // Remove from extra_roots if present
                         var er_idx: usize = 0;
                         while (er_idx < self.extra_roots.items.len) {
@@ -1222,7 +1480,7 @@ pub const Server = struct {
                             continue;
                         };
                         var folder_overflow = false;
-                        self.incr_paths_mu.lock();
+                        self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
                         for (new_paths) |p| {
                             if (self.incr_paths.items.len < MAX_INCR_PATHS) {
                                 self.incr_paths.append(self.alloc, p) catch self.alloc.free(p);
@@ -1232,7 +1490,7 @@ pub const Server = struct {
                             }
                         }
                         self.alloc.free(new_paths);
-                        self.incr_paths_mu.unlock();
+                        self.incr_paths_mu.unlock(std.Options.debug_io);
                         if (folder_overflow) {
                             self.showUserError("refract: file change queue full — some files skipped. Run Refract: Force Reindex.");
                             self.startBgIndexer();
@@ -1269,12 +1527,12 @@ pub const Server = struct {
 
     pub fn sendNotification(self: *Server, json: []const u8) void {
         const w = self.stdout_writer orelse return;
-        self.writer_mutex.lock();
-        defer self.writer_mutex.unlock();
+        self.writer_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.writer_mutex.unlock(std.Options.debug_io);
         transport.writeMessage(w, json) catch |e| {
             var tw_buf: [128]u8 = undefined;
             const tw_msg = std.fmt.bufPrint(&tw_buf, "refract: transport write: {s}\n", .{@errorName(e)}) catch "refract: transport write failed\n";
-            std.fs.File.stderr().writeAll(tw_msg) catch {};
+            std.debug.print("{s}", .{tw_msg});
         };
     }
 
@@ -1285,7 +1543,7 @@ pub const Server = struct {
     }
 
     pub fn showUserError(self: *Server, msg: []const u8) void {
-        const now = std.time.milliTimestamp();
+        const now = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
         const last = self.last_user_error_ms.load(.monotonic);
         if (now - last < USER_ERROR_RATELIMIT_MS) return;
         self.last_user_error_ms.store(now, .monotonic);
@@ -1335,41 +1593,39 @@ pub const Server = struct {
         var buf: [256]u8 = undefined;
         const req = std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"workspace/configuration\",\"params\":{{\"items\":[{{\"section\":\"refract\"}}]}}}}", .{req_id}) catch return;
         const w = self.stdout_writer orelse return;
-        self.writer_mutex.lock();
-        defer self.writer_mutex.unlock();
+        self.writer_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.writer_mutex.unlock(std.Options.debug_io);
         transport.writeMessage(w, req) catch |e| {
             var wc_buf: [128]u8 = undefined;
             const wc_msg = std.fmt.bufPrint(&wc_buf, "refract: send workspace/configuration request: {s}\n", .{@errorName(e)}) catch "refract: send failed\n";
-            std.fs.File.stderr().writeAll(wc_msg) catch {};
+            std.debug.print("{s}", .{wc_msg});
         };
     }
 
     pub fn rotateLogIfNeeded(self: *Server) void {
         const lp = self.log_path orelse return;
-        const stat = std.fs.cwd().statFile(lp) catch return;
+        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, lp, .{}) catch return;
         if (stat.size < LOG_FILE_SIZE_LIMIT) return;
         var old_buf: [4096]u8 = undefined;
         const old_path = std.fmt.bufPrint(&old_buf, "{s}.old", .{lp}) catch return;
         if (self.log_file) |f| {
-            f.close();
+            f.close(std.Options.debug_io);
             self.log_file = null;
         }
-        std.fs.cwd().rename(lp, old_path) catch {}; // log rotation best-effort
+        std.Io.Dir.cwd().rename(lp, std.Io.Dir.cwd(), old_path, std.Options.debug_io) catch {}; // log rotation best-effort
     }
 
     pub fn sendLogMessage(self: *Server, level: u8, msg: []const u8) void {
         if (level > self.log_level.load(.monotonic)) return;
         if (self.log_path) |lp| blk: {
-            self.log_mutex.lock();
-            defer self.log_mutex.unlock();
+            self.log_mutex.lockUncancelable(std.Options.debug_io);
+            defer self.log_mutex.unlock(std.Options.debug_io);
             self.rotateLogIfNeeded();
             if (self.log_file == null) {
-                self.log_file = std.fs.cwd().openFile(lp, .{ .mode = .write_only }) catch
-                    (std.fs.cwd().createFile(lp, .{}) catch break :blk);
-                _ = self.log_file.?.seekFromEnd(0) catch {}; // log file
+                self.log_file = std.Io.Dir.cwd().createFile(std.Options.debug_io, lp, .{ .truncate = false }) catch break :blk;
             }
             const f = self.log_file.?;
-            const ts = std.time.milliTimestamp();
+            const ts = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
             const ts_s = @divTrunc(ts, 1000);
             const ts_ms = @mod(ts, 1000);
             const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(ts_s) };
@@ -1382,16 +1638,17 @@ pub const Server = struct {
                 day.getHoursIntoDay(), day.getMinutesIntoHour(),  day.getSecondsIntoMinute(),
                 ts_ms,
             }) catch "";
-            f.writeAll(ts_str) catch {}; // log file
-            f.writeAll(msg) catch |e| {
-                self.log_file.?.close();
+            const append_off = f.length(std.Options.debug_io) catch 0;
+            f.writePositionalAll(std.Options.debug_io, ts_str, append_off) catch {};
+            f.writePositionalAll(std.Options.debug_io, msg, append_off + ts_str.len) catch |e| {
+                self.log_file.?.close(std.Options.debug_io);
                 self.log_file = null;
                 var fbuf: [128]u8 = undefined;
                 const fmsg = std.fmt.bufPrint(&fbuf, "refract log write failed: {s}\n", .{@errorName(e)}) catch "refract log write failed\n";
-                std.fs.File.stderr().writeAll(fmsg) catch {};
+                std.debug.print("{s}", .{fmsg});
                 break :blk;
             };
-            f.writeAll("\n") catch {}; // log file
+            f.writePositionalAll(std.Options.debug_io, "\n", append_off + ts_str.len + msg.len) catch {};
         }
         var aw = std.Io.Writer.Allocating.init(std.heap.c_allocator);
         const w = &aw.writer;
@@ -1548,6 +1805,9 @@ pub const Server = struct {
                             if (opts_val.object.get("rubocopTimeoutSecs")) |v| {
                                 if (v == .integer and v.integer > 0) self.rubocop_timeout_ms.store(@as(u64, @intCast(@min(v.integer, @as(i64, 3600)))) * 1000, .monotonic);
                             }
+                            if (opts_val.object.get("rubocopDebounceMs")) |v| {
+                                if (v == .integer and v.integer >= 0) self.rubocop_debounce_ms.store(@as(u64, @intCast(@min(v.integer, @as(i64, 10_000)))), .monotonic);
+                            }
                             if (opts_val.object.get("bundleExecTimeoutSecs")) |v| {
                                 if (v == .integer and v.integer > 0) self.bundle_timeout_ms = @as(u64, @intCast(@min(v.integer, @as(i64, 3600)))) * 1000;
                             }
@@ -1556,7 +1816,7 @@ pub const Server = struct {
                             }
                             if (opts_val.object.get("excludeDirs")) |v| {
                                 if (v == .array) {
-                                    var dirs = std.ArrayList([]const u8){};
+                                    var dirs = std.ArrayList([]const u8).empty;
                                     for (v.array.items) |item| {
                                         if (item == .string) {
                                             const duped = self.alloc.dupe(u8, item.string) catch continue;
@@ -1663,6 +1923,18 @@ pub const Server = struct {
             }
         }
         self.initialized = true;
+        {
+            var vbuf: [256]u8 = undefined;
+            const vmsg = std.fmt.bufPrint(&vbuf, "refract {s} ready", .{build_meta.version}) catch "refract ready";
+            self.sendLogMessage(3, vmsg);
+            var link_buf: [4096]u8 = undefined;
+            if (std.Io.Dir.readLinkAbsolute(std.Options.debug_io, "/proc/self/exe", &link_buf) catch null) |n| {
+                const exe_link = link_buf[0..n];
+                if (std.mem.endsWith(u8, exe_link, " (deleted)")) {
+                    self.sendLogMessage(2, "refract: running binary was replaced on disk — restart the LSP to pick up the new build");
+                }
+            }
+        }
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         const iw = &aw.writer;
         iw.writeAll(init_caps_before_enc) catch return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = null, .@"error" = .{ .code = @intFromEnum(types.ErrorCode.internal_error), .message = "internal error" } };
@@ -1691,7 +1963,7 @@ pub const Server = struct {
             if (db_mod.Db.open(new_pathz)) |d| {
                 break :blk d;
             } else |_| {
-                std.fs.deleteFileAbsolute(new_pathz) catch {}; // cleanup — ignore error
+                std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, new_pathz) catch {}; // cleanup — ignore error
                 break :blk db_mod.Db.open(new_pathz) catch {
                     self.sendShowMessage(1, "refract: failed to open database after recovery — check disk space");
                     self.alloc.free(new_pathz);
@@ -1715,67 +1987,78 @@ pub const Server = struct {
     }
 
     pub fn flushIncrPaths(self: *Server) void {
-        self.incr_paths_mu.lock();
+        self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
         if (self.incr_paths.items.len == 0) {
-            self.incr_paths_mu.unlock();
+            self.incr_paths_mu.unlock(std.Options.debug_io);
             return;
         }
         const batch = self.incr_paths.toOwnedSlice(self.alloc) catch {
-            self.incr_paths_mu.unlock();
+            self.incr_paths_mu.unlock(std.Options.debug_io);
             return;
         };
-        self.incr_paths = .{};
-        self.incr_paths_mu.unlock();
+        self.incr_paths = .empty;
+        self.incr_paths_mu.unlock(std.Options.debug_io);
         defer {
             for (batch) |p| self.alloc.free(p);
             self.alloc.free(batch);
         }
         // Filter out explicitly deleted paths
-        var filtered = std.ArrayList([]const u8){};
+        var filtered = std.ArrayList([]const u8).empty;
         defer filtered.deinit(self.alloc);
-        self.deleted_paths_mu.lock();
+        self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
         for (batch) |p| {
-            if (!self.deleted_paths.contains(p)) filtered.append(self.alloc, p) catch {}; // OOM: filtered list
+            if (!self.deleted_paths.contains(p)) filtered.append(self.alloc, p) catch logOomOnce("batchReindex.filtered");
         }
-        self.deleted_paths_mu.unlock();
+        self.deleted_paths_mu.unlock(std.Options.debug_io);
         if (filtered.items.len == 0) return;
-        self.db_mutex.lock();
-        indexer.reindex(self.db, filtered.items, false, self.alloc, self.max_file_size.load(.monotonic)) catch |e| {
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        indexer.reindex(self.db, filtered.items, false, self.alloc, self.max_file_size.load(.monotonic), null) catch |e| {
             var warn_buf: [128]u8 = undefined;
             const warn_msg = std.fmt.bufPrint(&warn_buf, "refract: batch reindex failed ({d} files): {s}", .{ filtered.items.len, @errorName(e) }) catch "refract: batch reindex failed";
             self.sendLogMessage(2, warn_msg);
         };
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
     }
 
+    pub const FLUSH_DEBOUNCE_MS: i64 = 150;
+
     pub fn flushDirtyUris(self: *Server) void {
-        const now = std.time.milliTimestamp();
-        var due = std.ArrayList([]const u8){};
+        self.flushIncrPaths();
+        self.flushDirtyUrisImpl(true);
+    }
+
+    pub fn flushDirtyUrisDebounced(self: *Server) void {
+        self.flushDirtyUrisImpl(false);
+    }
+
+    fn flushDirtyUrisImpl(self: *Server, force: bool) void {
+        const now = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
+        var due = std.ArrayList([]const u8).empty;
         defer due.deinit(self.alloc);
         {
-            self.last_index_mu.lock();
-            defer self.last_index_mu.unlock();
+            self.last_index_mu.lockUncancelable(std.Options.debug_io);
+            defer self.last_index_mu.unlock(std.Options.debug_io);
             var it = self.last_index_ms.iterator();
             while (it.next()) |e| {
-                if (now - e.value_ptr.* >= 0)
-                    due.append(self.alloc, e.key_ptr.*) catch {}; // OOM: due list
+                if (force or now - e.value_ptr.* >= FLUSH_DEBOUNCE_MS)
+                    due.append(self.alloc, e.key_ptr.*) catch logOomOnce("flushDirty.due");
             }
         }
         for (due.items) |uri_key| {
             const path = uriToPath(self.alloc, uri_key) catch continue;
             defer self.alloc.free(path);
             if (self.open_docs.get(uri_key)) |src| {
-                self.db_mutex.lock();
+                self.db_mutex.lockUncancelable(std.Options.debug_io);
                 indexer.indexSource(src, path, self.db, self.alloc) catch |e| {
                     var buf: [512]u8 = undefined;
                     const msg_str = std.fmt.bufPrint(&buf, "refract: index failed for {s}: {s}", .{ path, @errorName(e) }) catch "refract: index failed";
                     self.sendLogMessage(2, msg_str);
                 };
-                self.db_mutex.unlock();
+                self.db_mutex.unlock(std.Options.debug_io);
             }
-            self.last_index_mu.lock();
+            self.last_index_mu.lockUncancelable(std.Options.debug_io);
             if (self.last_index_ms.fetchRemove(uri_key)) |kv| self.alloc.free(kv.key);
-            self.last_index_mu.unlock();
+            self.last_index_mu.unlock(std.Options.debug_io);
         }
     }
 
@@ -1839,16 +2122,16 @@ pub fn computeDbPath(alloc: std.mem.Allocator, root_path: []const u8) ![]u8 {
     hasher.update(root_path);
     const hash = hasher.final();
 
-    const home = std.posix.getenv("HOME") orelse "/tmp";
-    const data_dir = if (std.posix.getenv("XDG_DATA_HOME")) |xdg|
-        try std.fmt.allocPrint(alloc, "{s}/refract", .{xdg})
+    const home: []const u8 = if (std.c.getenv("HOME")) |p| std.mem.span(p) else "/tmp";
+    const data_dir = if (std.c.getenv("XDG_DATA_HOME")) |xdg|
+        try std.fmt.allocPrint(alloc, "{s}/refract", .{std.mem.span(xdg)})
     else if (builtin.os.tag == .macos)
         try std.fmt.allocPrint(alloc, "{s}/Library/Application Support/refract", .{home})
     else
         try std.fmt.allocPrint(alloc, "{s}/.local/share/refract", .{home});
     defer alloc.free(data_dir);
 
-    std.fs.makeDirAbsolute(data_dir) catch |e| switch (e) {
+    std.Io.Dir.cwd().createDirPath(std.Options.debug_io, data_dir) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
@@ -1857,7 +2140,7 @@ pub fn computeDbPath(alloc: std.mem.Allocator, root_path: []const u8) ![]u8 {
 
 pub fn uriToPath(alloc: std.mem.Allocator, uri: []const u8) ![]u8 {
     const rest = if (std.mem.startsWith(u8, uri, "file://")) uri[7..] else uri;
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
     var i: usize = 0;
     while (i < rest.len) {
@@ -1877,7 +2160,7 @@ pub fn uriToPath(alloc: std.mem.Allocator, uri: []const u8) ![]u8 {
 }
 
 pub fn pathToUri(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     defer out.deinit(alloc);
     try out.appendSlice(alloc, "file://");
     for (path) |c| {
@@ -1915,12 +2198,12 @@ pub fn resolveRequireTarget(alloc: std.mem.Allocator, db: db_mod.Db, source: []c
     var is_relative = false;
     var rest: []const u8 = undefined;
 
-    const trimmed = std.mem.trimLeft(u8, line_src, " \t");
+    const trimmed = std.mem.trimStart(u8, line_src, " \t");
     if (std.mem.startsWith(u8, trimmed, rel_prefix)) {
         is_relative = true;
-        rest = std.mem.trimLeft(u8, trimmed[rel_prefix.len..], " \t");
+        rest = std.mem.trimStart(u8, trimmed[rel_prefix.len..], " \t");
     } else if (std.mem.startsWith(u8, trimmed, req_prefix)) {
-        rest = std.mem.trimLeft(u8, trimmed[req_prefix.len..], " \t");
+        rest = std.mem.trimStart(u8, trimmed[req_prefix.len..], " \t");
     } else return null;
 
     if (rest.len < 2) return null;
@@ -1941,12 +2224,12 @@ pub fn resolveRequireTarget(alloc: std.mem.Allocator, db: db_mod.Db, source: []c
         defer alloc.free(candidate);
         // Try with .rb extension if not already present
         if (std.mem.endsWith(u8, candidate, ".rb")) {
-            std.fs.accessAbsolute(candidate, .{}) catch return null;
+            std.Io.Dir.accessAbsolute(std.Options.debug_io, candidate, .{}) catch return null;
             return alloc.dupe(u8, candidate) catch null;
         }
         const with_rb = std.fmt.allocPrint(alloc, "{s}.rb", .{candidate}) catch return null;
         defer alloc.free(with_rb);
-        std.fs.accessAbsolute(with_rb, .{}) catch return null;
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, with_rb, .{}) catch return null;
         return alloc.dupe(u8, with_rb) catch null;
     } else {
         // Search workspace DB
@@ -2107,9 +2390,10 @@ pub fn isSubsequence(query: []const u8, name: []const u8) bool {
 
 pub fn buildQueryPattern(alloc: std.mem.Allocator, query: []const u8) ![]u8 {
     if (query.len == 0) return alloc.dupe(u8, "%");
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(alloc);
-    try buf.append(alloc, '%');
+    const short = query.len <= 3;
+    if (!short) try buf.append(alloc, '%');
     for (query) |c| {
         if (c == '%' or c == '_' or c == '\\') try buf.append(alloc, '\\');
         try buf.append(alloc, c);
@@ -2119,7 +2403,7 @@ pub fn buildQueryPattern(alloc: std.mem.Allocator, query: []const u8) ![]u8 {
 }
 
 pub fn buildPrefixPattern(alloc: std.mem.Allocator, word: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(alloc);
     for (word) |c| {
         if (c == '%' or c == '_' or c == '\\') try buf.append(alloc, '\\');
@@ -2211,7 +2495,7 @@ pub fn getLineSlice(source: []const u8, line_0: u32) []const u8 {
 
 pub fn frcGet(frc: *std.StringHashMapUnmanaged([]const u8), alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
     if (frc.get(path)) |src| return src;
-    const src = std.fs.cwd().readFileAlloc(alloc, path, 1 << 24) catch return null;
+    const src = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, alloc, std.Io.Limit.limited(1 << 24)) catch return null;
     const owned_path = alloc.dupe(u8, path) catch {
         alloc.free(src);
         return null;
@@ -2319,7 +2603,7 @@ pub fn writeCodeActionEdits(w: *std.Io.Writer, title: []const u8, kind: []const 
 }
 
 const init_caps_before_enc =
-    \\{"capabilities":{"textDocumentSync":{"change":2,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentLinkProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.extract","refactor.inline","refactor.rewrite"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.recheckRubocop"]},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
+    \\{"capabilities":{"textDocumentSync":{"change":1,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentLinkProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.extract","refactor.inline","refactor.rewrite"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.recheckRubocop"]},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
 ;
 const init_caps_after_enc =
     \\},"serverInfo":{"name":"refract","version":"

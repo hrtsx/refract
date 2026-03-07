@@ -32,9 +32,9 @@ const ParamHintCtx = S.ParamHintCtx;
 pub const ruby_block_keywords = S.ruby_block_keywords;
 
 pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -69,7 +69,7 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
     try w.writeAll("[");
     var first = true;
 
-    var sym_ranges = std.ArrayList(struct { start: i64, end: i64 }){};
+    var sym_ranges = std.ArrayList(struct { start: i64, end: i64 }).empty;
     defer sym_ranges.deinit(self.alloc);
 
     while (try stmt.step()) {
@@ -80,14 +80,14 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
             if (!first) try w.writeByte(',');
             first = false;
             try w.print("{{\"startLine\":{d},\"endLine\":{d},\"kind\":\"region\"}}", .{ sym_line - 1, sym_end - 1 });
-            sym_ranges.append(self.alloc, .{ .start = sym_line - 1, .end = sym_end - 1 }) catch {}; // OOM: range list
+            sym_ranges.append(self.alloc, .{ .start = sym_line - 1, .end = sym_end - 1 }) catch S.logOomOnce("folding.sym_ranges");
         }
     }
 
     const source = self.readSourceForUri(uri, path) catch null;
     if (source) |src| {
         defer self.alloc.free(src);
-        var line_list = std.ArrayList([]const u8){};
+        var line_list = std.ArrayList([]const u8).empty;
         defer line_list.deinit(self.alloc);
         var lit = std.mem.splitScalar(u8, src, '\n');
         while (lit.next()) |ln| {
@@ -95,7 +95,7 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
         }
         const lines = line_list.items;
 
-        var stack_lines = std.ArrayList(i64){};
+        var stack_lines = std.ArrayList(i64).empty;
         defer stack_lines.deinit(self.alloc);
 
         for (lines, 0..) |raw_line, li| {
@@ -110,7 +110,7 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
                 }
             }
             if (is_do or is_kw) {
-                stack_lines.append(self.alloc, @intCast(li)) catch {}; // OOM: stack
+                stack_lines.append(self.alloc, @intCast(li)) catch S.logOomOnce("folding.stack_lines");
             } else if (std.mem.eql(u8, trimmed, "end") or
                 std.mem.startsWith(u8, trimmed, "end ") or
                 std.mem.startsWith(u8, trimmed, "end#"))
@@ -199,8 +199,8 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
 }
 
 pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -326,7 +326,7 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
     try lw.writeAll(method_name);
     try lw.writeByte('(');
 
-    var param_labels = std.ArrayList([]u8){};
+    var param_labels = std.ArrayList([]u8).empty;
     defer {
         for (param_labels.items) |p| self.alloc.free(p);
         param_labels.deinit(self.alloc);
@@ -425,8 +425,8 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
 }
 
 pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -605,7 +605,7 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
         while (line_end < source.len and source[line_end] != '\n') line_end += 1;
 
         const line_src = source[i..line_end];
-        const trimmed = std.mem.trimLeft(u8, line_src, " \t");
+        const trimmed = std.mem.trimStart(u8, line_src, " \t");
         const trimmed_offset = @intFromPtr(trimmed.ptr) - @intFromPtr(line_src.ptr);
 
         const rel_prefix = "require_relative";
@@ -613,9 +613,9 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
         var rest: ?[]const u8 = null;
 
         if (std.mem.startsWith(u8, trimmed, rel_prefix)) {
-            rest = std.mem.trimLeft(u8, trimmed[rel_prefix.len..], " \t");
+            rest = std.mem.trimStart(u8, trimmed[rel_prefix.len..], " \t");
         } else if (std.mem.startsWith(u8, trimmed, req_prefix)) {
-            rest = std.mem.trimLeft(u8, trimmed[req_prefix.len..], " \t");
+            rest = std.mem.trimStart(u8, trimmed[req_prefix.len..], " \t");
         }
 
         if (rest) |r| {
@@ -666,8 +666,8 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
 }
 
 pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -882,8 +882,8 @@ pub fn resolveScopeId(self: *Server, file_id: i64, name: []const u8, cursor_line
 }
 
 pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -926,34 +926,58 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
     const file_id = file_stmt.column_int(0);
 
     const db_line: i64 = @intCast(line + 1);
-    // Find innermost symbol containing cursor
+    // Collect all symbols that contain the cursor, ordered from innermost (smallest span) to outermost
     const sym_stmt = try self.db.prepare(
-        \\SELECT name, line, col, end_line FROM symbols WHERE file_id=? AND line<=? AND end_line>=? ORDER BY (end_line-line) ASC LIMIT 1
+        \\SELECT name, line, col, end_line FROM symbols WHERE file_id=? AND line<=? AND end_line>=? ORDER BY (end_line-line) ASC
     );
     defer sym_stmt.finalize();
     sym_stmt.bind_int(1, file_id);
     sym_stmt.bind_int(2, db_line);
     sym_stmt.bind_int(3, db_line);
 
+    // Collect rows into a list
+    const SRange = struct { sym_line: i64, sym_col: i64, sym_end: i64, name_len: i64 };
+    var ranges = std.ArrayList(SRange).empty;
+    defer ranges.deinit(self.alloc);
+    while (try sym_stmt.step()) {
+        const sym_name = sym_stmt.column_text(0);
+        try ranges.append(self.alloc, .{
+            .sym_line = sym_stmt.column_int(1),
+            .sym_col = sym_stmt.column_int(2),
+            .sym_end = sym_stmt.column_int(3),
+            .name_len = @intCast(sym_name.len),
+        });
+    }
+
     var aw = std.Io.Writer.Allocating.init(self.alloc);
     const w = &aw.writer;
     try w.writeByte('[');
 
-    if (try sym_stmt.step()) {
-        const sym_name = sym_stmt.column_text(0);
-        const sym_line = sym_stmt.column_int(1);
-        const sym_col = sym_stmt.column_int(2);
-        const sym_end = sym_stmt.column_int(3);
+    if (ranges.items.len > 0) {
+        const innermost = ranges.items[0];
+        const word_end_col = innermost.sym_col + innermost.name_len;
 
-        // Word range (innermost)
-        const word_end_col = sym_col + @as(i64, @intCast(sym_name.len));
-        // Method body range (parent)
-        try w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":999}}}},\"parent\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":999}}}}}}}}", .{
-            sym_line - 1, sym_col,
-            sym_line - 1, sym_line - 1,
-            sym_end - 1,
+        // Open the outermost levels first (we write from innermost, so open braces accumulate)
+        // Word range as innermost (leaf)
+        try w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+            innermost.sym_line - 1, innermost.sym_col,
+            innermost.sym_line - 1, word_end_col,
         });
-        _ = word_end_col;
+
+        // Each DB row adds a parent level (the symbol's full body span)
+        for (ranges.items) |r| {
+            try w.print(",\"parent\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":999}}}}", .{
+                r.sym_line - 1,
+                r.sym_end - 1,
+            });
+        }
+
+        // Close all the nested parent objects
+        for (0..ranges.items.len) |_| {
+            try w.writeByte('}');
+        }
+        // Close the root object
+        try w.writeByte('}');
     }
 
     try w.writeByte(']');
@@ -961,9 +985,9 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
 }
 
 pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -1050,8 +1074,8 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
 }
 
 pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -1093,6 +1117,7 @@ pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.Response
     var first = true;
 
     while (try sym_stmt.step()) {
+        if (self.bg_cancelled.load(.acquire)) break;
         const sym_name = sym_stmt.column_text(1);
         const sym_kind = sym_stmt.column_text(2);
         const sym_line = sym_stmt.column_int(3);

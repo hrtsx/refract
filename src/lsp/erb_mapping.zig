@@ -35,7 +35,7 @@ pub const ErbMap = struct {
 };
 
 pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
-    var spans = std.ArrayList(ErbSpan){};
+    var spans = std.ArrayList(ErbSpan).empty;
     var i: usize = 0;
     var ruby_offset: u32 = 0;
     var in_ruby = false;
@@ -115,7 +115,7 @@ pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
 }
 
 pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
-    var spans = std.ArrayList(ErbSpan){};
+    var spans = std.ArrayList(ErbSpan).empty;
     var i: usize = 0;
     var ruby_offset: u32 = 0;
     var in_ruby_filter = false;
@@ -134,11 +134,11 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
         const line = source[line_start..i];
         if (i < source.len) i += 1;
 
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
         const indent = line.len - trimmed.len;
 
         if (in_ruby_filter) {
-            const filter_name = std.mem.trimLeft(u8, trimmed, ":");
+            const filter_name = std.mem.trimStart(u8, trimmed, ":");
             if (isNonRubyFilter(filter_name)) {
                 ruby_offset += 1;
                 continue;
@@ -359,8 +359,8 @@ pub fn buildHamlMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
 }
 
 pub fn buildSlimMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
-    var spans = std.ArrayList(ErbSpan){};
-    var ruby_buf = std.ArrayList(u8){};
+    var spans = std.ArrayList(ErbSpan).empty;
+    var ruby_buf = std.ArrayList(u8).empty;
     defer ruby_buf.deinit(alloc);
 
     var line_start: usize = 0;
@@ -474,7 +474,7 @@ fn isNonRubyFilter(filter_name: []const u8) bool {
         "md",
     };
 
-    const trimmed = std.mem.trimLeft(u8, filter_name, " \t");
+    const trimmed = std.mem.trimStart(u8, filter_name, " \t");
     for (non_ruby_filters) |name| {
         if (std.mem.startsWith(u8, trimmed, name)) {
             return true;
@@ -529,18 +529,18 @@ pub const RAILS_VIEW_HELPERS = [_]ViewHelper{
 };
 
 pub fn scanPartials(root_path: []const u8, alloc: std.mem.Allocator) ![][]u8 {
-    var results = std.ArrayList([]u8){};
+    var results = std.ArrayList([]u8).empty;
     const views_path = std.fmt.allocPrint(alloc, "{s}/app/views", .{root_path}) catch return results.toOwnedSlice(alloc);
     defer alloc.free(views_path);
 
-    var dir = std.fs.openDirAbsolute(views_path, .{ .iterate = true }) catch
+    var dir = std.Io.Dir.openDirAbsolute(std.Options.debug_io, views_path, .{ .iterate = true }) catch
         return results.toOwnedSlice(alloc);
-    defer dir.close();
+    defer dir.close(std.Options.debug_io);
 
     var walker = dir.walk(alloc) catch return results.toOwnedSlice(alloc);
     defer walker.deinit();
 
-    while (walker.next() catch null) |entry| {
+    while (walker.next(std.Options.debug_io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const name = entry.basename;
         if (name.len < 2 or name[0] != '_') continue;
