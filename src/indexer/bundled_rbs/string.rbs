@@ -1,0 +1,125 @@
+class String
+  def self.new: (?String str, ?encoding: Encoding, ?capacity: Integer) -> String
+  def self.try_convert: (untyped obj) -> String?
+
+  def +: (String other) -> String
+  def *: (Integer n) -> String
+  def %: (untyped arg) -> String
+  def <<: (untyped obj) -> String
+  def <=>: (String other) -> Integer?
+  def ==: (untyped other) -> bool
+  def ===: (untyped other) -> bool
+  def =~: (Regexp pattern) -> Integer?
+  def []: (*untyped args) -> String?
+  def []=: (*untyped args) -> untyped
+  def b: () -> String
+  def bytes: () -> Array
+  def bytesize: () -> Integer
+  def byteslice: (Integer start, ?Integer length) -> String?
+  def capitalize: () -> String
+  def capitalize!: () -> String?
+  def casecmp: (String other) -> Integer?
+  def casecmp?: (String other) -> bool?
+  def center: (Integer width, ?String pad) -> String
+  def chars: () -> Array
+  def chomp: (?String sep) -> String
+  def chomp!: (?String sep) -> String?
+  def chop: () -> String
+  def chop!: () -> String?
+  def chr: () -> String
+  def clear: () -> String
+  def codepoints: () -> Array
+  def concat: (*untyped args) -> String
+  def count: (String pattern) -> Integer
+  def crypt: (String salt) -> String
+  def delete: (*String args) -> String
+  def delete!: (*String args) -> String?
+  def delete_prefix: (String prefix) -> String
+  def delete_suffix: (String suffix) -> String
+  def downcase: () -> String
+  def downcase!: () -> String?
+  def dump: () -> String
+  def each_byte: () { (Integer) -> void } -> String
+  def each_char: () { (String) -> void } -> String
+  def each_codepoint: () { (Integer) -> void } -> String
+  def each_grapheme_cluster: () { (String) -> void } -> String
+  def each_line: (?String sep) { (String) -> void } -> String
+  def empty?: () -> bool
+  def encode: (?Encoding enc) -> String
+  def encode!: (?Encoding enc) -> String
+  def encoding: () -> Encoding
+  def end_with?: (*String suffixes) -> bool
+  def eql?: (untyped other) -> bool
+  def force_encoding: (untyped enc) -> String
+  def freeze: () -> String
+  def getbyte: (Integer index) -> Integer?
+  def gsub: (Regexp | String pattern, ?String replacement) -> String
+  def gsub!: (Regexp | String pattern, ?String replacement) -> String?
+  def hash: () -> Integer
+  def hex: () -> Integer
+  def include?: (String other) -> bool
+  def index: (String | Regexp substr, ?Integer offset) -> Integer?
+  def insert: (Integer index, String other) -> String
+  def inspect: () -> String
+  def intern: () -> Symbol
+  def length: () -> Integer
+  def lines: (?String sep) -> Array
+  def ljust: (Integer width, ?String pad) -> String
+  def lstrip: () -> String
+  def lstrip!: () -> String?
+  def match: (Regexp pattern, ?Integer pos) -> MatchData?
+  def match?: (Regexp pattern, ?Integer pos) -> bool
+  def next: () -> String
+  def next!: () -> String
+  def oct: () -> Integer
+  def ord: () -> Integer
+  def partition: (String | Regexp sep) -> Array
+  def prepend: (*String args) -> String
+  def replace: (String other) -> String
+  def reverse: () -> String
+  def reverse!: () -> String
+  def rindex: (String | Regexp substr, ?Integer offset) -> Integer?
+  def rjust: (Integer width, ?String pad) -> String
+  def rpartition: (String | Regexp sep) -> Array
+  def rstrip: () -> String
+  def rstrip!: () -> String?
+  def scan: (Regexp | String pattern) -> Array
+  def scrub: (?String replacement) -> String
+  def scrub!: (?String replacement) -> String
+  def setbyte: (Integer index, Integer b) -> Integer
+  def size: () -> Integer
+  def slice: (*untyped args) -> String?
+  def slice!: (*untyped args) -> String?
+  def split: (?Regexp | String pattern, ?Integer limit) -> Array
+  def squeeze: (*String args) -> String
+  def start_with?: (*String prefixes) -> bool
+  def strip: () -> String
+  def strip!: () -> String?
+  def sub: (Regexp | String pattern, ?String replacement) -> String
+  def sub!: (Regexp | String pattern, ?String replacement) -> String?
+  def succ: () -> String
+  def sum: (?Integer bits) -> Integer
+  def swapcase: () -> String
+  def swapcase!: () -> String?
+  def to_c: () -> Complex
+  def to_f: () -> Float
+  def to_i: (?Integer base) -> Integer
+  def to_r: () -> Rational
+  def to_s: () -> String
+  def to_str: () -> String
+  def to_sym: () -> Symbol
+  def tr: (String from, String to) -> String
+  def tr!: (String from, String to) -> String?
+  def tr_s: (String from, String to) -> String
+  def tr_s!: (String from, String to) -> String?
+  def undump: () -> String
+  def unicode_normalize: (?Symbol form) -> String
+  def unicode_normalize!: (?Symbol form) -> String
+  def unicode_normalized?: (?Symbol form) -> bool
+  def unpack: (String format) -> Array
+  def unpack1: (String format) -> untyped
+  def upcase: () -> String
+  def upcase!: () -> String?
+  def upto: (String max, ?bool exclusive) { (String) -> void } -> String
+  def valid_encoding?: () -> bool
+end

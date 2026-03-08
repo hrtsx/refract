@@ -1,0 +1,92 @@
+class Date
+  def self.today: () -> Date
+  def self.new: (*untyped args) -> Date
+  def self.parse: (String str, ?bool complete) -> Date
+  def self.strptime: (String str, String fmt) -> Date
+  def self.iso8601: (String str) -> Date
+  def self.rfc3339: (String str) -> Date
+  def self.rfc2822: (String str) -> Date
+  def self.httpdate: (String str) -> Date
+  def self.xmlschema: (String str) -> Date
+  def self.jd: (Integer jd) -> Date
+  def self.julian?: (Integer jd) -> bool
+  def self.gregorian?: (Integer jd) -> bool
+  def self.civil: (?Integer y, ?Integer m, ?Integer d) -> Date
+  def self.commercial: (?Integer y, ?Integer w, ?Integer d) -> Date
+  def self.ordinal: (?Integer y, ?Integer d) -> Date
+  def self.valid_date?: (Integer y, Integer m, Integer d) -> bool
+  def self.valid_civil?: (Integer y, Integer m, Integer d) -> bool
+
+  def strftime: (?String format) -> String
+  def to_s: () -> String
+  def to_date: () -> Date
+  def to_datetime: () -> DateTime
+  def to_time: () -> Time
+  def inspect: () -> String
+  def year: () -> Integer
+  def month: () -> Integer
+  def mon: () -> Integer
+  def day: () -> Integer
+  def mday: () -> Integer
+  def wday: () -> Integer
+  def yday: () -> Integer
+  def cwday: () -> Integer
+  def cweek: () -> Integer
+  def cwyear: () -> Integer
+  def jd: () -> Integer
+  def ajd: () -> Rational
+  def amjd: () -> Rational
+  def mjd: () -> Integer
+  def leap?: () -> bool
+  def julian?: () -> bool
+  def gregorian?: () -> bool
+  def next: () -> Date
+  def succ: () -> Date
+  def next_day: (?Integer n) -> Date
+  def prev_day: (?Integer n) -> Date
+  def next_month: (?Integer n) -> Date
+  def prev_month: (?Integer n) -> Date
+  def next_year: (?Integer n) -> Date
+  def prev_year: (?Integer n) -> Date
+  def >>: (Integer n) -> Date
+  def <<: (Integer n) -> Date
+  def +: (Integer n) -> Date
+  def -: (untyped other) -> untyped
+  def <=>: (untyped other) -> Integer?
+  def step: (Date limit, ?Integer step) { (Date) -> void } -> Date
+  def upto: (Date max) { (Date) -> void } -> Date
+  def downto: (Date min) { (Date) -> void } -> Date
+  def monday?: () -> bool
+  def tuesday?: () -> bool
+  def wednesday?: () -> bool
+  def thursday?: () -> bool
+  def friday?: () -> bool
+  def saturday?: () -> bool
+  def sunday?: () -> bool
+  def eql?: (untyped other) -> bool
+  def hash: () -> Integer
+  def iso8601: () -> String
+  def rfc3339: () -> String
+  def rfc2822: () -> String
+  def httpdate: () -> String
+  def xmlschema: () -> String
+end
+
+class DateTime < Date
+  def self.now: () -> DateTime
+  def self.new: (*untyped args) -> DateTime
+  def self.civil: (*untyped args) -> DateTime
+  def self.parse: (String str, ?bool complete) -> DateTime
+  def self.strptime: (String str, String fmt) -> DateTime
+
+  def hour: () -> Integer
+  def min: () -> Integer
+  def minute: () -> Integer
+  def sec: () -> Integer
+  def second: () -> Integer
+  def sec_fraction: () -> Rational
+  def offset: () -> Rational
+  def zone: () -> String
+  def to_time: () -> Time
+  def new_offset: (?untyped of) -> DateTime
+end

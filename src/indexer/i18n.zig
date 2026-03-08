@@ -7,9 +7,9 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
     defer del.finalize();
     del.bind_int(1, file_id);
     _ = del.step() catch |e| {
-        std.fs.File.stderr().writeAll("refract: i18n delete: ") catch {};
-        std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-        std.fs.File.stderr().writeAll("\n") catch {};
+        std.debug.print("{s}", .{"refract: i18n delete: "});
+        std.debug.print("{s}", .{@errorName(e)});
+        std.debug.print("{s}", .{"\n"});
     };
 
     const ins = db.prepare("INSERT INTO i18n_keys (key, value, locale, file_id) VALUES (?, ?, ?, ?)") catch return;
@@ -30,7 +30,7 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
 
     while (lines.next()) |raw_line| {
         // Skip empty lines and comments
-        const line = std.mem.trimRight(u8, raw_line, " \t\r");
+        const line = std.mem.trimEnd(u8, raw_line, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
 
         // Count leading spaces
@@ -110,7 +110,7 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
         } else {
             // Strip inline comment
             if (std.mem.indexOf(u8, value_str, " #")) |comment| {
-                value_str = std.mem.trimRight(u8, value_str[0..comment], " \t");
+                value_str = std.mem.trimEnd(u8, value_str[0..comment], " \t");
             }
         }
 
@@ -120,9 +120,9 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
         ins.bind_text(3, locale_buf[0..locale_len]);
         ins.bind_int(4, file_id);
         _ = ins.step() catch |e| {
-            std.fs.File.stderr().writeAll("refract: i18n insert: ") catch {};
-            std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-            std.fs.File.stderr().writeAll("\n") catch {};
+            std.debug.print("{s}", .{"refract: i18n insert: "});
+            std.debug.print("{s}", .{@errorName(e)});
+            std.debug.print("{s}", .{"\n"});
         };
     }
 }

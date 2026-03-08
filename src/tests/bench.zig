@@ -83,9 +83,9 @@ test "bench: indexSource small file" {
     const db = db_mod.Db.open("/tmp/refract_bench.db") catch return;
     defer {
         db.close();
-        std.fs.deleteFileAbsolute("/tmp/refract_bench.db") catch {};
-        std.fs.deleteFileAbsolute("/tmp/refract_bench.db-wal") catch {};
-        std.fs.deleteFileAbsolute("/tmp/refract_bench.db-shm") catch {};
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db") catch {};
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db-wal") catch {};
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db-shm") catch {};
     }
     db.init_schema() catch return;
 

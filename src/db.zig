@@ -118,11 +118,42 @@ pub const Db = struct {
     raw: *c.sqlite3,
 
     pub fn open(path: [:0]const u8) DbError!Db {
-        var db: ?*c.sqlite3 = null;
-        const rc = c.sqlite3_open(path.ptr, &db);
-        if (rc != c.SQLITE_OK) return DbError.Open;
-        _ = c.sqlite3_busy_timeout(db.?, 5000);
-        return Db{ .raw = db.? };
+        var attempt: u8 = 0;
+        while (attempt < 2) : (attempt += 1) {
+            var db: ?*c.sqlite3 = null;
+            const rc = c.sqlite3_open(path.ptr, &db);
+            if (rc != c.SQLITE_OK) {
+                if (db) |h| _ = c.sqlite3_close(h);
+                return DbError.Open;
+            }
+            _ = c.sqlite3_busy_timeout(db.?, 5000);
+
+            var stmt: ?*c.sqlite3_stmt = null;
+            const prc = c.sqlite3_prepare_v2(db.?, "PRAGMA integrity_check", -1, &stmt, null);
+            if (prc == c.SQLITE_OK) {
+                _ = c.sqlite3_step(stmt);
+                _ = c.sqlite3_finalize(stmt);
+                return Db{ .raw = db.? };
+            }
+
+            _ = c.sqlite3_close(db.?);
+            if (attempt == 0) {
+                std.debug.print("{s}", .{"refract: db self-heal: corrupted file at "});
+                std.debug.print("{s}", .{path});
+                std.debug.print("{s}", .{", rebuilding\n"});
+                std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, path) catch {};
+                var buf: [512]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "{s}-wal", .{path})) |wal| {
+                    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, wal) catch {};
+                } else |_| {}
+                if (std.fmt.bufPrint(&buf, "{s}-shm", .{path})) |shm| {
+                    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, shm) catch {};
+                } else |_| {}
+                continue;
+            }
+            return DbError.Open;
+        }
+        unreachable;
     }
 
     pub fn close(self: Db) void {
@@ -132,6 +163,20 @@ pub const Db = struct {
     pub fn exec(self: Db, sql: [*:0]const u8) DbError!void {
         const rc = c.sqlite3_exec(self.raw, sql, null, null, null);
         if (rc != c.SQLITE_OK) return DbError.Exec;
+    }
+
+    pub fn execLogged(self: Db, sql: [*:0]const u8) DbError!void {
+        var err_msg: [*c]u8 = null;
+        const rc = c.sqlite3_exec(self.raw, sql, null, null, &err_msg);
+        if (rc != c.SQLITE_OK) {
+            if (err_msg != null) {
+                std.debug.print("{s}", .{"refract: sqlite exec error: "});
+                std.debug.print("{s}", .{std.mem.span(err_msg)});
+                std.debug.print("{s}", .{"\n"});
+                c.sqlite3_free(err_msg);
+            }
+            return DbError.Exec;
+        }
     }
 
     pub fn prepare(self: Db, sql: [*:0]const u8) DbError!Stmt {
@@ -183,17 +228,17 @@ pub const Db = struct {
             }
             if (needs_reindex) {
                 self.exec("UPDATE files SET mtime=0, content_hash=0") catch |e| {
-                    std.fs.File.stderr().writeAll("refract: db reindex: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                    std.debug.print("{s}", .{"refract: db reindex: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
             if (needs_reset) {
-                std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
+                std.debug.print("{s}", .{"refract: resetting DB (schema newer than binary)\n"});
                 self.begin() catch |e| {
-                    std.fs.File.stderr().writeAll("refract: db reset begin: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                    std.debug.print("{s}", .{"refract: db reset begin: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
                 errdefer self.rollback() catch {};
                 self.exec("DROP TABLE IF EXISTS sem_tokens") catch {};
@@ -209,13 +254,13 @@ pub const Db = struct {
                 self.exec("DROP TABLE IF EXISTS files") catch {};
                 self.exec("DROP TABLE IF EXISTS meta") catch {};
                 self.commit() catch |e| {
-                    std.fs.File.stderr().writeAll("refract: db reset commit: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                    std.debug.print("{s}", .{"refract: db reset commit: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
         }
-        try self.exec(
+        try self.execLogged(
             \\PRAGMA journal_mode=WAL;
             \\PRAGMA wal_autocheckpoint=100;
             \\PRAGMA journal_size_limit=67108864;
@@ -371,10 +416,12 @@ pub const Db = struct {
         // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {}; // migration
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {}; // migration
+        // Phase 4: YARD @param description text (text after [Type] in @param tags)
+        self.execMigration("ALTER TABLE params ADD COLUMN description TEXT"); // migration guard: column already exists on migrated schemas
         try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','5')");
         const final_ver = self.getSchemaVersion() orelse 0;
         if (final_ver != 5) {
-            std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
+            std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
     }
 
@@ -402,7 +449,7 @@ pub const Db = struct {
             if (std.mem.indexOf(u8, errmsg, "already exists") != null) return;
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "refract: DB migration warning: {s}\n", .{errmsg}) catch "refract: DB migration warning\n";
-            std.fs.File.stderr().writeAll(msg) catch {};
+            std.debug.print("{s}", .{msg});
         };
     }
 

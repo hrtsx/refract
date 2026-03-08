@@ -1,0 +1,108 @@
+class Hash
+  def self.new: (?untyped default) -> Hash
+  def self.try_convert: (untyped obj) -> Hash?
+
+  def <: (Hash other) -> bool
+  def <=: (Hash other) -> bool
+  def ==: (untyped other) -> bool
+  def >: (Hash other) -> bool
+  def >=: (Hash other) -> bool
+  def []: (untyped key) -> untyped
+  def []=: (untyped key, untyped value) -> untyped
+  def all?: () { (untyped, untyped) -> boolish } -> bool
+  def any?: () { (untyped, untyped) -> boolish } -> bool
+  def assoc: (untyped key) -> Array?
+  def clear: () -> Hash
+  def collect: () { (untyped, untyped) -> untyped } -> Array
+  def compact: () -> Hash
+  def compact!: () -> Hash?
+  def compare_by_identity: () -> Hash
+  def compare_by_identity?: () -> bool
+  def count: () -> Integer
+  def default: (?untyped key) -> untyped
+  def default=: (untyped value) -> untyped
+  def default_proc: () -> Proc?
+  def default_proc=: (Proc? proc) -> Proc?
+  def delete: (untyped key) { (untyped) -> untyped } -> untyped
+  def delete_if: () { (untyped, untyped) -> boolish } -> Hash
+  def dig: (*untyped keys) -> untyped
+  def each: () { (untyped, untyped) -> void } -> Hash
+  def each_key: () { (untyped) -> void } -> Hash
+  def each_pair: () { (untyped, untyped) -> void } -> Hash
+  def each_value: () { (untyped) -> void } -> Hash
+  def each_with_index: () { (Array, Integer) -> void } -> Hash
+  def each_with_object: (untyped memo) { (Array, untyped) -> void } -> untyped
+  def empty?: () -> bool
+  def entries: () -> Array
+  def eql?: (untyped other) -> bool
+  def except: (*untyped keys) -> Hash
+  def fetch: (untyped key, ?untyped default) -> untyped
+  def fetch_values: (*untyped keys) -> Array
+  def filter: () { (untyped, untyped) -> boolish } -> Hash
+  def filter!: () { (untyped, untyped) -> boolish } -> Hash?
+  def filter_map: () { (untyped, untyped) -> untyped } -> Array
+  def find: () { (untyped, untyped) -> boolish } -> Array?
+  def find_all: () { (untyped, untyped) -> boolish } -> Array
+  def find_index: () { (untyped, untyped) -> boolish } -> Integer?
+  def first: (?Integer n) -> untyped
+  def flat_map: () { (untyped, untyped) -> untyped } -> Array
+  def flatten: (?Integer level) -> Array
+  def freeze: () -> Hash
+  def group_by: () { (untyped, untyped) -> untyped } -> Hash
+  def has_key?: (untyped key) -> bool
+  def has_value?: (untyped value) -> bool
+  def hash: () -> Integer
+  def include?: (untyped key) -> bool
+  def inject: (?untyped init) { (untyped, Array) -> untyped } -> untyped
+  def inspect: () -> String
+  def invert: () -> Hash
+  def keep_if: () { (untyped, untyped) -> boolish } -> Hash
+  def key: (untyped value) -> untyped
+  def key?: (untyped key) -> bool
+  def keys: () -> Array
+  def length: () -> Integer
+  def map: () { (untyped, untyped) -> untyped } -> Array
+  def max: () { (Array, Array) -> Integer } -> Array
+  def max_by: () { (untyped, untyped) -> untyped } -> Array
+  def member?: (untyped key) -> bool
+  def merge: (*Hash hashes) -> Hash
+  def merge!: (*Hash hashes) -> Hash
+  def min: () { (Array, Array) -> Integer } -> Array
+  def min_by: () { (untyped, untyped) -> untyped } -> Array
+  def minmax: () -> Array
+  def minmax_by: () { (untyped, untyped) -> untyped } -> Array
+  def none?: () { (untyped, untyped) -> boolish } -> bool
+  def one?: () { (untyped, untyped) -> boolish } -> bool
+  def partition: () { (untyped, untyped) -> boolish } -> Array
+  def rassoc: (untyped value) -> Array?
+  def reduce: (?untyped init) { (untyped, Array) -> untyped } -> untyped
+  def rehash: () -> Hash
+  def reject: () { (untyped, untyped) -> boolish } -> Hash
+  def reject!: () { (untyped, untyped) -> boolish } -> Hash?
+  def replace: (Hash other) -> Hash
+  def select: () { (untyped, untyped) -> boolish } -> Hash
+  def select!: () { (untyped, untyped) -> boolish } -> Hash?
+  def shift: () -> Array?
+  def size: () -> Integer
+  def slice: (*untyped keys) -> Hash
+  def sort: () { (Array, Array) -> Integer } -> Array
+  def sort_by: () { (untyped, untyped) -> untyped } -> Array
+  def store: (untyped key, untyped value) -> untyped
+  def sum: (?untyped init) { (Array) -> untyped } -> untyped
+  def take: (Integer n) -> Array
+  def take_while: () { (Array) -> boolish } -> Array
+  def tally: () -> Hash
+  def to_a: () -> Array
+  def to_h: () { (untyped, untyped) -> Array } -> Hash
+  def to_hash: () -> Hash
+  def to_proc: () -> Proc
+  def to_s: () -> String
+  def transform_keys: () { (untyped) -> untyped } -> Hash
+  def transform_keys!: () { (untyped) -> untyped } -> Hash
+  def transform_values: () { (untyped) -> untyped } -> Hash
+  def transform_values!: () { (untyped) -> untyped } -> Hash
+  def update: (*Hash hashes) -> Hash
+  def value?: (untyped value) -> bool
+  def values: () -> Array
+  def values_at: (*untyped keys) -> Array
+end

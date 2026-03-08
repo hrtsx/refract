@@ -5,10 +5,10 @@ const Session = harness.Session;
 test "P48 T48.1 Edge case: empty file zero bytes" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t481";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/empty.rb", .data = "" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/empty.rb", .data = "" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -23,10 +23,10 @@ test "P48 T48.1 Edge case: empty file zero bytes" {
 test "P48 T48.2 Edge case: comments only file" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t482";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/comments.rb", .data = "# Initial comment\n# Comment block\n=begin\nMultiline\ncomment\n=end\n# Final comment\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/comments.rb", .data = "# Initial comment\n# Comment block\n=begin\nMultiline\ncomment\n=end\n# Final comment\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -41,10 +41,10 @@ test "P48 T48.2 Edge case: comments only file" {
 test "P48 T48.3 Edge case: deeply nested modules (8+ levels)" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t483";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/deep.rb", .data = "module L1\nmodule L2\nmodule L3\nmodule L4\nmodule L5\nmodule L6\nmodule L7\nmodule L8\nmodule L9\nclass Deep\n  def work\n    true\n  end\nend\nend\nend\nend\nend\nend\nend\nend\nend\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/deep.rb", .data = "module L1\nmodule L2\nmodule L3\nmodule L4\nmodule L5\nmodule L6\nmodule L7\nmodule L8\nmodule L9\nclass Deep\n  def work\n    true\n  end\nend\nend\nend\nend\nend\nend\nend\nend\nend\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -59,10 +59,10 @@ test "P48 T48.3 Edge case: deeply nested modules (8+ levels)" {
 test "P48 T48.4 Edge case: file with syntax errors" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t484";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/syntax.rb", .data = "class Broken\n  def method\n    if true\n      puts \"unmatched\"\n    # missing end\n  end\n  def another_error\n    [1, 2,  # missing bracket\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/syntax.rb", .data = "class Broken\n  def method\n    if true\n      puts \"unmatched\"\n    # missing end\n  end\n  def another_error\n    [1, 2,  # missing bracket\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -77,10 +77,10 @@ test "P48 T48.4 Edge case: file with syntax errors" {
 test "P48 T48.5 Edge case: very long method name (200+ chars)" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t485";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/long.rb", .data = "class Handler\n  def this_is_a_very_long_method_name_that_exceeds_two_hundred_characters_in_length_to_test_identifier_handling_and_truncation_in_the_indexing_system_and_should_be_properly_indexed_for_search_and_navigation_without_any_issues_whatsoever\n    true\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/long.rb", .data = "class Handler\n  def this_is_a_very_long_method_name_that_exceeds_two_hundred_characters_in_length_to_test_identifier_handling_and_truncation_in_the_indexing_system_and_should_be_properly_indexed_for_search_and_navigation_without_any_issues_whatsoever\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -95,10 +95,10 @@ test "P48 T48.5 Edge case: very long method name (200+ chars)" {
 test "P48 T48.6 Edge case: unicode identifiers in Ruby" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t486";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/unicode.rb", .data = "class Café\n  attr_accessor :naïve_field\n  def métier\n    \"work\"\n  end\n  def 日本語\n    \"japanese\"\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/unicode.rb", .data = "class Café\n  attr_accessor :naïve_field\n  def métier\n    \"work\"\n  end\n  def 日本語\n    \"japanese\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -113,10 +113,10 @@ test "P48 T48.6 Edge case: unicode identifiers in Ruby" {
 test "P48 T48.7 Edge case: cyclic module inclusion" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p48_t487";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/cyclic.rb", .data = "module CycleA\n  include CycleB\n  def method_a\n    true\n  end\nend\nmodule CycleB\n  include CycleA\n  def method_b\n    true\n  end\nend\nclass UsesCycle\n  include CycleA\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/cyclic.rb", .data = "module CycleA\n  include CycleB\n  def method_a\n    true\n  end\nend\nmodule CycleB\n  include CycleA\n  def method_b\n    true\n  end\nend\nclass UsesCycle\n  include CycleA\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -131,12 +131,12 @@ test "P48 T48.7 Edge case: cyclic module inclusion" {
 test "P49 T49.1 Template: HAML file indexing" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p49_t491";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws ++ "/app");
-    try std.fs.makeDirAbsolute(ws ++ "/app/views");
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/app/views/sample.haml", .data = ".container\n  %h1.title User Profile\n  %form#user-form\n    .form-group\n      %label Email\n      %input{name: 'email', type: 'email'}\n    .form-group\n      %label Password\n      %input{name: 'password', type: 'password'}\n    %button{type: 'submit'} Submit\n  #sidebar\n    %ul.nav\n      %li%a{href: '/'} Home\n      %li%a{href: '/about'} About\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/app", .default_dir);
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/app/views", .default_dir);
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app/views/sample.haml", .data = ".container\n  %h1.title User Profile\n  %form#user-form\n    .form-group\n      %label Email\n      %input{name: 'email', type: 'email'}\n    .form-group\n      %label Password\n      %input{name: 'password', type: 'password'}\n    %button{type: 'submit'} Submit\n  #sidebar\n    %ul.nav\n      %li%a{href: '/'} Home\n      %li%a{href: '/about'} About\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -151,11 +151,11 @@ test "P49 T49.1 Template: HAML file indexing" {
 test "P49 T49.2 Template: routes file with nested resources" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p49_t492";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws ++ "/config");
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/config/routes.rb", .data = "Rails.application.routes.draw do\n  namespace :admin do\n    resources :users do\n      resources :posts do\n        resources :comments, only: [:create, :destroy]\n      end\n      collection do\n        get :active\n        post :bulk_update\n      end\n    end\n  end\n  scope 'api/v1' do\n    resources :products\n    resources :orders\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config", .default_dir);
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/routes.rb", .data = "Rails.application.routes.draw do\n  namespace :admin do\n    resources :users do\n      resources :posts do\n        resources :comments, only: [:create, :destroy]\n      end\n      collection do\n        get :active\n        post :bulk_update\n      end\n    end\n  end\n  scope 'api/v1' do\n    resources :products\n    resources :orders\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -170,12 +170,12 @@ test "P49 T49.2 Template: routes file with nested resources" {
 test "P49 T49.3 Template: locale file with i18n keys" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p49_t493";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws ++ "/config");
-    try std.fs.makeDirAbsolute(ws ++ "/config/locales");
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/config/locales/en.yml", .data = "en:\n  activerecord:\n    models:\n      user: User\n      post: Post\n    attributes:\n      user:\n        name: Name\n        email: Email Address\n        password: Password\n      post:\n        title: Post Title\n        content: Content\n  errors:\n    messages:\n      taken: has already been taken\n      invalid: is invalid\n  views:\n    users:\n      show: User Profile\n      edit: Edit User\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config", .default_dir);
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config/locales", .default_dir);
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/locales/en.yml", .data = "en:\n  activerecord:\n    models:\n      user: User\n      post: Post\n    attributes:\n      user:\n        name: Name\n        email: Email Address\n        password: Password\n      post:\n        title: Post Title\n        content: Content\n  errors:\n    messages:\n      taken: has already been taken\n      invalid: is invalid\n  views:\n    users:\n      show: User Profile\n      edit: Edit User\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -190,10 +190,10 @@ test "P49 T49.3 Template: locale file with i18n keys" {
 test "P50 T50.1 Edge case: out-of-range position" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t501";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/tiny.rb", .data = "class Tiny\n  def work\n    true\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/tiny.rb", .data = "class Tiny\n  def work\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -209,9 +209,9 @@ test "P50 T50.1 Edge case: out-of-range position" {
 test "P50 T50.2 Edge case: malformed JSON-RPC missing method" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t502";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -226,10 +226,10 @@ test "P50 T50.2 Edge case: malformed JSON-RPC missing method" {
 test "P50 T50.3 Edge case: heredoc type inference" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t503";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/heredoc.rb", .data = "class HeredocTest\n  def plain_heredoc\n    <<~SQL\n      SELECT * FROM users\n    SQL\n  end\n  def squiggly\n    <<~RUBY\n      puts 'hello'\n    RUBY\n  end\n  def quoted\n    <<-'NOINTERP'\n      \\#{this_stays_literal}\n    NOINTERP\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/heredoc.rb", .data = "class HeredocTest\n  def plain_heredoc\n    <<~SQL\n      SELECT * FROM users\n    SQL\n  end\n  def squiggly\n    <<~RUBY\n      puts 'hello'\n    RUBY\n  end\n  def quoted\n    <<-'NOINTERP'\n      \\#{this_stays_literal}\n    NOINTERP\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -246,10 +246,10 @@ test "P50 T50.3 Edge case: heredoc type inference" {
 test "P50 T50.4 Edge case: diamond inheritance MRO" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t504";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/diamond.rb", .data = "module Loggable\n  def log\n    'logged'\n  end\nend\nmodule Serializable\n  include Loggable\n  def serialize\n    'serialized'\n  end\nend\nmodule Cacheable\n  include Loggable\n  def cache\n    'cached'\n  end\nend\nclass DiamondBase\n  include Serializable\n  include Cacheable\n  def work\n    log\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/diamond.rb", .data = "module Loggable\n  def log\n    'logged'\n  end\nend\nmodule Serializable\n  include Loggable\n  def serialize\n    'serialized'\n  end\nend\nmodule Cacheable\n  include Loggable\n  def cache\n    'cached'\n  end\nend\nclass DiamondBase\n  include Serializable\n  include Cacheable\n  def work\n    log\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -264,10 +264,10 @@ test "P50 T50.4 Edge case: diamond inheritance MRO" {
 test "P50 T50.5 Edge case: implementation vs definition" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t505";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/hierarchy.rb", .data = "class Animal\n  def speak\n    'generic'\n  end\nend\nclass Dog < Animal\n  def speak\n    'woof'\n  end\nend\nclass Cat < Animal\n  def speak\n    'meow'\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/hierarchy.rb", .data = "class Animal\n  def speak\n    'generic'\n  end\nend\nclass Dog < Animal\n  def speak\n    'woof'\n  end\nend\nclass Cat < Animal\n  def speak\n    'meow'\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -282,10 +282,10 @@ test "P50 T50.5 Edge case: implementation vs definition" {
 test "P50 T50.6 Edge case: rapid didOpen and didChange sequence" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t506";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/rapid.rb", .data = "class Rapid\n  def v1\n    1\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/rapid.rb", .data = "class Rapid\n  def v1\n    1\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
@@ -302,10 +302,10 @@ test "P50 T50.6 Edge case: rapid didOpen and didChange sequence" {
 test "P50 T50.7 Edge case: pattern matching Ruby 3.0" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p50_t507";
-    std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.makeDirAbsolute(ws);
-    defer std.fs.deleteTreeAbsolute(ws) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = ws ++ "/pattern.rb", .data = "class PatternTest\n  def check(data)\n    case data\n    in {name: String => name, age: Integer => age}\n      \"\\#{name} is \\#{age}\"\n    in [Integer => first, *rest]\n      first + rest.sum\n    in nil\n      'nothing'\n    end\n  end\nend\n" });
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/pattern.rb", .data = "class PatternTest\n  def check(data)\n    case data\n    in {name: String => name, age: Integer => age}\n      \"\\#{name} is \\#{age}\"\n    in [Integer => first, *rest]\n      first + rest.sum\n    in nil\n      'nothing'\n    end\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");

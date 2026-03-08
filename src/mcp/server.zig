@@ -166,7 +166,7 @@ pub const Server = struct {
                 error.EndOfStream => break,
                 else => return err,
             };
-            const raw = std.mem.trimRight(u8, line, "\r\n \t");
+            const raw = std.mem.trimEnd(u8, line, "\r\n \t");
             if (raw.len == 0) continue;
 
             const parsed = std.json.parseFromSlice(std.json.Value, self.alloc, raw, .{}) catch continue;
@@ -184,7 +184,7 @@ pub const Server = struct {
             const id = obj.get("id");
             const params = obj.get("params");
 
-            const now_ms = std.time.milliTimestamp();
+            const now_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
             if (now_ms - self.request_window_ms > 1000) {
                 self.request_count = 0;
                 self.request_window_ms = now_ms;
@@ -670,7 +670,7 @@ pub const Server = struct {
     }
 
     fn readFileLine(self: *Server, path: []const u8, line_1based: i64) ?[]u8 {
-        const raw = std.fs.cwd().readFileAlloc(self.alloc, path, 8 * 1024 * 1024) catch return null;
+        const raw = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, self.alloc, std.Io.Limit.limited(8 * 1024 * 1024)) catch return null;
         defer self.alloc.free(raw);
         var lineno: i64 = 1;
         var i: usize = 0;
@@ -678,7 +678,7 @@ pub const Server = struct {
             const line_start = i;
             while (i < raw.len and raw[i] != '\n') i += 1;
             if (lineno == line_1based) {
-                const line = std.mem.trimLeft(u8, raw[line_start..i], " \t");
+                const line = std.mem.trimStart(u8, raw[line_start..i], " \t");
                 return self.alloc.dupe(u8, line) catch null;
             }
             i += 1; // skip '\n'
@@ -695,7 +695,7 @@ pub const Server = struct {
     ) ?[]u8 {
         const content = if (cache.get(path)) |c| c else blk: {
             if (cache.count() >= 50) return self.readFileLine(path, line_1based);
-            const c = std.fs.cwd().readFileAlloc(self.alloc, path, 8 * 1024 * 1024) catch return null;
+            const c = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, self.alloc, std.Io.Limit.limited(8 * 1024 * 1024)) catch return null;
             const owned_key = self.alloc.dupe(u8, path) catch {
                 self.alloc.free(c);
                 return self.readFileLine(path, line_1based);
@@ -713,7 +713,7 @@ pub const Server = struct {
             const line_start = i;
             while (i < content.len and content[i] != '\n') i += 1;
             if (lineno == line_1based) {
-                const line = std.mem.trimLeft(u8, content[line_start..i], " \t");
+                const line = std.mem.trimStart(u8, content[line_start..i], " \t");
                 return self.alloc.dupe(u8, line) catch null;
             }
             i += 1;
@@ -1449,10 +1449,7 @@ pub const Server = struct {
         var end_line = sym_stmt.column_int(2);
         if (end_line == 0) end_line = sym_line;
 
-        const file = std.fs.openFileAbsolute(fpath, .{}) catch
-            return self.buildToolError(id, "cannot open file");
-        defer file.close();
-        const raw = file.readToEndAlloc(self.alloc, 8 * 1024 * 1024) catch
+        const raw = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(8 * 1024 * 1024)) catch
             return self.buildToolError(id, "cannot read file");
         defer self.alloc.free(raw);
 
@@ -1547,10 +1544,10 @@ pub const Server = struct {
                 };
                 if (!matched) continue;
             }
-            const raw = std.fs.cwd().readFileAlloc(self.alloc, fpath, 8 * 1024 * 1024) catch continue;
+            const raw = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(8 * 1024 * 1024)) catch continue;
             defer self.alloc.free(raw);
 
-            var lines = std.ArrayList([]const u8){};
+            var lines = std.ArrayList([]const u8).empty;
             defer lines.deinit(self.alloc);
             var seg_start: usize = 0;
             for (raw, 0..) |ch, i| {
@@ -2745,7 +2742,7 @@ pub const Server = struct {
         const end_line = getIntArg(args, "end_line") orelse return self.buildToolError(id, "missing 'end_line'");
         const kind = getStrArg(args, "kind") orelse return self.buildToolError(id, "missing 'kind'");
 
-        const source = std.fs.cwd().readFileAlloc(self.alloc, file, 1 << 20) catch return self.buildToolError(id, "cannot read file");
+        const source = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, file, self.alloc, std.Io.Limit.limited(1 << 20)) catch return self.buildToolError(id, "cannot read file");
         defer self.alloc.free(source);
 
         var result = if (std.mem.eql(u8, kind, "extract_method"))
@@ -2782,7 +2779,7 @@ pub const Server = struct {
         const line = getIntArg(args, "line") orelse return self.buildToolError(id, "missing 'line'");
         _ = getIntArg(args, "character");
 
-        const source = std.fs.cwd().readFileAlloc(self.alloc, file, 1 << 20) catch return self.buildToolError(id, "cannot read file");
+        const source = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, file, self.alloc, std.Io.Limit.limited(1 << 20)) catch return self.buildToolError(id, "cannot read file");
         defer self.alloc.free(source);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -3192,7 +3189,7 @@ fn splitQualified(s: []const u8) ?QualifiedSymbol {
 fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[]u8 {
     if (file.len == 0) return null;
     if (file[0] == '/') return alloc.dupe(u8, file) catch null;
-    return std.fs.cwd().realpathAlloc(alloc, file) catch null;
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, file, alloc) catch null;
 }
 
 fn getIntArg(args: ?std.json.ObjectMap, key: []const u8) ?i64 {
@@ -3210,9 +3207,9 @@ fn getIntArg(args: ?std.json.ObjectMap, key: []const u8) ?i64 {
 }
 
 fn stepLog(err: anyerror) bool {
-    std.fs.File.stderr().writeAll("refract: mcp sql step: ") catch {};
-    std.fs.File.stderr().writeAll(@errorName(err)) catch {};
-    std.fs.File.stderr().writeAll("\n") catch {};
+    std.debug.print("{s}", .{"refract: mcp sql step: "});
+    std.debug.print("{s}", .{@errorName(err)});
+    std.debug.print("{s}", .{"\n"});
     return false;
 }
 
