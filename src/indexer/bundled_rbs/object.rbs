@@ -1,0 +1,181 @@
+class BasicObject
+  def ==: (untyped other) -> bool
+  def !: () -> bool
+  def !=: (untyped other) -> bool
+  def __id__: () -> Integer
+  def __send__: (Symbol | String method, *untyped args) -> untyped
+  def equal?: (untyped other) -> bool
+  def instance_eval: (?String str) { (untyped) -> untyped } -> untyped
+  def instance_exec: (*untyped args) { (*untyped) -> untyped } -> untyped
+end
+
+class Object < BasicObject
+  def !~: (untyped other) -> bool
+  def <=>: (untyped other) -> Integer?
+  def ===: (untyped other) -> bool
+  def =~: (untyped other) -> Integer?
+  def class: () -> Class
+  def clone: () -> self
+  def define_singleton_method: (Symbol method) { (*untyped) -> untyped } -> Symbol
+  def display: (?IO out) -> nil
+  def dup: () -> self
+  def enum_for: (?Symbol method, *untyped args) -> Enumerator
+  def eql?: (untyped other) -> bool
+  def extend: (*Module modules) -> self
+  def freeze: () -> self
+  def frozen?: () -> bool
+  def hash: () -> Integer
+  def inspect: () -> String
+  def instance_of?: (Module klass) -> bool
+  def instance_variable_defined?: (Symbol name) -> bool
+  def instance_variable_get: (Symbol name) -> untyped
+  def instance_variable_set: (Symbol name, untyped value) -> untyped
+  def instance_variables: () -> Array
+  def is_a?: (Module klass) -> bool
+  def itself: () -> self
+  def kind_of?: (Module klass) -> bool
+  def method: (Symbol name) -> Method
+  def methods: () -> Array
+  def nil?: () -> bool
+  def object_id: () -> Integer
+  def private_methods: () -> Array
+  def protected_methods: () -> Array
+  def public_method: (Symbol name) -> Method
+  def public_methods: () -> Array
+  def public_send: (Symbol | String method, *untyped args) -> untyped
+  def respond_to?: (Symbol | String method, ?bool include_private) -> bool
+  def respond_to_missing?: (Symbol | String method, bool include_private) -> bool
+  def send: (Symbol | String method, *untyped args) -> untyped
+  def singleton_class: () -> Class
+  def singleton_method: (Symbol name) -> Method
+  def singleton_methods: () -> Array
+  def tap: () { (self) -> void } -> self
+  def then: () { (self) -> untyped } -> untyped
+  def to_enum: (?Symbol method, *untyped args) -> Enumerator
+  def to_s: () -> String
+  def yield_self: () { (self) -> untyped } -> untyped
+end
+
+module Kernel
+  def Array: (untyped arg) -> Array
+  def Complex: (*untyped args) -> Complex
+  def Float: (untyped arg) -> Float
+  def Hash: (untyped arg) -> Hash
+  def Integer: (untyped arg, ?Integer base) -> Integer
+  def Rational: (*untyped args) -> Rational
+  def String: (untyped arg) -> String
+  def __dir__: () -> String?
+  def __method__: () -> Symbol?
+  def at_exit: () { () -> void } -> Proc
+  def autoload: (Symbol | String const, String path) -> nil
+  def autoload?: (Symbol | String const) -> String?
+  def binding: () -> Binding
+  def block_given?: () -> bool
+  def caller: (?Integer start, ?Integer length) -> Array?
+  def caller_locations: (?Integer start, ?Integer length) -> Array?
+  def catch: (?untyped tag) { (untyped) -> untyped } -> untyped
+  def eval: (String str, ?Binding binding) -> untyped
+  def exit: (?Integer status) -> void
+  def fail: (*untyped args) -> void
+  def format: (String fmt, *untyped args) -> String
+  def gets: () -> String?
+  def lambda: () { (*untyped) -> untyped } -> Proc
+  def load: (String path) -> bool
+  def loop: () { () -> void } -> untyped
+  def open: (String path, *untyped args) -> untyped
+  def p: (*untyped args) -> untyped
+  def pp: (*untyped args) -> untyped
+  def print: (*untyped args) -> nil
+  def printf: (*untyped args) -> nil
+  def proc: () { (*untyped) -> untyped } -> Proc
+  def puts: (*untyped args) -> nil
+  def raise: (*untyped args) -> void
+  def rand: (?untyped max) -> Numeric
+  def readline: () -> String
+  def require: (String path) -> bool
+  def require_relative: (String path) -> bool
+  def sleep: (?Numeric seconds) -> Integer
+  def sprintf: (String fmt, *untyped args) -> String
+  def srand: (?Integer seed) -> Integer
+  def system: (*untyped args) -> bool?
+  def throw: (untyped tag, ?untyped value) -> void
+  def warn: (*untyped args) -> nil
+end
+
+class Module
+  def self.constants: () -> Array
+  def self.nesting: () -> Array
+
+  def <=>: (Module other) -> Integer?
+  def ==: (untyped other) -> bool
+  def ===: (untyped obj) -> bool
+  def ancestors: () -> Array
+  def const_defined?: (Symbol | String name, ?bool inherit) -> bool
+  def const_get: (Symbol | String name, ?bool inherit) -> untyped
+  def const_set: (Symbol | String name, untyped value) -> untyped
+  def constants: (?bool inherit) -> Array
+  def define_method: (Symbol name) { (*untyped) -> untyped } -> Symbol
+  def include: (*Module modules) -> Module
+  def include?: (Module mod) -> bool
+  def included_modules: () -> Array
+  def instance_method: (Symbol name) -> UnboundMethod
+  def instance_methods: (?bool inherit) -> Array
+  def method_defined?: (Symbol | String name) -> bool
+  def name: () -> String?
+  def prepend: (*Module modules) -> Module
+  def private_instance_methods: (?bool inherit) -> Array
+  def protected_instance_methods: (?bool inherit) -> Array
+  def public_instance_methods: (?bool inherit) -> Array
+  def remove_method: (*Symbol names) -> Module
+  def to_s: () -> String
+  def undef_method: (*Symbol names) -> Module
+end
+
+class Class < Module
+  def self.new: (?Class superclass) { (Class) -> void } -> Class
+
+  def allocate: () -> untyped
+  def new: (*untyped args) -> untyped
+  def superclass: () -> Class?
+end
+
+module Comparable
+  def <: (untyped other) -> bool
+  def <=: (untyped other) -> bool
+  def ==: (untyped other) -> bool
+  def >: (untyped other) -> bool
+  def >=: (untyped other) -> bool
+  def between?: (untyped min, untyped max) -> bool
+  def clamp: (untyped min, ?untyped max) -> untyped
+end
+
+class NilClass
+  def &: (untyped other) -> bool
+  def ^: (untyped other) -> bool
+  def |: (untyped other) -> bool
+  def inspect: () -> String
+  def nil?: () -> bool
+  def rationalize: () -> Rational
+  def to_a: () -> Array
+  def to_f: () -> Float
+  def to_h: () -> Hash
+  def to_i: () -> Integer
+  def to_r: () -> Rational
+  def to_s: () -> String
+end
+
+class TrueClass
+  def &: (untyped other) -> bool
+  def ^: (untyped other) -> bool
+  def |: (untyped other) -> bool
+  def inspect: () -> String
+  def to_s: () -> String
+end
+
+class FalseClass
+  def &: (untyped other) -> bool
+  def ^: (untyped other) -> bool
+  def |: (untyped other) -> bool
+  def inspect: () -> String
+  def to_s: () -> String
+end

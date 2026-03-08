@@ -126,6 +126,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/tests/harness.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     harness_mod.addOptions("build_opts", proto_opts);
 
@@ -140,6 +141,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(entry[0]),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         });
         mod.addImport("harness", harness_mod);
         const t = b.addTest(.{ .root_module = mod });

@@ -5,6 +5,19 @@ const i18n_mod = @import("i18n.zig");
 const routes_mod = @import("routes.zig");
 const erb_mapping = @import("../lsp/erb_mapping.zig");
 
+pub const LogSink = *const fn (ctx: ?*anyopaque, level: u8, msg: []const u8) void;
+pub var log_sink: ?LogSink = null;
+pub var log_sink_ctx: ?*anyopaque = null;
+
+fn emitLog(level: u8, msg: []const u8) void {
+    if (log_sink) |sink| {
+        sink(log_sink_ctx, level, msg);
+    } else {
+        std.debug.print("{s}", .{msg});
+        std.debug.print("{s}", .{"\n"});
+    }
+}
+
 const SemToken = struct {
     line: u32,
     col: u32,
@@ -120,6 +133,16 @@ fn inferLiteralType(node: *const prism.Node) ?[]const u8 {
     };
 }
 
+fn normalizeRbsReturn(rt: []const u8) []const u8 {
+    // RBS uses `bool` as a sugar for `TrueClass | FalseClass`. Keep that mapping
+    // consistent with parseUnionTypes' handling of `boolean` and with the
+    // hardcoded lookupStdlibReturn.
+    if (std.mem.eql(u8, rt, "bool")) return "TrueClass | FalseClass";
+    if (std.mem.eql(u8, rt, "boolish")) return "TrueClass | FalseClass";
+    if (std.mem.eql(u8, rt, "nil")) return "NilClass";
+    return rt;
+}
+
 fn parseUnionTypes(inner: []const u8, buf: *[512]u8) ?[]const u8 {
     var result_len: usize = 0;
     var it = std.mem.splitSequence(u8, inner, ", ");
@@ -189,6 +212,27 @@ fn parseYardParam(doc: []const u8, name: []const u8, buf: *[512]u8) ?[]const u8 
     return null;
 }
 
+/// Returns the description text that follows `[Type]` on a YARD @param line.
+/// e.g. `@param name [String] the user's name` → `"the user's name"`
+fn parseYardParamDesc(doc: []const u8, name: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, doc, '\n');
+    while (it.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t");
+        if (!std.mem.startsWith(u8, t, "@param ")) continue;
+        const rest = t[7..];
+        if (!std.mem.startsWith(u8, rest, name)) continue;
+        const after = rest[name.len..];
+        if (after.len == 0 or after[0] != ' ') continue;
+        const bracket = std.mem.indexOf(u8, after, "[") orelse continue;
+        const inner_start = after[bracket + 1 ..];
+        const close = std.mem.indexOfScalar(u8, inner_start, ']') orelse continue;
+        const desc = std.mem.trim(u8, inner_start[close + 1 ..], " \t");
+        if (desc.len == 0) return null;
+        return desc;
+    }
+    return null;
+}
+
 fn extractDocComment(source: []const u8, node_start: u32, alloc: std.mem.Allocator) ?[]u8 {
     if (node_start == 0) return null;
     const end: usize = @min(@as(usize, node_start), source.len);
@@ -211,7 +255,7 @@ fn extractDocComment(source: []const u8, node_start: u32, alloc: std.mem.Allocat
             prev_line_start -= 1;
         }
         const line_slice = source[prev_line_start..prev_line_end];
-        const trimmed = std.mem.trimLeft(u8, line_slice, " \t");
+        const trimmed = std.mem.trimStart(u8, line_slice, " \t");
         if (!std.mem.startsWith(u8, trimmed, "#")) break;
         const stripped: []const u8 = if (std.mem.startsWith(u8, trimmed, "# ")) trimmed[2..] else trimmed[1..];
         lines[line_count] = stripped;
@@ -233,7 +277,7 @@ fn extractDocComment(source: []const u8, node_start: u32, alloc: std.mem.Allocat
     }
 
     // Join with '\n'
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     for (lines[0..line_count], 0..) |line, idx| {
         if (idx > 0) result.append(alloc, '\n') catch {
             result.deinit(alloc);
@@ -249,12 +293,42 @@ fn extractDocComment(source: []const u8, node_start: u32, alloc: std.mem.Allocat
 }
 
 fn appendYardTags(raw: []u8, alloc: std.mem.Allocator) ?[]u8 {
-    // Collect @deprecated prefix and extra tag sections
+    // Collect @deprecated prefix and extra tag sections.
+    // Two-pass: first pass handles single-line tags; @example blocks are multi-line.
     var deprecated_msg: ?[]const u8 = null;
-    var extras = std.ArrayList(u8){};
+    var extras = std.ArrayList(u8).empty;
+
+    // State machine for multi-line @example blocks
+    var in_example = false;
+    var example_buf = std.ArrayList(u8).empty;
+
     var it = std.mem.splitScalar(u8, raw, '\n');
     while (it.next()) |line| {
         const t = std.mem.trim(u8, line, " \t");
+
+        // Detect start of a new YARD tag (ends an open @example block)
+        const is_yard_tag = t.len > 0 and t[0] == '@';
+
+        if (in_example) {
+            if (is_yard_tag) {
+                // Close the current @example block before processing the new tag
+                in_example = false;
+                const ex = example_buf.toOwnedSlice(alloc) catch "";
+                defer alloc.free(ex);
+                if (ex.len > 0) {
+                    extras.appendSlice(alloc, "\n\n**Example:**\n```ruby\n") catch {};
+                    extras.appendSlice(alloc, ex) catch {};
+                    extras.appendSlice(alloc, "\n```") catch {};
+                }
+                // Fall through to process the new tag below
+            } else {
+                // Accumulate example body line
+                if (example_buf.items.len > 0) example_buf.append(alloc, '\n') catch {};
+                example_buf.appendSlice(alloc, line) catch {};
+                continue;
+            }
+        }
+
         if (std.mem.startsWith(u8, t, "@deprecated")) {
             deprecated_msg = std.mem.trim(u8, t["@deprecated".len..], " \t");
         } else if (std.mem.startsWith(u8, t, "@raise")) {
@@ -270,12 +344,48 @@ fn appendYardTags(raw: []u8, alloc: std.mem.Allocator) ?[]u8 {
             extras.appendSlice(alloc, "\n\n**Overload:** `") catch {}; // OOM: doc formatting
             extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
             extras.appendSlice(alloc, "`") catch {}; // OOM: doc formatting
+        } else if (std.mem.startsWith(u8, t, "@yieldparam")) {
+            const rest = std.mem.trim(u8, t["@yieldparam".len..], " \t");
+            extras.appendSlice(alloc, "\n\n**Yield param:** ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
+        } else if (std.mem.startsWith(u8, t, "@yieldreturn")) {
+            const rest = std.mem.trim(u8, t["@yieldreturn".len..], " \t");
+            extras.appendSlice(alloc, "\n\n**Yield returns:** ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
+        } else if (std.mem.startsWith(u8, t, "@note")) {
+            const rest = std.mem.trim(u8, t["@note".len..], " \t");
+            extras.appendSlice(alloc, "\n\n> ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
+        } else if (std.mem.startsWith(u8, t, "@since")) {
+            const rest = std.mem.trim(u8, t["@since".len..], " \t");
+            extras.appendSlice(alloc, "\n\n_Since: ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, "_") catch {}; // OOM: doc formatting
+        } else if (std.mem.startsWith(u8, t, "@example")) {
+            // Begin accumulating a multi-line example block
+            in_example = true;
+            example_buf.clearRetainingCapacity();
+            // The text after @example on the same line is the optional title (skip it)
         }
     }
+
+    // Close any open @example block at EOF
+    if (in_example) {
+        const ex = example_buf.toOwnedSlice(alloc) catch "";
+        defer alloc.free(ex);
+        if (ex.len > 0) {
+            extras.appendSlice(alloc, "\n\n**Example:**\n```ruby\n") catch {};
+            extras.appendSlice(alloc, ex) catch {};
+            extras.appendSlice(alloc, "\n```") catch {};
+        }
+    } else {
+        example_buf.deinit(alloc);
+    }
+
     const extras_slice = extras.toOwnedSlice(alloc) catch "";
     defer if (extras_slice.len > 0) alloc.free(extras_slice);
     if (deprecated_msg == null and extras_slice.len == 0) return raw;
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     if (deprecated_msg) |msg| {
         out.appendSlice(alloc, "**Deprecated:**") catch {
             out.deinit(alloc);
@@ -371,15 +481,16 @@ fn isRailsDsl(mname: []const u8) bool {
         "store",                   "after_initialize",          "before_validation",      "after_commit",
         "prepend_before_action",   "validate",                  "after_update",           "before_update",
         "around_update",           "after_find",                "validates_inclusion_of", "validates_exclusion_of",
-        "validates_with",
+        "validates_with",          "before_commit",             "after_rollback",         "after_touch",
+        "after_validation",        "default_scope",
         // RSpec
-                 "describe",                  "context",                "it",
-        "let",                     "let!",                      "subject",                "before",
-        "after",                   "shared_examples_for",       "shared_context",         "shared_examples",
-        "around",
+                    "describe",               "context",
+        "it",                      "let",                       "let!",                   "subject",
+        "before",                  "after",                     "shared_examples_for",    "shared_context",
+        "shared_examples",         "around",
         // Sinatra
-                         "get",                       "post",                   "put",
-        "delete",                  "patch",                     "head",                   "options",
+                           "get",                    "post",
+        "put",                     "delete",                    "patch",                  "options",
         "route",
         // Rake
                           "task",                      "namespace",              "file",
@@ -401,14 +512,15 @@ fn isRailsDsl(mname: []const u8) bool {
         "group",                   "resource",                  "resources",              "route_param",
         "helpers",                 "version",                   "default_format",         "default_error_status",
         "content_type",            "formatter",
-        // Roda
-                        "plugin",                 "freeze",
-        "hash_branch",             "hash_routes",
+        // Roda (dropped "plugin" — collides with Puma's plugin loader where it's DSL, not a method def)
+                        "freeze",                 "hash_branch",
+        "hash_routes",
         // Sequel associations
-                      "one_to_many",            "many_to_one",
-        "many_to_many",            "one_to_one",                "one_through_one",        "many_through_many",
+                    "one_to_many",               "many_to_one",            "many_to_many",
+        "one_to_one",              "one_through_one",           "many_through_many",
         // Sequel validations
-        "validates_presence",      "validates_unique",          "validates_format",       "validates_type",
+             "validates_presence",
+        "validates_unique",        "validates_format",          "validates_type",
     };
     for (dsl) |d| if (std.mem.eql(u8, mname, d)) return true;
     return false;
@@ -610,7 +722,7 @@ fn insertBlockParams(ctx: *VisitCtx, block: *const prism.BlockNode, receiver_typ
     }
 }
 
-fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name: []const u8) ?[]u8 {
+fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name: []const u8, class_name_override: ?[]const u8) ?[]u8 {
     const is_plural = std.mem.eql(u8, mname, "has_many") or
         std.mem.eql(u8, mname, "has_and_belongs_to_many") or
         std.mem.eql(u8, mname, "one_to_many") or
@@ -622,6 +734,11 @@ fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name:
         std.mem.eql(u8, mname, "one_to_one") or
         std.mem.eql(u8, mname, "one_through_one");
     if (!is_plural and !is_singular) return null;
+    // class_name: option overrides convention-based inference
+    if (class_name_override) |cn_override| {
+        if (is_plural) return std.fmt.allocPrint(alloc, "[{s}]", .{cn_override}) catch null;
+        return alloc.dupe(u8, cn_override) catch null;
+    }
     var singular: []const u8 = assoc_name;
     if (std.mem.endsWith(u8, assoc_name, "ies") and assoc_name.len > 3) {
         const base = assoc_name[0 .. assoc_name.len - 3];
@@ -643,6 +760,14 @@ fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name:
 }
 
 fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
+    // default_scope takes a block/lambda, not a named symbol arg — handle before arg checks
+    if (std.mem.eql(u8, mname, "default_scope")) {
+        const lc = locationLineCol(ctx.parser, cn.base.location.start);
+        var ns_buf_ds: [256]u8 = undefined;
+        const parent_ds = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf_ds) else null;
+        try insertSymbolWithReturn(ctx, "scope", "default_scope", lc.line, lc.col, null, mname, parent_ds, null);
+        return;
+    }
     if (cn.arguments == null) return;
     const args_list = cn.arguments[0].arguments;
     if (args_list.size == 0) return;
@@ -677,24 +802,86 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         std.mem.eql(u8, mname, "let!") or
         std.mem.eql(u8, mname, "subject") or
         std.mem.eql(u8, mname, "association")) "variable" else if (std.mem.eql(u8, mname, "factory") or
-        std.mem.eql(u8, mname, "trait")) "class" else "def";
+        std.mem.eql(u8, mname, "trait")) "class" else if (std.mem.startsWith(u8, mname, "validates")) "validation" else if (std.mem.eql(u8, mname, "before_action") or
+        std.mem.eql(u8, mname, "after_action") or
+        std.mem.eql(u8, mname, "around_action") or
+        std.mem.eql(u8, mname, "before_create") or
+        std.mem.eql(u8, mname, "after_create") or
+        std.mem.eql(u8, mname, "before_save") or
+        std.mem.eql(u8, mname, "after_save") or
+        std.mem.eql(u8, mname, "before_destroy") or
+        std.mem.eql(u8, mname, "after_destroy") or
+        std.mem.eql(u8, mname, "before_update") or
+        std.mem.eql(u8, mname, "after_update") or
+        std.mem.eql(u8, mname, "around_create") or
+        std.mem.eql(u8, mname, "around_save") or
+        std.mem.eql(u8, mname, "around_destroy") or
+        std.mem.eql(u8, mname, "around_update") or
+        std.mem.eql(u8, mname, "before_validation") or
+        std.mem.eql(u8, mname, "after_initialize") or
+        std.mem.eql(u8, mname, "after_find") or
+        std.mem.eql(u8, mname, "after_commit") or
+        std.mem.eql(u8, mname, "before_commit") or
+        std.mem.eql(u8, mname, "after_rollback") or
+        std.mem.eql(u8, mname, "after_touch") or
+        std.mem.eql(u8, mname, "after_validation") or
+        std.mem.eql(u8, mname, "validate")) "callback" else "def";
     var ns_buf: [256]u8 = undefined;
     const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-    const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name);
+    // Capture the full DSL call source as value_snippet (e.g. "has_many :posts, dependent: :destroy")
+    var call_snip_buf: [123]u8 = undefined;
+    var call_snip: ?[]const u8 = null;
+    const call_start = cn.base.location.start;
+    const call_full_len = cn.base.location.length;
+    const call_vlen = @min(call_full_len, 120);
+    if (@as(usize, call_start) + call_vlen <= ctx.source.len) {
+        @memcpy(call_snip_buf[0..call_vlen], ctx.source[@as(usize, call_start) .. @as(usize, call_start) + call_vlen]);
+        const call_snip_end = if (call_full_len > 120) blk: {
+            @memcpy(call_snip_buf[call_vlen .. call_vlen + 3], "\u{2026}");
+            break :blk call_vlen + 3;
+        } else call_vlen;
+        call_snip = call_snip_buf[0..call_snip_end];
+    }
+    // Scan keyword hash options for class_name: and through:
+    var class_name_opt: ?[]const u8 = null;
+    if (args_list.size > 1) {
+        for (1..args_list.size) |oi| {
+            const opt_arg = args_list.nodes[oi];
+            if (opt_arg.*.type != prism.NODE_KEYWORD_HASH) continue;
+            const kh_opt: *const prism.KeywordHashNode = @ptrCast(@alignCast(opt_arg));
+            for (0..kh_opt.elements.size) |ej| {
+                const kh_elem = kh_opt.elements.nodes[ej];
+                if (kh_elem.*.type != prism.NODE_ASSOC) continue;
+                const kh_assoc: *const prism.AssocNode = @ptrCast(@alignCast(kh_elem));
+                if (kh_assoc.key.*.type != prism.NODE_SYMBOL) continue;
+                const kh_ksym: *const prism.SymbolNode = @ptrCast(@alignCast(kh_assoc.key));
+                if (kh_ksym.unescaped.source == null) continue;
+                const kname = kh_ksym.unescaped.source[0..kh_ksym.unescaped.length];
+                if (std.mem.eql(u8, kname, "class_name")) {
+                    if (kh_assoc.value.*.type == prism.NODE_STRING) {
+                        const cn_sv: *const prism.StringNode = @ptrCast(@alignCast(kh_assoc.value));
+                        if (cn_sv.unescaped.source != null)
+                            class_name_opt = cn_sv.unescaped.source[0..cn_sv.unescaped.length];
+                    }
+                }
+            }
+        }
+    }
+    const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name, class_name_opt);
     defer if (assoc_return_type) |rt| ctx.alloc.free(rt);
     if (assoc_return_type) |rt| {
-        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent, call_snip);
     } else if (std.mem.eql(u8, mname, "scope") and ctx.namespace_stack_len > 0) {
         var scope_buf: [270]u8 = undefined;
         const class_name = parent orelse "";
         const scope_rt = if (class_name.len > 0) std.fmt.bufPrint(&scope_buf, "[{s}]", .{class_name}) catch null else null;
         if (scope_rt) |srt| {
-            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt, mname, parent);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt, mname, parent, call_snip);
         } else {
-            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, call_snip);
         }
     } else {
-        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, call_snip);
     }
 }
 
@@ -706,8 +893,10 @@ fn insertEnumValues(ctx: *VisitCtx, vn: *const prism.Node) !void {
             if (elem.*.type != prism.NODE_SYMBOL) continue;
             const vsym: *const prism.SymbolNode = @ptrCast(@alignCast(elem));
             if (vsym.unescaped.source == null) continue;
+            const vname = vsym.unescaped.source[0..vsym.unescaped.length];
             const vlc = locationLineCol(ctx.parser, elem.*.location.start);
-            try insertSymbol(ctx, "def", vsym.unescaped.source[0..vsym.unescaped.length], vlc.line, vlc.col, null);
+            try insertSymbol(ctx, "def", vname, vlc.line, vlc.col, null);
+            try insertEnumValueMethods(ctx, vname, vlc.line, vlc.col);
         }
     } else if (vn.*.type == prism.NODE_HASH) {
         const hn: *const prism.HashNode = @ptrCast(@alignCast(vn));
@@ -718,8 +907,10 @@ fn insertEnumValues(ctx: *VisitCtx, vn: *const prism.Node) !void {
             if (assoc.key.*.type != prism.NODE_SYMBOL) continue;
             const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
             if (ksym.unescaped.source == null) continue;
+            const vname = ksym.unescaped.source[0..ksym.unescaped.length];
             const vlc = locationLineCol(ctx.parser, assoc.key.*.location.start);
-            try insertSymbol(ctx, "def", ksym.unescaped.source[0..ksym.unescaped.length], vlc.line, vlc.col, null);
+            try insertSymbol(ctx, "def", vname, vlc.line, vlc.col, null);
+            try insertEnumValueMethods(ctx, vname, vlc.line, vlc.col);
         }
     } else if (vn.*.type == prism.NODE_KEYWORD_HASH) {
         const kh: *const prism.KeywordHashNode = @ptrCast(@alignCast(vn));
@@ -730,10 +921,28 @@ fn insertEnumValues(ctx: *VisitCtx, vn: *const prism.Node) !void {
             if (assoc.key.*.type != prism.NODE_SYMBOL) continue;
             const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
             if (ksym.unescaped.source == null) continue;
+            const vname = ksym.unescaped.source[0..ksym.unescaped.length];
             const vlc = locationLineCol(ctx.parser, assoc.key.*.location.start);
-            try insertSymbol(ctx, "def", ksym.unescaped.source[0..ksym.unescaped.length], vlc.line, vlc.col, null);
+            try insertSymbol(ctx, "def", vname, vlc.line, vlc.col, null);
+            try insertEnumValueMethods(ctx, vname, vlc.line, vlc.col);
         }
     }
+}
+
+// Inserts the Rails-generated predicate, bang, and scope methods for one enum value.
+// e.g. for value "active": active? active! and scope active
+fn insertEnumValueMethods(ctx: *VisitCtx, vname: []const u8, line: i64, col: i64) !void {
+    if (vname.len == 0 or vname.len > 120) return;
+    const l: i32 = @intCast(@min(line, std.math.maxInt(i32)));
+    const c: u32 = @intCast(@min(@max(col, 0), std.math.maxInt(u32)));
+    var pred_buf: [128]u8 = undefined;
+    const pred = std.fmt.bufPrint(&pred_buf, "{s}?", .{vname}) catch return;
+    try insertSymbol(ctx, "def", pred, l, c, null);
+    var bang_buf: [128]u8 = undefined;
+    const bang = std.fmt.bufPrint(&bang_buf, "{s}!", .{vname}) catch return;
+    try insertSymbol(ctx, "def", bang, l, c, null);
+    // Rails also generates a class-level scope method with the same name
+    try insertSymbol(ctx, "scope", vname, l, c, null);
 }
 
 fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
@@ -865,6 +1074,68 @@ fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]const 
     return null;
 }
 
+fn inferReceiverType(ctx: *VisitCtx, recv: *const prism.Node) ?[]const u8 {
+    return inferReceiverTypeDepth(ctx, recv, 0);
+}
+
+fn inferReceiverTypeDepth(ctx: *VisitCtx, recv: *const prism.Node, depth: u8) ?[]const u8 {
+    if (depth > 2) return null;
+    if (recv.*.type == prism.NODE_LOCAL_VAR_READ) {
+        const rv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv));
+        const rv_name = resolveConstant(ctx.parser, rv.name);
+        if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv| {
+            defer lv.finalize();
+            lv.bind_int(1, ctx.file_id);
+            lv.bind_text(2, rv_name);
+            if (lv.step() catch false) {
+                const t = lv.column_text(0);
+                if (t.len > 0) return t;
+            }
+        } else |_| {}
+    } else if (recv.*.type == prism.NODE_INSTANCE_VAR_READ) {
+        const rv: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(recv));
+        const rv_name = resolveConstant(ctx.parser, rv.name);
+        if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv| {
+            defer lv.finalize();
+            lv.bind_int(1, ctx.file_id);
+            lv.bind_text(2, rv_name);
+            if (lv.step() catch false) {
+                const t = lv.column_text(0);
+                if (t.len > 0) return t;
+            }
+        } else |_| {}
+    } else if (recv.*.type == prism.NODE_SELF) {
+        var ns_buf: [256]u8 = undefined;
+        const ns = namespaceFromStack(ctx, &ns_buf);
+        if (ns.len > 0) return ns;
+    } else if (recv.*.type == prism.NODE_CALL) {
+        const inner_call: *const prism.CallNode = @ptrCast(@alignCast(recv));
+        const inner_method = resolveConstant(ctx.parser, inner_call.name);
+        if (inner_call.receiver) |inner_recv| {
+            if (inferReceiverTypeDepth(ctx, inner_recv, depth + 1)) |inner_type| {
+                return lookupMethodReturn(ctx.db, inner_type, inner_method);
+            }
+        }
+    }
+    return null;
+}
+
+fn lookupMethodReturn(db: db_mod.Db, parent_name: []const u8, method_name: []const u8) ?[]const u8 {
+    const stmt = db.prepare(
+        \\SELECT return_type FROM symbols
+        \\WHERE name = ? AND parent_name = ? AND kind IN ('def','classdef','scope')
+        \\AND return_type IS NOT NULL LIMIT 1
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind_text(1, method_name);
+    stmt.bind_text(2, parent_name);
+    if (stmt.step() catch false) {
+        const rt = stmt.column_text(0);
+        if (rt.len > 0) return rt;
+    }
+    return null;
+}
+
 fn detectTypeGuard(parser: *prism.Parser, cond: *const prism.Node) ?struct { name: []const u8, narrowed_type: []const u8 } {
     // Truthy guard: `if x` → x is not nil/false (narrow to non-nil)
     if (cond.*.type == prism.NODE_LOCAL_VAR_READ) {
@@ -966,7 +1237,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             var fq_name: ?[]u8 = null;
             defer if (fq_name) |fq| ctx.alloc.free(fq);
             if (ctx.namespace_stack_len > 0) {
-                var parts = std.ArrayList(u8){};
+                var parts = std.ArrayList(u8).empty;
                 defer parts.deinit(ctx.alloc);
                 for (ctx.namespace_stack[0..ctx.namespace_stack_len]) |ns_part| {
                     if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {}; // OOM: namespace building
@@ -1032,7 +1303,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             var fq_name: ?[]u8 = null;
             defer if (fq_name) |fq| ctx.alloc.free(fq);
             if (ctx.namespace_stack_len > 0) {
-                var parts = std.ArrayList(u8){};
+                var parts = std.ArrayList(u8).empty;
                 defer parts.deinit(ctx.alloc);
                 for (ctx.namespace_stack[0..ctx.namespace_stack_len]) |ns_part| {
                     if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {}; // OOM: namespace building
@@ -1104,12 +1375,15 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const rp: *const prism.RequiredParamNode = @ptrCast(@alignCast(pn));
                             const pname = resolveConstant(ctx.parser, rp.name);
                             var yard_pbuf: [512]u8 = undefined;
-                            if (parseYardParam(d, pname, &yard_pbuf)) |yard_type| {
-                                if (ctx.db.prepare("UPDATE params SET type_hint=? WHERE symbol_id=? AND position=?")) |u| {
+                            const yard_type = parseYardParam(d, pname, &yard_pbuf);
+                            const yard_desc = parseYardParamDesc(d, pname);
+                            if (yard_type != null or yard_desc != null) {
+                                if (ctx.db.prepare("UPDATE params SET type_hint=COALESCE(?,type_hint), description=COALESCE(?,description) WHERE symbol_id=? AND position=?")) |u| {
                                     defer u.finalize();
-                                    u.bind_text(1, yard_type);
-                                    u.bind_int(2, sym_id);
-                                    u.bind_int(3, @intCast(position));
+                                    if (yard_type) |yt| u.bind_text(1, yt) else u.bind_null(1);
+                                    if (yard_desc) |yd| u.bind_text(2, yd) else u.bind_null(2);
+                                    u.bind_int(3, sym_id);
+                                    u.bind_int(4, @intCast(position));
                                     _ = u.step() catch {
                                         ctx.error_count += 1;
                                     };
@@ -1124,12 +1398,15 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const op: *const prism.OptionalParamNode = @ptrCast(@alignCast(pn));
                             const pname = resolveConstant(ctx.parser, op.name);
                             var yard_pbuf2: [512]u8 = undefined;
-                            if (parseYardParam(d, pname, &yard_pbuf2)) |yard_type| {
-                                if (ctx.db.prepare("UPDATE params SET type_hint=? WHERE symbol_id=? AND position=?")) |u| {
+                            const yard_type2 = parseYardParam(d, pname, &yard_pbuf2);
+                            const yard_desc2 = parseYardParamDesc(d, pname);
+                            if (yard_type2 != null or yard_desc2 != null) {
+                                if (ctx.db.prepare("UPDATE params SET type_hint=COALESCE(?,type_hint), description=COALESCE(?,description) WHERE symbol_id=? AND position=?")) |u| {
                                     defer u.finalize();
-                                    u.bind_text(1, yard_type);
-                                    u.bind_int(2, sym_id);
-                                    u.bind_int(3, @intCast(position));
+                                    if (yard_type2) |yt| u.bind_text(1, yt) else u.bind_null(1);
+                                    if (yard_desc2) |yd| u.bind_text(2, yd) else u.bind_null(2);
+                                    u.bind_int(3, sym_id);
+                                    u.bind_int(4, @intCast(position));
                                     _ = u.step() catch {
                                         ctx.error_count += 1;
                                     };
@@ -1156,30 +1433,6 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                 }
             }
-            // Sorbet sig { returns(Type) } detection via source scanning
-            if (sym_id > 0 and dn.base.location.start > 0) {
-                const def_start = dn.base.location.start;
-                const scan_start = if (def_start > 300) def_start - 300 else 0;
-                const scan_slice = ctx.source[scan_start..def_start];
-                if (std.mem.lastIndexOf(u8, scan_slice, "returns(")) |ret_pos| {
-                    if (std.mem.lastIndexOf(u8, scan_slice[0..ret_pos], "sig")) |_| {
-                        const after_returns = scan_slice[ret_pos + 8 ..];
-                        if (std.mem.indexOf(u8, after_returns, ")")) |end| {
-                            const type_str = std.mem.trim(u8, after_returns[0..end], " \t\n");
-                            if (type_str.len > 0 and type_str.len < 64) {
-                                if (ctx.db.prepare("UPDATE symbols SET return_type=? WHERE id=? AND return_type IS NULL")) |u| {
-                                    defer u.finalize();
-                                    u.bind_text(1, type_str);
-                                    u.bind_int(2, sym_id);
-                                    _ = u.step() catch {
-                                        ctx.error_count += 1;
-                                    };
-                                } else |_| {}
-                            }
-                        }
-                    }
-                }
-            }
             if (sym_id > 0 and dn.body != null) {
                 const body = dn.body.?;
                 if (body.*.type == prism.NODE_STATEMENTS) {
@@ -1194,10 +1447,23 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                                 ctx.error_count += 1;
                             };
+                        } else if (last_node.*.type == prism.NODE_CALL) blk: {
+                            const db_call: *const prism.CallNode = @ptrCast(@alignCast(last_node));
+                            const db_mname = resolveConstant(ctx.parser, db_call.name);
+                            if (db_call.receiver) |recv| {
+                                if (inferReceiverType(ctx, recv)) |recv_type| {
+                                    if (lookupMethodReturn(ctx.db, recv_type, db_mname)) |rt| {
+                                        updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                            ctx.error_count += 1;
+                                        };
+                                        break :blk;
+                                    }
+                                }
+                            }
                         } else if (last_node.*.type == prism.NODE_RETURN) {
                             const rn: *const prism.ReturnNode = @ptrCast(@alignCast(last_node));
                             if (rn.arguments != null) {
-                                const rargs = rn.arguments.?[0].arguments;
+                                const rargs = rn.arguments[0].arguments;
                                 if (rargs.size > 0) {
                                     if (extractNewCallType(ctx.parser, rargs.nodes[0])) |rt| {
                                         updateSymbolReturnType(ctx.db, sym_id, rt) catch {
@@ -1218,6 +1484,45 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                             ctx.error_count += 1;
                         };
+                    } else if (body.*.type == prism.NODE_CALL) {
+                        const bc: *const prism.CallNode = @ptrCast(@alignCast(body));
+                        const bm = resolveConstant(ctx.parser, bc.name);
+                        if (bc.receiver) |recv| {
+                            if (inferReceiverType(ctx, recv)) |recv_type| {
+                                if (lookupMethodReturn(ctx.db, recv_type, bm)) |rt| {
+                                    updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                        ctx.error_count += 1;
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Sorbet sig { params(...).returns(Type) } — authoritative, overrides body inference
+            if (sym_id > 0 and dn.base.location.start > 0) {
+                const def_start = dn.base.location.start;
+                const scan_start = if (def_start > 2000) def_start - 2000 else 0;
+                const scan_slice = ctx.source[scan_start..def_start];
+                if (findLastSorbetSig(scan_slice)) |sig_body| {
+                    if (findCallArgs(sig_body, "returns")) |rt_raw| {
+                        const rt = std.mem.trim(u8, rt_raw, " \t\n\r");
+                        var rt_buf: [128]u8 = undefined;
+                        var final_rt: []const u8 = rt;
+                        if (std.mem.startsWith(u8, rt, "T.nilable(") and std.mem.endsWith(u8, rt, ")")) {
+                            const inner = std.mem.trim(u8, rt[10 .. rt.len - 1], " \t");
+                            if (std.fmt.bufPrint(&rt_buf, "{s} | nil", .{inner})) |b| {
+                                final_rt = b;
+                            } else |_| {}
+                        }
+                        if (final_rt.len > 0 and final_rt.len < 128) {
+                            updateSymbolReturnType(ctx.db, sym_id, final_rt) catch {
+                                ctx.error_count += 1;
+                            };
+                        }
+                    }
+                    if (findCallArgs(sig_body, "params")) |params_body| {
+                        parseSorbetParams(ctx.db, sym_id, params_body);
                     }
                 }
             }
@@ -1236,18 +1541,25 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const cw_pn: ?[]const u8 = if (cw_pn_str.len > 0) cw_pn_str else null;
             const sym_id = insertSymbolGetId(ctx, "constant", name, lc.line, lc.col, null, null, "public", cw_pn) catch 0;
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
-            // Store value_snippet for literal constants (Phase 29)
+            // Store value_snippet for literal and compound constants
             if (sym_id > 0) {
                 const val = cn.value;
                 const is_literal = switch (val.*.type) {
-                    prism.NODE_INTEGER, prism.NODE_FLOAT, prism.NODE_STRING, prism.NODE_SYMBOL, prism.NODE_TRUE, prism.NODE_FALSE, prism.NODE_NIL => true,
+                    prism.NODE_INTEGER, prism.NODE_FLOAT, prism.NODE_STRING, prism.NODE_SYMBOL, prism.NODE_TRUE, prism.NODE_FALSE, prism.NODE_NIL, prism.NODE_ARRAY, prism.NODE_HASH, prism.NODE_RANGE => true,
                     else => false,
                 };
                 if (is_literal) {
                     const vstart = val.*.location.start;
-                    const vlen = @min(val.*.location.length, 120);
+                    const full_len = val.*.location.length;
+                    const vlen = @min(full_len, 120);
                     if (@as(usize, vstart) + vlen <= ctx.source.len) {
-                        const snippet = ctx.source[@as(usize, vstart) .. @as(usize, vstart) + vlen];
+                        var snip_buf: [123]u8 = undefined;
+                        @memcpy(snip_buf[0..vlen], ctx.source[@as(usize, vstart) .. @as(usize, vstart) + vlen]);
+                        const snip_end = if (full_len > 120) blk: {
+                            @memcpy(snip_buf[vlen .. vlen + 3], "\u{2026}");
+                            break :blk vlen + 3;
+                        } else vlen;
+                        const snippet = snip_buf[0..snip_end];
                         if (ctx.db.prepare("UPDATE symbols SET value_snippet=? WHERE id=?")) |upd| {
                             defer upd.finalize();
                             upd.bind_text(1, snippet);
@@ -1324,6 +1636,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             _ = insertSymbolGetId(ctx, "constant", name, lc.line, lc.col, null, null, "public", cw_pn) catch 0;
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_CONSTANT => {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
@@ -1723,6 +2036,15 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                 }
             }
+            // ActiveSupport::Concern `included do...end` — traverse block body with current namespace
+            if (cn.receiver == null and std.mem.eql(u8, mname, "included")) {
+                if (cn.block != null and cn.block.?.*.type == prism.NODE_BLOCK) {
+                    const inc_blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+                    if (inc_blk.body != null) {
+                        prism.visit_child_nodes(inc_blk.body.?, visitor, @ptrCast(ctx));
+                    }
+                }
+            }
             const lc = locationLineCol(ctx.parser, cn.message_loc.start);
             insertRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, null) catch {
                 ctx.error_count += 1;
@@ -1858,6 +2180,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_CLASS_VAR_WRITE => {
             const cvw: *const prism.ClassVarWriteNode = @ptrCast(@alignCast(n));
@@ -1875,6 +2198,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_LOCAL_VAR_WRITE => {
             const lv: *const prism.LocalVarWriteNode = @ptrCast(@alignCast(n));
@@ -2038,6 +2362,72 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             }
 
             var inserted = false;
+
+            // Sorbet T.let(expr, Type) / T.cast(expr, Type) / T.must(expr) — authoritative
+            if (!inserted) {
+                if (lv.value) |val_tl| {
+                    if (val_tl.*.type == prism.NODE_CALL) {
+                        const tcall: *const prism.CallNode = @ptrCast(@alignCast(val_tl));
+                        if (tcall.receiver != null and tcall.receiver.?.*.type == prism.NODE_CONSTANT) {
+                            const trc: *const prism.ConstReadNode = @ptrCast(@alignCast(tcall.receiver.?));
+                            const tcls = resolveConstant(ctx.parser, trc.name);
+                            if (std.mem.eql(u8, tcls, "T")) {
+                                const tmname = resolveConstant(ctx.parser, tcall.name);
+                                if ((std.mem.eql(u8, tmname, "let") or std.mem.eql(u8, tmname, "cast")) and tcall.arguments != null) {
+                                    const targs = tcall.arguments[0].arguments;
+                                    if (targs.size >= 2) {
+                                        const type_arg = targs.nodes[1];
+                                        const t_start = type_arg.*.location.start;
+                                        const t_end = type_arg.*.location.start + type_arg.*.location.length;
+                                        if (t_end > t_start and t_end <= ctx.source.len) {
+                                            const t_src = std.mem.trim(u8, ctx.source[t_start..t_end], " \t");
+                                            if (t_src.len > 0 and t_src.len < 128) {
+                                                var tbuf: [160]u8 = undefined;
+                                                var final_t: []const u8 = t_src;
+                                                if (std.mem.startsWith(u8, t_src, "T.nilable(") and std.mem.endsWith(u8, t_src, ")")) {
+                                                    const inner = std.mem.trim(u8, t_src[10 .. t_src.len - 1], " \t");
+                                                    if (std.fmt.bufPrint(&tbuf, "{s} | nil", .{inner})) |b| {
+                                                        final_t = b;
+                                                    } else |_| {}
+                                                }
+                                                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, final_t, 95, ctx.scope_id) catch {
+                                                    ctx.error_count += 1;
+                                                };
+                                                inserted = true;
+                                            }
+                                        }
+                                    }
+                                } else if (std.mem.eql(u8, tmname, "must") and tcall.arguments != null) {
+                                    const targs = tcall.arguments[0].arguments;
+                                    if (targs.size >= 1) {
+                                        const inner_arg = targs.nodes[0];
+                                        if (inner_arg.*.type == prism.NODE_LOCAL_VAR_READ) {
+                                            const lvr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(inner_arg));
+                                            const inner_name = resolveConstant(ctx.parser, lvr.name);
+                                            if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |ms| {
+                                                defer ms.finalize();
+                                                ms.bind_int(1, ctx.file_id);
+                                                ms.bind_text(2, inner_name);
+                                                if (ms.step() catch false) {
+                                                    const raw = ms.column_text(0);
+                                                    const stripped = if (std.mem.endsWith(u8, raw, " | nil")) raw[0 .. raw.len - 6] else raw;
+                                                    if (stripped.len > 0) {
+                                                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, stripped, 95, ctx.scope_id) catch {
+                                                            ctx.error_count += 1;
+                                                        };
+                                                        inserted = true;
+                                                    }
+                                                }
+                                            } else |_| {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // self.method: look up return_type in current class (Phase 29, confidence=75)
             if (!inserted and type_hint == null) {
                 if (lv.value) |val| {
@@ -2401,6 +2791,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_FOR => {
             const fn_node: *const prism.ForNode = @ptrCast(@alignCast(n));
@@ -2415,6 +2806,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 };
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_RESCUE => {
             const rn: *const prism.RescueNode = @ptrCast(@alignCast(n));
@@ -2435,9 +2827,11 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 };
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_RESCUE_MODIFIER => {
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_LOCAL_VAR_OR_WRITE => {
             const lw: *const prism.LocalVarOrWriteNode = @ptrCast(@alignCast(n));
@@ -2448,6 +2842,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_LOCAL_VAR_AND_WRITE => {
             const lw: *const prism.LocalVarAndWriteNode = @ptrCast(@alignCast(n));
@@ -2458,6 +2853,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_LOCAL_VAR_OP_WRITE => {
             const lw: *const prism.LocalVarOpWriteNode = @ptrCast(@alignCast(n));
@@ -2467,6 +2863,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_CASE_MATCH => {
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
@@ -2535,6 +2932,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.error_count += 1;
             };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         prism.NODE_IF => {
             const if_node: *const prism.IfNode = @ptrCast(@alignCast(n));
@@ -2547,6 +2945,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
         },
         else => {},
     }
@@ -2683,10 +3082,10 @@ fn insertSymbol(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, c
     _ = try stmt.step();
 }
 
-fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: ?[]const u8, doc: ?[]const u8, parent_name: ?[]const u8) !void {
+fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: ?[]const u8, doc: ?[]const u8, parent_name: ?[]const u8, value_snippet: ?[]const u8) !void {
     const stmt = try ctx.db.prepare(
-        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type, doc, parent_name)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type, doc, parent_name, value_snippet)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, ctx.file_id);
@@ -2697,6 +3096,7 @@ fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, li
     if (return_type) |rt| stmt.bind_text(6, rt) else stmt.bind_null(6);
     if (doc) |d| stmt.bind_text(7, d) else stmt.bind_null(7);
     if (parent_name) |pn| stmt.bind_text(8, pn) else stmt.bind_null(8);
+    if (value_snippet) |vs| stmt.bind_text(9, vs) else stmt.bind_null(9);
     _ = try stmt.step();
 }
 
@@ -2801,10 +3201,285 @@ fn insertMixin(db: db_mod.Db, class_id: i64, module_name: []const u8, kind: []co
     _ = try stmt.step();
 }
 
-fn insertRbsSymbol(db: db_mod.Db, file_id: i64, kind: []const u8, name: []const u8, line: i32, col: u32) !void {
+fn findLastSorbetSig(slice: []const u8) ?[]const u8 {
+    const brace_pos = std.mem.lastIndexOf(u8, slice, "sig {");
+    const do_pos = std.mem.lastIndexOf(u8, slice, "sig do");
+    var pick: usize = 0;
+    var is_brace = true;
+    if (brace_pos == null and do_pos == null) return null;
+    if (brace_pos == null) {
+        pick = do_pos.?;
+        is_brace = false;
+    } else if (do_pos == null) {
+        pick = brace_pos.?;
+    } else {
+        if (brace_pos.? >= do_pos.?) {
+            pick = brace_pos.?;
+        } else {
+            pick = do_pos.?;
+            is_brace = false;
+        }
+    }
+    if (pick > 0) {
+        const prev = slice[pick - 1];
+        const is_ident = (prev >= 'a' and prev <= 'z') or (prev >= 'A' and prev <= 'Z') or (prev >= '0' and prev <= '9') or prev == '_';
+        if (is_ident) return null;
+    }
+    if (is_brace) {
+        const lbrace = pick + 4;
+        if (lbrace >= slice.len or slice[lbrace] != '{') return null;
+        var depth: i32 = 0;
+        var i: usize = lbrace;
+        while (i < slice.len) : (i += 1) {
+            switch (slice[i]) {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) return slice[lbrace + 1 .. i];
+                },
+                else => {},
+            }
+        }
+    } else {
+        const after_do = pick + 6;
+        if (after_do >= slice.len) return null;
+        if (std.mem.indexOf(u8, slice[after_do..], "end")) |end_rel| {
+            return slice[after_do .. after_do + end_rel];
+        }
+    }
+    return null;
+}
+
+fn findCallArgs(slice: []const u8, name: []const u8) ?[]const u8 {
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, slice, search_from, name)) |pos| {
+        const end = pos + name.len;
+        if (end >= slice.len or slice[end] != '(') {
+            search_from = pos + 1;
+            continue;
+        }
+        if (pos > 0) {
+            const prev = slice[pos - 1];
+            const is_word = (prev >= 'a' and prev <= 'z') or (prev >= 'A' and prev <= 'Z') or (prev >= '0' and prev <= '9') or prev == '_';
+            if (is_word) {
+                search_from = pos + 1;
+                continue;
+            }
+        }
+        var depth: i32 = 0;
+        var i = end;
+        while (i < slice.len) : (i += 1) {
+            switch (slice[i]) {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if (depth == 0) return slice[end + 1 .. i];
+                },
+                else => {},
+            }
+        }
+        search_from = pos + 1;
+    }
+    return null;
+}
+
+fn updateSorbetParamType(db: db_mod.Db, symbol_id: i64, param_name: []const u8, type_hint: []const u8) void {
+    const u = db.prepare("UPDATE params SET type_hint=?, confidence=90 WHERE symbol_id=? AND name=?") catch return;
+    defer u.finalize();
+    u.bind_text(1, type_hint);
+    u.bind_int(2, symbol_id);
+    u.bind_text(3, param_name);
+    _ = u.step() catch {};
+}
+
+fn parseSorbetParams(db: db_mod.Db, symbol_id: i64, body: []const u8) void {
+    var start: usize = 0;
+    var depth: i32 = 0;
+    var i: usize = 0;
+    while (i <= body.len) : (i += 1) {
+        const at_end = i == body.len;
+        if (!at_end) {
+            switch (body[i]) {
+                '(', '[', '{' => depth += 1,
+                ')', ']', '}' => depth -= 1,
+                else => {},
+            }
+        }
+        if (at_end or (body[i] == ',' and depth == 0)) {
+            const part = std.mem.trim(u8, body[start..i], " \t\n\r");
+            if (part.len > 0) {
+                if (std.mem.indexOfScalar(u8, part, ':')) |c| {
+                    const pname = std.mem.trim(u8, part[0..c], " \t");
+                    const ptype = std.mem.trim(u8, part[c + 1 ..], " \t\n\r");
+                    if (pname.len > 0 and ptype.len > 0 and isRbsIdent(pname)) {
+                        updateSorbetParamType(db, symbol_id, pname, ptype);
+                    }
+                }
+            }
+            start = i + 1;
+        }
+    }
+}
+
+fn resolveRbsSymbolId(db: db_mod.Db, file_id: i64, name: []const u8, kind: []const u8, line: i32) ?i64 {
+    const stmt = db.prepare("SELECT id FROM symbols WHERE file_id=? AND name=? AND kind=? AND line=? LIMIT 1") catch return null;
+    defer stmt.finalize();
+    stmt.bind_int(1, file_id);
+    stmt.bind_text(2, name);
+    stmt.bind_text(3, kind);
+    stmt.bind_int(4, line);
+    if (stmt.step() catch false) return stmt.column_int(0);
+    return null;
+}
+
+fn isRbsIdent(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |ch| {
+        if (!((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9') or ch == '_')) return false;
+    }
+    return true;
+}
+
+fn findTopLevelArrow(s: []const u8) ?usize {
+    var depth: i32 = 0;
+    var i: usize = 0;
+    while (i + 1 < s.len) : (i += 1) {
+        const c = s[i];
+        switch (c) {
+            '(', '[', '{' => depth += 1,
+            ')', ']', '}' => depth -= 1,
+            '-' => {
+                if (depth == 0 and s[i + 1] == '>') return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn findMatchingParen(s: []const u8, lpar: usize) ?usize {
+    var depth: i32 = 0;
+    var i: usize = lpar;
+    while (i < s.len) : (i += 1) {
+        switch (s[i]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn insertOneRbsParam(db: db_mod.Db, symbol_id: i64, position: u32, part_in: []const u8) void {
+    var rest = std.mem.trim(u8, part_in, " \t");
+    if (rest.len == 0) return;
+    var kind: []const u8 = "positional";
+    if (std.mem.startsWith(u8, rest, "**")) {
+        kind = "keyword_rest";
+        rest = std.mem.trim(u8, rest[2..], " \t");
+    } else if (rest[0] == '*') {
+        kind = "rest";
+        rest = std.mem.trim(u8, rest[1..], " \t");
+    } else if (rest[0] == '&') {
+        kind = "block";
+        rest = std.mem.trim(u8, rest[1..], " \t");
+    } else if (rest[0] == '?') {
+        kind = "optional";
+        rest = std.mem.trim(u8, rest[1..], " \t");
+    }
+
+    var name_part: []const u8 = "";
+    var type_part: []const u8 = rest;
+    var depth: i32 = 0;
+    var j: usize = 0;
+    while (j < rest.len) : (j += 1) {
+        const c = rest[j];
+        switch (c) {
+            '(', '[', '{' => depth += 1,
+            ')', ']', '}' => depth -= 1,
+            ':' => {
+                if (depth == 0) {
+                    if (j + 1 < rest.len and rest[j + 1] == ':') {
+                        j += 1;
+                        continue;
+                    }
+                    if (j > 0 and rest[j - 1] == ':') continue;
+                    const maybe_name = std.mem.trim(u8, rest[0..j], " \t");
+                    if (isRbsIdent(maybe_name)) {
+                        name_part = maybe_name;
+                        type_part = std.mem.trim(u8, rest[j + 1 ..], " \t");
+                        if (std.mem.eql(u8, kind, "positional") or std.mem.eql(u8, kind, "optional")) {
+                            kind = if (std.mem.eql(u8, kind, "optional")) "keyword" else "keyword";
+                        }
+                    }
+                    break;
+                }
+            },
+            else => {},
+        }
+    }
+
+    // Positional form `Type name`: last whitespace-separated token is the name if it's a lowercase ident.
+    if (name_part.len == 0 and type_part.len > 0) {
+        if (std.mem.lastIndexOfAny(u8, type_part, " \t")) |ws| {
+            const trailing = std.mem.trim(u8, type_part[ws + 1 ..], " \t");
+            if (isRbsIdent(trailing) and trailing.len > 0 and trailing[0] >= 'a' and trailing[0] <= 'z') {
+                name_part = trailing;
+                type_part = std.mem.trim(u8, type_part[0..ws], " \t");
+            }
+        }
+    }
+
+    var name_buf: [32]u8 = undefined;
+    const name_final: []const u8 = if (name_part.len > 0)
+        name_part
+    else
+        std.fmt.bufPrint(&name_buf, "arg{d}", .{position}) catch "arg";
+    const type_hint: ?[]const u8 = if (type_part.len > 0) type_part else null;
+    insertParam(db, symbol_id, position, name_final, kind, type_hint, 90) catch {};
+}
+
+fn parseRbsParamList(db: db_mod.Db, symbol_id: i64, param_list: []const u8) void {
+    var position: u32 = 0;
+    var start: usize = 0;
+    var depth: i32 = 0;
+    var i: usize = 0;
+    while (i <= param_list.len) : (i += 1) {
+        const at_end = i == param_list.len;
+        if (!at_end) {
+            switch (param_list[i]) {
+                '(', '[', '{' => depth += 1,
+                ')', ']', '}' => depth -= 1,
+                else => {},
+            }
+        }
+        if (at_end or (param_list[i] == ',' and depth == 0)) {
+            const part = param_list[start..i];
+            if (std.mem.trim(u8, part, " \t").len > 0) {
+                insertOneRbsParam(db, symbol_id, position, part);
+                position += 1;
+            }
+            start = i + 1;
+        }
+    }
+}
+
+fn setRbsDoc(db: db_mod.Db, sym_id: i64, doc: []const u8) void {
+    if (doc.len == 0) return;
+    const upd = db.prepare("UPDATE symbols SET doc = ? WHERE id = ? AND (doc IS NULL OR doc = '')") catch return;
+    defer upd.finalize();
+    upd.bind_text(1, doc);
+    upd.bind_int(2, sym_id);
+    _ = upd.step() catch {};
+}
+
+fn insertRbsSymbol(db: db_mod.Db, file_id: i64, kind: []const u8, name: []const u8, line: i32, col: u32, parent_name: ?[]const u8) !void {
     const stmt = try db.prepare(
-        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col)
-        \\VALUES (?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, parent_name)
+        \\VALUES (?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
@@ -2812,10 +3487,11 @@ fn insertRbsSymbol(db: db_mod.Db, file_id: i64, kind: []const u8, name: []const 
     stmt.bind_text(3, kind);
     stmt.bind_int(4, line);
     stmt.bind_int(5, @intCast(col));
+    if (parent_name) |pn| stmt.bind_text(6, pn) else stmt.bind_null(6);
     _ = try stmt.step();
 }
 
-fn insertRbsSymbolWithReturn(db: db_mod.Db, file_id: i64, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: []const u8) !void {
+fn insertRbsSymbolWithReturn(db: db_mod.Db, file_id: i64, kind: []const u8, name: []const u8, line: i32, col: u32, return_type: []const u8, parent_name: ?[]const u8) !void {
     const check = try db.prepare(
         \\SELECT id, return_type FROM symbols
         \\WHERE file_id = ? AND name = ? AND kind = ?
@@ -2849,8 +3525,8 @@ fn insertRbsSymbolWithReturn(db: db_mod.Db, file_id: i64, kind: []const u8, name
     }
 
     const stmt = try db.prepare(
-        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type)
-        \\VALUES (?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO symbols (file_id, name, kind, line, col, return_type, parent_name)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
@@ -2859,15 +3535,44 @@ fn insertRbsSymbolWithReturn(db: db_mod.Db, file_id: i64, kind: []const u8, name
     stmt.bind_int(4, line);
     stmt.bind_int(5, @intCast(col));
     stmt.bind_text(6, return_type);
+    if (parent_name) |pn| stmt.bind_text(7, pn) else stmt.bind_null(7);
     _ = try stmt.step();
 }
 
 fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
     var lines = std.mem.splitScalar(u8, source, '\n');
     var line_num: i32 = 1;
+    var ns_stack: [32][]const u8 = undefined;
+    var ns_indent: [32]usize = undefined;
+    var ns_depth: u8 = 0;
+    var ns_buf: [512]u8 = undefined;
+    var doc_buf: [2048]u8 = undefined;
+    var doc_len: usize = 0;
 
     while (lines.next()) |raw_line| : (line_num += 1) {
+        const indent = raw_line.len - std.mem.trimStart(u8, raw_line, " \t").len;
         const line = std.mem.trim(u8, raw_line, " \t");
+
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "#")) {
+            var content = line[1..];
+            if (content.len > 0 and content[0] == ' ') content = content[1..];
+            if (doc_len + content.len + 1 < doc_buf.len) {
+                if (doc_len > 0) {
+                    doc_buf[doc_len] = '\n';
+                    doc_len += 1;
+                }
+                @memcpy(doc_buf[doc_len..][0..content.len], content);
+                doc_len += content.len;
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, line, "end")) {
+            if (ns_depth > 0 and indent == ns_indent[ns_depth - 1]) ns_depth -= 1;
+            doc_len = 0;
+            continue;
+        }
 
         if (std.mem.startsWith(u8, line, "class ") or std.mem.startsWith(u8, line, "module ")) {
             const kw_len: usize = if (line[0] == 'c') 6 else 7;
@@ -2875,39 +3580,96 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const name = line[kw_len .. kw_len + name_end];
             if (name.len == 0) continue;
             const kind: []const u8 = if (line[0] == 'c') "class" else "module";
-            insertRbsSymbol(db, file_id, kind, name, line_num, 0) catch |e| {
-                std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                std.fs.File.stderr().writeAll("\n") catch {};
+            if (ns_depth < 32) {
+                ns_stack[ns_depth] = name;
+                ns_indent[ns_depth] = indent;
+                ns_depth += 1;
+            }
+            insertRbsSymbol(db, file_id, kind, name, line_num, 0, null) catch |e| {
+                std.debug.print("{s}", .{"refract: RBS insert: "});
+                std.debug.print("{s}", .{@errorName(e)});
+                std.debug.print("{s}", .{"\n"});
             };
+            if (doc_len > 0) {
+                if (resolveRbsSymbolId(db, file_id, name, kind, line_num)) |sid| {
+                    setRbsDoc(db, sid, doc_buf[0..doc_len]);
+                }
+                doc_len = 0;
+            }
             continue;
         }
+
+        // Compute current parent name from namespace stack
+        const current_parent: ?[]const u8 = if (ns_depth > 0) blk: {
+            var pos: usize = 0;
+            for (ns_stack[0..ns_depth], 0..) |ns, ni| {
+                if (ni > 0) {
+                    if (pos + 2 <= ns_buf.len) {
+                        ns_buf[pos] = ':';
+                        ns_buf[pos + 1] = ':';
+                        pos += 2;
+                    }
+                }
+                if (pos + ns.len <= ns_buf.len) {
+                    @memcpy(ns_buf[pos..][0..ns.len], ns);
+                    pos += ns.len;
+                }
+            }
+            break :blk ns_buf[0..pos];
+        } else null;
 
         if (std.mem.startsWith(u8, line, "def ")) {
             const rest = line[4..];
             const colon_pos = std.mem.indexOfScalar(u8, rest, ':') orelse continue;
             const name = std.mem.trim(u8, rest[0..colon_pos], " ");
-            const arrow_pos = std.mem.lastIndexOf(u8, rest, "->") orelse {
-                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+            if (name.len == 0) continue;
+            const sig_part = rest[colon_pos + 1 ..];
+
+            // RBS self.method → classdef kind, strip "self." prefix
+            const is_class_method = std.mem.startsWith(u8, name, "self.");
+            const def_kind: []const u8 = if (is_class_method) "classdef" else "def";
+            const def_name = if (is_class_method) name[5..] else name;
+
+            const arrow_opt = findTopLevelArrow(sig_part);
+            if (arrow_opt == null) {
+                insertRbsSymbol(db, file_id, def_kind, def_name, line_num, 0, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
                 continue;
-            };
-            const rt = std.mem.trim(u8, rest[arrow_pos + 2 ..], " ");
+            }
+            const arrow_pos = arrow_opt.?;
+            const raw_rt = std.mem.trim(u8, sig_part[arrow_pos + 2 ..], " ");
+            const rt = normalizeRbsReturn(raw_rt);
             if (rt.len > 0 and !std.mem.eql(u8, rt, "void")) {
-                insertRbsSymbolWithReturn(db, file_id, "def", name, line_num, 0, rt) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbolWithReturn(db, file_id, def_kind, def_name, line_num, 0, rt, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             } else {
-                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbol(db, file_id, def_kind, def_name, line_num, 0, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
+            }
+
+            const before_arrow = sig_part[0..arrow_pos];
+            if (std.mem.indexOfScalar(u8, before_arrow, '(')) |lpar| {
+                if (findMatchingParen(before_arrow, lpar)) |rpar| {
+                    const param_list = before_arrow[lpar + 1 .. rpar];
+                    if (resolveRbsSymbolId(db, file_id, name, "def", line_num)) |sid| {
+                        parseRbsParamList(db, sid, param_list);
+                    }
+                }
+            }
+            if (doc_len > 0) {
+                if (resolveRbsSymbolId(db, file_id, def_name, def_kind, line_num)) |sid| {
+                    setRbsDoc(db, sid, doc_buf[0..doc_len]);
+                }
+                doc_len = 0;
             }
             continue;
         }
@@ -2917,10 +3679,10 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const end = std.mem.indexOfAny(u8, rest, " \t\r\n{") orelse rest.len;
             const name = std.mem.trim(u8, rest[0..end], " \t");
             if (name.len > 0)
-                insertRbsSymbol(db, file_id, "module", name, line_num, 0) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbol(db, file_id, "module", name, line_num, 0, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             continue;
         }
@@ -2930,10 +3692,10 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const end = std.mem.indexOfAny(u8, rest, " \t\r\n=") orelse rest.len;
             const name = std.mem.trim(u8, rest[0..end], " \t");
             if (name.len > 0)
-                insertRbsSymbol(db, file_id, "constant", name, line_num, 0) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbol(db, file_id, "constant", name, line_num, 0, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             continue;
         }
@@ -2947,12 +3709,13 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const colon = std.mem.indexOfScalar(u8, rest, ':') orelse continue;
             const attr_name = std.mem.trim(u8, rest[0..colon], " ");
             if (attr_name.len == 0) continue;
-            const rt = std.mem.trim(u8, rest[colon + 1 ..], " ");
+            const raw_attr_rt = std.mem.trim(u8, rest[colon + 1 ..], " ");
+            const rt = normalizeRbsReturn(raw_attr_rt);
             if (!std.mem.startsWith(u8, line, "attr_writer ")) {
-                insertRbsSymbolWithReturn(db, file_id, "def", attr_name, line_num, 0, rt) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbolWithReturn(db, file_id, "def", attr_name, line_num, 0, rt, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
             if (std.mem.startsWith(u8, line, "attr_writer ") or
@@ -2960,10 +3723,10 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             {
                 var writer_buf: [256]u8 = undefined;
                 const writer_name = std.fmt.bufPrint(&writer_buf, "{s}=", .{attr_name}) catch continue;
-                insertRbsSymbol(db, file_id, "def", writer_name, line_num, 0) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                insertRbsSymbol(db, file_id, "def", writer_name, line_num, 0, current_parent) catch |e| {
+                    std.debug.print("{s}", .{"refract: RBS insert: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
             continue;
@@ -3505,12 +4268,149 @@ fn extractHashGenerics(class_name: []const u8) ?struct { key: []const u8, value:
     return null;
 }
 
+// Find the innermost class/module symbol that textually contains the given line.
+// Returns the symbol's id and fully qualified name, or null if the line is not inside any
+// class/module body in this file.
+fn findEnclosingClass(
+    db: db_mod.Db,
+    file_id: i64,
+    line: i64,
+    alloc: std.mem.Allocator,
+) ?struct { id: i64, name: []u8 } {
+    const stmt = db.prepare(
+        \\SELECT id, name FROM symbols
+        \\WHERE file_id = ? AND kind IN ('class','classdef','module','moduledef')
+        \\  AND line <= ?
+        \\  AND (end_line IS NULL OR end_line >= ?)
+        \\ORDER BY line DESC
+        \\LIMIT 1
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind_int(1, file_id);
+    stmt.bind_int(2, line);
+    stmt.bind_int(3, line);
+    if (!(stmt.step() catch false)) return null;
+    const id = stmt.column_int(0);
+    const name_text = stmt.column_text(1);
+    const owned = alloc.dupe(u8, name_text) catch return null;
+    return .{ .id = id, .name = owned };
+}
+
+const MethodResolution = enum {
+    found, // method exists somewhere in the known ancestor chain
+    not_found, // entire ancestor chain walked, fully known, no match
+    unknown, // at least one ancestor is outside the index; cannot decide
+};
+
+// Walk the ancestor chain of `class_name` looking for a `def` whose name matches
+// `method_name`. Returns:
+//   .found       — exists on the class or any reachable ancestor
+//   .not_found   — fully walked a known chain, method absent
+//   .unknown     — an ancestor is not in the symbols table (external gem/stdlib)
+//
+// "Ancestor" here means: the class itself, its recorded parent_name (superclass when
+// the class is top-level, namespace parent otherwise — a known limitation of the
+// current schema), and every module in the `mixins` table attached to the class.
+fn resolveMethodInAncestors(
+    db: db_mod.Db,
+    class_name: []const u8,
+    method_name: []const u8,
+    alloc: std.mem.Allocator,
+) MethodResolution {
+    var seen = std.StringHashMap(void).init(alloc);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| alloc.free(k.*);
+        seen.deinit();
+    }
+    var queue = std.ArrayList([]u8).empty;
+    defer {
+        for (queue.items) |item| alloc.free(item);
+        queue.deinit(alloc);
+    }
+
+    const first = alloc.dupe(u8, class_name) catch return .unknown;
+    queue.append(alloc, first) catch {
+        alloc.free(first);
+        return .unknown;
+    };
+
+    var steps: u32 = 0;
+    const max_steps: u32 = 32;
+
+    while (queue.items.len > 0) {
+        if (steps >= max_steps) return .unknown;
+        steps += 1;
+
+        const name = queue.orderedRemove(0);
+        defer alloc.free(name);
+
+        if (seen.contains(name)) continue;
+        const key_copy = alloc.dupe(u8, name) catch return .unknown;
+        seen.put(key_copy, {}) catch {
+            alloc.free(key_copy);
+            return .unknown;
+        };
+
+        // Look up the class/module symbol by name. If not present, the chain is
+        // external — we cannot decide anything, bail out.
+        const lookup = db.prepare(
+            \\SELECT id, parent_name FROM symbols
+            \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef')
+            \\LIMIT 1
+        ) catch return .unknown;
+        defer lookup.finalize();
+        lookup.bind_text(1, name);
+        if (!(lookup.step() catch false)) return .unknown;
+        const class_id = lookup.column_int(0);
+        const parent_name_slice = lookup.column_text(1);
+
+        // Method defined directly under this class?
+        const has_method = db.prepare(
+            \\SELECT 1 FROM symbols
+            \\WHERE kind = 'def' AND parent_name = ? AND name = ?
+            \\LIMIT 1
+        ) catch return .unknown;
+        defer has_method.finalize();
+        has_method.bind_text(1, name);
+        has_method.bind_text(2, method_name);
+        if (has_method.step() catch false) return .found;
+
+        // Enqueue superclass (stored as parent_name for top-level classes).
+        if (parent_name_slice.len > 0) {
+            const dup = alloc.dupe(u8, parent_name_slice) catch return .unknown;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return .unknown;
+            };
+        }
+
+        // Enqueue mixins (include/prepend/extend) attached to this class.
+        const mix_stmt = db.prepare(
+            \\SELECT module_name FROM mixins WHERE class_id = ?
+        ) catch return .unknown;
+        defer mix_stmt.finalize();
+        mix_stmt.bind_int(1, class_id);
+        while (mix_stmt.step() catch false) {
+            const mod_name = mix_stmt.column_text(0);
+            if (mod_name.len == 0) continue;
+            const dup = alloc.dupe(u8, mod_name) catch return .unknown;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return .unknown;
+            };
+        }
+    }
+
+    return .not_found;
+}
+
 pub fn getDiags(path: []const u8, alloc: std.mem.Allocator) ![]DiagEntry {
-    const source = std.fs.cwd().readFileAllocOptions(
-        alloc,
+    const source = std.Io.Dir.cwd().readFileAllocOptions(
+        std.Options.debug_io,
         path,
-        8 * 1024 * 1024,
-        null,
+        alloc,
+        std.Io.Limit.limited(8 * 1024 * 1024),
         .@"1",
         0,
     ) catch return &.{};
@@ -3538,7 +4438,7 @@ pub fn getDiags(path: []const u8, alloc: std.mem.Allocator) ![]DiagEntry {
     defer prism.parser_free(&parser);
     _ = prism.parse(&parser);
 
-    var list = std.ArrayList(DiagEntry){};
+    var list = std.ArrayList(DiagEntry).empty;
     errdefer {
         for (list.items) |e| alloc.free(e.message);
         list.deinit(alloc);
@@ -3583,7 +4483,7 @@ pub fn getDiagsFromSource(source: []const u8, path: []const u8, alloc: std.mem.A
     defer prism.parser_free(&parser);
     _ = prism.parse(&parser);
 
-    var list = std.ArrayList(DiagEntry){};
+    var list = std.ArrayList(DiagEntry).empty;
     errdefer {
         for (list.items) |e| alloc.free(e.message);
         list.deinit(alloc);
@@ -3710,13 +4610,14 @@ fn extractSlimRuby(alloc: std.mem.Allocator, source: []const u8) ![]u8 {
 }
 
 pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) !std.ArrayList(DiagEntry) {
-    var diags = std.ArrayList(DiagEntry){};
+    var diags = std.ArrayList(DiagEntry).empty;
 
     // Unused local variable detection: local_vars not referenced in refs within same file
     // Skip names starting with _ (convention for intentionally unused)
     const unused_stmt = db.prepare(
         \\SELECT lv.name, lv.line, lv.col FROM local_vars lv
         \\WHERE lv.file_id = ? AND lv.name NOT LIKE '\_%' ESCAPE '\'
+        \\AND lv.name NOT LIKE '@%' AND lv.name NOT LIKE '$%'
         \\AND NOT EXISTS (
         \\  SELECT 1 FROM refs r WHERE r.file_id = lv.file_id AND r.name = lv.name
         \\)
@@ -3772,6 +4673,41 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         };
     }
 
+    const method_stmt = db.prepare(
+        \\SELECT s.name, s.line, s.col FROM symbols s
+        \\WHERE s.file_id = ? AND s.kind = 'def'
+        \\AND s.visibility = 'public'
+        \\AND s.name NOT LIKE '\_%' ESCAPE '\'
+        \\AND s.name NOT IN (
+        \\  'initialize','to_s','inspect','to_h','to_a','to_i','to_f','to_str',
+        \\  'to_proc','to_ary','to_hash','to_int','to_io','to_path','to_regexp',
+        \\  'method_missing','respond_to_missing?','inherited','included',
+        \\  'extended','prepended','const_missing','hash','eql?','<=>','==',
+        \\  'coerce','encode_with','init_with','marshal_dump','marshal_load'
+        \\)
+        \\AND s.name NOT LIKE 'test\_%' ESCAPE '\'
+        \\AND s.name NOT IN ('setup','teardown','before','after')
+        \\AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.name = s.name)
+    ) catch return diags;
+    defer method_stmt.finalize();
+    method_stmt.bind_int(1, file_id);
+
+    while (method_stmt.step() catch false) {
+        const mname = method_stmt.column_text(0);
+        const mline = method_stmt.column_int(1);
+        const mcol = method_stmt.column_int(2);
+        const mmsg = std.fmt.allocPrint(alloc, "unused method '{s}'", .{mname}) catch continue;
+        diags.append(alloc, .{
+            .line = @intCast(mline),
+            .col = @intCast(mcol),
+            .message = mmsg,
+            .severity = 4,
+            .code = "refract/unused-method",
+        }) catch {
+            alloc.free(mmsg);
+        };
+    }
+
     const dup_stmt = db.prepare(
         \\SELECT s1.name, s1.line FROM symbols s1
         \\WHERE s1.file_id = ? AND s1.kind = 'def'
@@ -3801,8 +4737,17 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         };
     }
 
-    // Undefined method with fuzzy "did you mean?" suggestions
-    // Check refs that look like method calls against known symbols
+    // Undefined method with fuzzy "did you mean?" suggestions.
+    //
+    // Strategy, in order of cheapness:
+    //   1. Filter refs already defined as workspace symbols or local vars (SQL).
+    //   2. Skip Ruby/Rails/RSpec built-in method names via the static allowlists.
+    //   3. For each surviving ref, locate its enclosing class/module and walk the
+    //      ancestor chain (superclass + mixins). If any ancestor lives outside the
+    //      index (e.g. ActiveRecord::Base), bail out silently — we cannot prove the
+    //      method is undefined without knowing what those externals provide.
+    //   4. Only flag when the entire ancestor chain is fully visible in the symbols
+    //      table and the method is provably absent from every link.
     const ref_stmt = db.prepare(
         \\SELECT r.name, r.line, r.col FROM refs r
         \\WHERE r.file_id = ? AND r.name NOT LIKE '\_%' ESCAPE '\'
@@ -3827,6 +4772,23 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         if (isBuiltinMethod(ref_name)) continue;
         if (isRailsDsl(ref_name)) continue;
         if (isIterationMethod(ref_name)) continue;
+
+        // Ancestry-aware check. Find the innermost class/module that contains this
+        // ref's line and resolve the method against its full ancestor chain.
+        if (findEnclosingClass(db, file_id, line, alloc)) |enc| {
+            defer alloc.free(enc.name);
+            const resolution = resolveMethodInAncestors(db, enc.name, ref_name, alloc);
+            switch (resolution) {
+                .found => continue, // method actually exists somewhere in the chain
+                .unknown => continue, // external ancestor — cannot prove absent
+                .not_found => {}, // fall through to fuzzy suggestion + diagnostic
+            }
+        } else {
+            // Top-level ref with no enclosing class. Without receiver context we
+            // cannot reliably distinguish a typo from a method in Kernel / loaded
+            // scripts, so skip rather than noise.
+            continue;
+        }
 
         // Find similar symbol names for "did you mean?" suggestions
         const similar = db.prepare(
@@ -3875,17 +4837,33 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
     return diags;
 }
 
-pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: std.mem.Allocator, max_file_size: usize) !void {
+/// Optional progress callback for long-running reindex operations.
+/// Called every PROGRESS_STRIDE files with (done, total, last_path).
+/// Safe to call while the DB transaction is open — must not touch the DB.
+pub const ProgressCallback = struct {
+    ctx: *anyopaque,
+    report: *const fn (ctx: *anyopaque, done: usize, total: usize, path: []const u8) void,
+};
+
+const PROGRESS_STRIDE = 25;
+
+pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: std.mem.Allocator, max_file_size: usize, progress: ?ProgressCallback) !void {
     try db.begin();
     var committed = false;
     defer if (!committed) {
         db.rollback() catch {}; // rollback best-effort
     };
 
-    for (paths) |path| {
+    for (paths, 0..) |path, i| {
+        // Fire progress every PROGRESS_STRIDE files (and on the final file)
+        if (progress) |cb| {
+            if (i % PROGRESS_STRIDE == 0 or i + 1 == paths.len) {
+                cb.report(cb.ctx, i + 1, paths.len, path);
+            }
+        }
         // Check mtime; fast-skip unchanged files
-        const stat = std.fs.cwd().statFile(path) catch continue;
-        const disk_mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{}) catch continue;
+        const disk_mtime: i64 = stat.mtime.toMilliseconds();
 
         const check = try db.prepare("SELECT mtime, content_hash FROM files WHERE path = ?");
         defer check.finalize();
@@ -3896,24 +4874,49 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         if (has_existing) {
             db_mtime = check.column_int(0);
             db_hash = check.column_int(1);
-            if (db_mtime == disk_mtime and db_hash != 0) continue;
         }
 
-        const source = std.fs.cwd().readFileAllocOptions(
-            alloc,
+        // Evict files that now exceed the configured limit, regardless of mtime.
+        // This handles the case where maxFileSize was tightened via didChangeConfiguration
+        // while the file on disk is unchanged.
+        if (stat.size > max_file_size) {
+            if (has_existing) {
+                if (db.prepare("DELETE FROM files WHERE path = ?")) |del_stmt| {
+                    defer del_stmt.finalize();
+                    del_stmt.bind_text(1, path);
+                    _ = del_stmt.step() catch {};
+                } else |_| {}
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "refract: evicting {s} (exceeds maxFileSize)", .{path}) catch "refract: evicting file (too large)";
+                emitLog(3, msg);
+            }
+            continue;
+        }
+
+        if (has_existing and db_mtime == disk_mtime and db_hash != 0) continue;
+
+        const source = std.Io.Dir.cwd().readFileAllocOptions(
+            std.Options.debug_io,
             path,
-            max_file_size,
-            null,
+            alloc,
+            std.Io.Limit.limited(max_file_size),
             .@"1",
             0,
         ) catch |err| {
             if (err == error.StreamTooLong) {
                 var buf: [512]u8 = undefined;
                 const msg = if (max_file_size == 8 * 1024 * 1024)
-                    std.fmt.bufPrint(&buf, "refract: skipping {s} (>8MB)\n", .{path}) catch "refract: skipping file (too large)\n"
+                    std.fmt.bufPrint(&buf, "refract: skipping {s} (>8MB)", .{path}) catch "refract: skipping file (too large)"
                 else
-                    std.fmt.bufPrint(&buf, "refract: skipping {s} (file too large)\n", .{path}) catch "refract: skipping file (too large)\n";
-                std.fs.File.stderr().writeAll(msg) catch {}; // stderr
+                    std.fmt.bufPrint(&buf, "refract: skipping {s} (file too large)", .{path}) catch "refract: skipping file (too large)";
+                emitLog(3, msg);
+                if (has_existing) {
+                    if (db.prepare("DELETE FROM files WHERE path = ?")) |del_stmt| {
+                        defer del_stmt.finalize();
+                        del_stmt.bind_text(1, path);
+                        _ = del_stmt.step() catch {};
+                    } else |_| {}
+                }
             }
             continue;
         };
@@ -4011,7 +5014,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             .file_id = file_id,
             .parser = &parser,
             .alloc = alloc,
-            .sem_tokens = std.ArrayList(SemToken){},
+            .sem_tokens = std.ArrayList(SemToken).empty,
             .source = parse_source,
         };
         defer ctx.sem_tokens.deinit(alloc);
@@ -4020,8 +5023,8 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
 
         if (ctx.error_count > 0) {
             var ebuf: [256]u8 = undefined;
-            const emsg = std.fmt.bufPrint(&ebuf, "refract: {d} index error(s) in {s} (DB full or schema mismatch?)\n", .{ ctx.error_count, path }) catch "refract: index errors occurred\n";
-            std.fs.File.stderr().writeAll(emsg) catch {}; // stderr
+            const emsg = std.fmt.bufPrint(&ebuf, "refract: {d} index error(s) in {s} (DB full or schema mismatch?)", .{ ctx.error_count, path }) catch "refract: index errors occurred";
+            emitLog(2, emsg);
         }
 
         storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
@@ -4348,7 +5351,7 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
         .file_id = file_id,
         .parser = &parser,
         .alloc = alloc,
-        .sem_tokens = std.ArrayList(SemToken){},
+        .sem_tokens = std.ArrayList(SemToken).empty,
         .source = src,
     };
     defer ctx.sem_tokens.deinit(alloc);
@@ -4358,7 +5361,40 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
     storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
 }
 
-pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []const u8, alloc: std.mem.Allocator) !void {
+pub fn indexBundledRbs(db: db_mod.Db) !usize {
+    const bundled_rbs = @import("bundled_rbs.zig");
+    var count: usize = 0;
+    for (bundled_rbs.files) |f| {
+        if (f.content.len == 0) continue;
+        const upsert = db.prepare(
+            \\INSERT INTO files (path, mtime, content_hash, is_gem) VALUES (?, 0, 0, 1)
+            \\ON CONFLICT(path) DO UPDATE SET mtime=0, content_hash=0, is_gem=1
+            \\RETURNING id
+        ) catch continue;
+        defer upsert.finalize();
+        upsert.bind_text(1, f.path);
+        const has_row = upsert.step() catch continue;
+        const file_id: i64 = if (has_row) upsert.column_int(0) else db.last_insert_rowid();
+
+        deleteSymbolData(db, file_id);
+        indexRbs(db, file_id, f.content) catch continue;
+        count += 1;
+    }
+    return count;
+}
+
+pub fn ensureBundledRbs(db: db_mod.Db) void {
+    const bundled_rbs = @import("bundled_rbs.zig");
+    const expected: i64 = @intCast(bundled_rbs.files.len);
+    const cnt_stmt = db.prepare("SELECT COUNT(*) FROM files WHERE path LIKE '<bundled>/%'") catch return;
+    defer cnt_stmt.finalize();
+    var current: i64 = 0;
+    if (cnt_stmt.step() catch false) current = cnt_stmt.column_int(0);
+    if (current >= expected) return;
+    _ = indexBundledRbs(db) catch return;
+}
+
+pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []const u8, alloc: std.mem.Allocator, keep: ?*const std.StringHashMapUnmanaged(void)) !void {
     var disk_set = std.StringHashMap(void).init(alloc);
     defer disk_set.deinit();
     for (scanned) |p| try disk_set.put(p, {});
@@ -4366,17 +5402,25 @@ pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []con
     // Only consider files under root_path so extra_roots are never wrongly deleted
     const like_pat = try std.fmt.allocPrint(alloc, "{s}/%", .{root_path});
     defer alloc.free(like_pat);
-    const sel = try db.prepare("SELECT path FROM files WHERE is_gem=0 AND path LIKE ? ESCAPE '\\'");
+    const sel = try db.prepare("SELECT path FROM files WHERE is_gem=0 AND path LIKE ? ESCAPE '\\' AND path NOT LIKE '<bundled>/%'");
     defer sel.finalize();
     sel.bind_text(1, like_pat);
-    var stale = std.ArrayList([]u8){};
+    var stale = std.ArrayList([]u8).empty;
     defer {
         for (stale.items) |p| alloc.free(p);
         stale.deinit(alloc);
     }
     while (try sel.step()) {
         const p = sel.column_text(0);
-        if (!disk_set.contains(p)) try stale.append(alloc, try alloc.dupe(u8, p));
+        if (disk_set.contains(p)) continue;
+        if (keep) |k| if (k.contains(p)) continue;
+        // Defensive: only stale if the file is actually gone from disk.
+        // Guards against scan/FS-visibility races where a present file wasn't
+        // in the initial scan set (e.g. macOS FSEvents lag).
+        _ = std.Io.Dir.cwd().statFile(std.Options.debug_io, p, .{}) catch {
+            try stale.append(alloc, try alloc.dupe(u8, p));
+            continue;
+        };
     }
 
     if (stale.items.len == 0) return;
@@ -4401,16 +5445,16 @@ test "cleanupStale preserves gem entries" {
     const alloc = std.testing.allocator;
 
     const db_path = "/tmp/refract_gem_cleanup_test.db";
-    std.fs.deleteFileAbsolute(db_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, db_path) catch {};
     const db = try db_mod.Db.open(db_path);
     defer db.close();
-    defer std.fs.deleteFileAbsolute(db_path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, db_path) catch {};
     try db.init_schema();
 
     try db.exec("INSERT INTO files (path, mtime, is_gem) VALUES ('/gems/activesupport/core.rb', 999, 1)");
 
     const project_paths = [_][]const u8{"/tmp/project_file.rb"};
-    try cleanupStale(db, &project_paths, "/tmp", alloc);
+    try cleanupStale(db, &project_paths, "/tmp", alloc, null);
 
     const check = try db.prepare("SELECT COUNT(*) FROM files WHERE path='/gems/activesupport/core.rb' AND is_gem=1");
     defer check.finalize();

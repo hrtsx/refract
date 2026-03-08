@@ -1,0 +1,76 @@
+module Enumerable
+  def all?: () { (untyped) -> boolish } -> bool
+  def any?: () { (untyped) -> boolish } -> bool
+  def chain: (*untyped args) -> Enumerator
+  def chunk: () { (untyped) -> untyped } -> Enumerator
+  def chunk_while: () { (untyped, untyped) -> boolish } -> Enumerator
+  def collect: () { (untyped) -> untyped } -> Array
+  def collect_concat: () { (untyped) -> untyped } -> Array
+  def count: (?untyped item) { (untyped) -> boolish } -> Integer
+  def cycle: (?Integer n) { (untyped) -> void } -> nil
+  def detect: () { (untyped) -> boolish } -> untyped
+  def drop: (Integer n) -> Array
+  def drop_while: () { (untyped) -> boolish } -> Array
+  def each_cons: (Integer n) { (Array) -> void } -> Enumerator
+  def each_entry: () { (untyped) -> void } -> Enumerator
+  def each_slice: (Integer n) { (Array) -> void } -> Enumerator
+  def each_with_index: () { (untyped, Integer) -> void } -> Enumerator
+  def each_with_object: (untyped memo) { (untyped, untyped) -> void } -> untyped
+  def entries: () -> Array
+  def filter: () { (untyped) -> boolish } -> Array
+  def filter_map: () { (untyped) -> untyped } -> Array
+  def find: () { (untyped) -> boolish } -> untyped
+  def find_all: () { (untyped) -> boolish } -> Array
+  def find_index: (?untyped item) { (untyped) -> boolish } -> Integer?
+  def first: (?Integer n) -> untyped
+  def flat_map: () { (untyped) -> untyped } -> Array
+  def grep: (untyped pattern) { (untyped) -> untyped } -> Array
+  def grep_v: (untyped pattern) { (untyped) -> untyped } -> Array
+  def group_by: () { (untyped) -> untyped } -> Hash
+  def include?: (untyped obj) -> bool
+  def inject: (?untyped init, ?Symbol sym) { (untyped, untyped) -> untyped } -> untyped
+  def lazy: () -> Enumerator::Lazy
+  def map: () { (untyped) -> untyped } -> Array
+  def max: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def max_by: (?Integer n) { (untyped) -> untyped } -> untyped
+  def member?: (untyped obj) -> bool
+  def min: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def min_by: (?Integer n) { (untyped) -> untyped } -> untyped
+  def minmax: () { (untyped, untyped) -> Integer } -> Array
+  def minmax_by: () { (untyped) -> untyped } -> Array
+  def none?: () { (untyped) -> boolish } -> bool
+  def one?: () { (untyped) -> boolish } -> bool
+  def partition: () { (untyped) -> boolish } -> Array
+  def reduce: (?untyped init, ?Symbol sym) { (untyped, untyped) -> untyped } -> untyped
+  def reject: () { (untyped) -> boolish } -> Array
+  def reverse_each: () { (untyped) -> void } -> Enumerator
+  def select: () { (untyped) -> boolish } -> Array
+  def slice_after: (*untyped args) { (untyped) -> boolish } -> Enumerator
+  def slice_before: (*untyped args) { (untyped) -> boolish } -> Enumerator
+  def slice_when: () { (untyped, untyped) -> boolish } -> Enumerator
+  def sort: () { (untyped, untyped) -> Integer } -> Array
+  def sort_by: () { (untyped) -> untyped } -> Array
+  def sum: (?untyped init) { (untyped) -> untyped } -> untyped
+  def take: (Integer n) -> Array
+  def take_while: () { (untyped) -> boolish } -> Array
+  def tally: () -> Hash
+  def to_a: () -> Array
+  def to_h: () { (untyped) -> Array } -> Hash
+  def uniq: () { (untyped) -> untyped } -> Array
+  def zip: (*untyped args) -> Array
+end
+
+class Enumerator
+  def self.new: (?Integer size) { (Enumerator::Yielder) -> void } -> Enumerator
+
+  def each: () { (untyped) -> void } -> Enumerator
+  def each_with_index: () { (untyped, Integer) -> void } -> Enumerator
+  def each_with_object: (untyped memo) { (untyped, untyped) -> void } -> untyped
+  def feed: (untyped value) -> nil
+  def next: () -> untyped
+  def peek: () -> untyped
+  def rewind: () -> Enumerator
+  def size: () -> Integer?
+  def with_index: (?Integer offset) { (untyped, Integer) -> void } -> untyped
+  def with_object: (untyped memo) { (untyped, untyped) -> void } -> untyped
+end
