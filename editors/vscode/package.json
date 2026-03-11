@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Hirintsoa/refract"
+    "url": "https://github.com/hrtsx/refract"
   },
-  "homepage": "https://github.com/Hirintsoa/refract",
+  "homepage": "https://github.com/hrtsx/refract",
   "bugs": {
-    "url": "https://github.com/Hirintsoa/refract/issues"
+    "url": "https://github.com/hrtsx/refract/issues"
   },
   "keywords": ["ruby", "lsp", "language-server", "rails", "erb", "haml"],
   "engines": {
@@ -21,10 +21,41 @@
   "activationEvents": [
     "onLanguage:ruby",
     "onLanguage:erb",
-    "onLanguage:haml"
+    "onLanguage:haml",
+    "onLanguage:slim",
+    "workspaceContains:**/*.rb",
+    "workspaceContains:**/*.rake",
+    "workspaceContains:**/*.gemspec",
+    "workspaceContains:Gemfile"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "refract.recheckRubocop",
+        "title": "Refract: Re-check RuboCop"
+      },
+      {
+        "command": "refract.restartIndexer",
+        "title": "Refract: Restart Indexer"
+      },
+      {
+        "command": "refract.forceReindex",
+        "title": "Refract: Force Reindex Workspace"
+      },
+      {
+        "command": "refract.toggleGemIndex",
+        "title": "Refract: Toggle Gem Indexing"
+      },
+      {
+        "command": "refract.showReferences",
+        "title": "Refract: Show References"
+      },
+      {
+        "command": "refract.runTest",
+        "title": "Refract: Run Test"
+      }
+    ],
     "configuration": {
       "title": "Refract",
       "properties": {
@@ -51,7 +82,7 @@
         "refract.maxWorkers": {
           "type": "number",
           "default": 0,
-          "description": "Max indexer workers (0 = auto)"
+          "description": "Max indexer workers (0 = server default, capped at cpu count or 8)"
         },
         "refract.excludeDirs": {
           "type": "array",
@@ -62,7 +93,12 @@
         "refract.logLevel": {
           "type": "number",
           "default": 2,
-          "description": "Log verbosity (0=off, 1=error, 2=warn, 3=info, 4=debug)"
+          "description": "Log verbosity (1=error, 2=warn, 3=info, 4=debug)"
+        },
+        "refract.rubocopDebounceMs": {
+          "type": "number",
+          "default": 1500,
+          "description": "Milliseconds to wait after a save before running RuboCop (reduces thrashing on rapid saves)"
         }
       }
     }
