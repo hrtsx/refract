@@ -139,15 +139,15 @@ fn bgWorkerFn(wctx: BgWorkerCtx) void {
         const disk_mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
         {
             wctx.bg_ctx.server_ptr.db_mutex.lock();
+            defer wctx.bg_ctx.server_ptr.db_mutex.unlock();
             const skip = indexer.shouldSkip(db, work.path, disk_mtime);
-            wctx.bg_ctx.server_ptr.db_mutex.unlock();
             if (skip) { _ = arena.reset(.retain_capacity); continue; }
         }
         // Skip files explicitly deleted via didDeleteFiles / didChangeWatchedFiles type=3
         {
             wctx.bg_ctx.server_ptr.deleted_paths_mu.lock();
+            defer wctx.bg_ctx.server_ptr.deleted_paths_mu.unlock();
             const is_deleted = wctx.bg_ctx.server_ptr.deleted_paths.contains(work.path);
-            wctx.bg_ctx.server_ptr.deleted_paths_mu.unlock();
             if (is_deleted) { _ = arena.reset(.retain_capacity); continue; }
         }
         // Phase 1: parse into mem_db — outside mutex, fully parallel across workers
@@ -161,13 +161,15 @@ fn bgWorkerFn(wctx: BgWorkerCtx) void {
             continue;
         };
         // Phase 2: commit parsed data to real DB — brief mutex, fast write
-        wctx.bg_ctx.server_ptr.db_mutex.lock();
-        indexer.commitParsed(db, mem_db, work.path, work.is_gem, arena.allocator()) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "refract: indexing failed for {s}: {s}", .{ work.path, @errorName(err) }) catch "refract: indexing failed";
-            wctx.bg_ctx.server_ptr.sendLogMessage(2, msg);
-        };
-        wctx.bg_ctx.server_ptr.db_mutex.unlock();
+        {
+            wctx.bg_ctx.server_ptr.db_mutex.lock();
+            defer wctx.bg_ctx.server_ptr.db_mutex.unlock();
+            indexer.commitParsed(db, mem_db, work.path, work.is_gem, arena.allocator()) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "refract: indexing failed for {s}: {s}", .{ work.path, @errorName(err) }) catch "refract: indexing failed";
+                wctx.bg_ctx.server_ptr.sendLogMessage(2, msg);
+            };
+        }
         // Clear mem_db for next file (CASCADE handles all child tables)
         mem_db.exec("DELETE FROM files") catch {};
         _ = arena.reset(.retain_capacity);
@@ -752,6 +754,15 @@ pub const Server = struct {
         return cs;
     }
 
+    fn isNilableMethod(self: *Server, method_name: []const u8) bool {
+        _ = self;
+        const nilable_methods = [_][]const u8{ "find", "detect", "first", "last", "find_by", "find_by!", "[]", "presence", "at" };
+        for (nilable_methods) |m| {
+            if (std.mem.eql(u8, method_name, m)) return true;
+        }
+        return false;
+    }
+
     fn pathInBounds(self: *Server, path: []const u8) bool {
         if (self.root_path == null and self.extra_roots.items.len == 0) return true;
         const canonical = std.fs.path.resolve(self.alloc, &.{path}) catch return false;
@@ -982,6 +993,8 @@ pub const Server = struct {
             return try self.handleSemanticTokensRange(msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/documentHighlight")) {
             return try self.handleDocumentHighlight(msg);
+        } else if (std.mem.eql(u8, msg.method, "textDocument/documentLink")) {
+            return try self.handleDocumentLink(msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/prepareRename")) {
             return try self.handlePrepareRename(msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/rename")) {
@@ -2043,6 +2056,8 @@ pub const Server = struct {
                 std.mem.endsWith(u8, path, ".rbs") or
                 std.mem.endsWith(u8, path, ".rbi") or
                 std.mem.endsWith(u8, path, ".erb") or
+                std.mem.endsWith(u8, path, ".haml") or
+                std.mem.endsWith(u8, path, ".slim") or
                 std.mem.endsWith(u8, path, ".rake") or
                 std.mem.endsWith(u8, path, ".gemspec") or
                 std.mem.endsWith(u8, path, ".ru") or
@@ -2834,6 +2849,23 @@ pub const Server = struct {
             return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try rq_aw.toOwnedSlice(), .@"error" = null };
         }
 
+        if (detectI18nContext(source, offset)) {
+            const hover_line_src = getLineSlice(source, line);
+            var key_start = offset;
+            while (key_start > 0 and source[key_start - 1] != '"' and source[key_start - 1] != '\'') {
+                key_start -= 1;
+            }
+            if (key_start > 0) key_start -= 1;
+            var key_end = offset;
+            while (key_end < source.len and source[key_end] != '"' and source[key_end] != '\'') {
+                key_end += 1;
+            }
+            const word_col_byte = if (key_start < hover_line_src.len) key_start else 0;
+            const hover_wc16 = self.toClientCol(hover_line_src, word_col_byte);
+            const hover_we16 = hover_wc16 + @as(u32, @intCast(key_end - key_start));
+            return try self.hoverI18n(msg, source, offset, line, hover_wc16, hover_we16);
+        }
+
         const word = extractWord(source, offset);
         if (word.len == 0) return emptyResult(msg);
 
@@ -2986,6 +3018,9 @@ pub const Server = struct {
         if ((std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) and return_type.len > 0) {
             try w.writeAll(" \\u2192 ");
             try writeEscapedJsonContent(w, return_type);
+            if (self.isNilableMethod(name)) {
+                try w.writeAll(" | nil");
+            }
         }
         if (std.mem.eql(u8, kind_str, "constant") and value_snippet.len > 0) {
             try w.writeAll(" = `");
@@ -3027,6 +3062,63 @@ pub const Server = struct {
         }
         try w.writeAll("\"}");
         try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
+
+        return types.ResponseMessage{
+            .id = msg.id,
+            .result = null,
+            .raw_result = try aw.toOwnedSlice(),
+            .@"error" = null,
+        };
+    }
+
+    fn hoverI18n(self: *Server, msg: types.RequestMessage, source: []const u8, offset: usize, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
+        var key_start = offset;
+        while (key_start > 0 and source[key_start - 1] != '"' and source[key_start - 1] != '\'') {
+            key_start -= 1;
+        }
+        if (key_start > 0) key_start -= 1;
+        if (key_start >= source.len) return null;
+        key_start += 1;
+        var key_end = offset;
+        while (key_end < source.len and source[key_end] != '"' and source[key_end] != '\'') {
+            key_end += 1;
+        }
+        const full_key = source[key_start..key_end];
+
+        const stmt = self.db.prepare(
+            \\SELECT value, locale FROM i18n_keys WHERE key = ?
+            \\ORDER BY locale LIMIT 10
+        ) catch return null;
+        defer stmt.finalize();
+        stmt.bind_text(1, full_key);
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":");
+
+        var found_any = false;
+        try w.writeAll("\"**");
+        try writeEscapedJsonContent(w, full_key);
+        try w.writeAll("**");
+        try w.writeAll("\\n\\n");
+
+        while (try stmt.step()) {
+            const value = stmt.column_text(0);
+            const locale = stmt.column_text(1);
+            found_any = true;
+            try w.writeAll("_");
+            try writeEscapedJsonContent(w, locale);
+            try w.writeAll("_: ");
+            try writeEscapedJsonContent(w, value);
+            try w.writeAll("\\n\\n");
+        }
+
+        if (!found_any) {
+            try w.writeAll("_(no translations found)_");
+        }
+
+        try w.writeAll("\"");
+        try w.print("}},\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
 
         return types.ResponseMessage{
             .id = msg.id,
@@ -3155,18 +3247,19 @@ pub const Server = struct {
                             if (try oth_stmt.step()) {
                                 const outer_type = oth_stmt.column_text(0);
                                 if (outer_type.len > 0) {
+                                    const resolved_outer = extractBaseClass(outer_type);
                                     const ret_stmt = try self.cachedStmt(
                                         "SELECT return_type FROM symbols WHERE name=? AND kind='def' AND return_type IS NOT NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) LIMIT 1"
                                     );
                                     defer ret_stmt.reset();
                                     ret_stmt.bind_text(1, recv_word);
-                                    ret_stmt.bind_text(2, outer_type);
+                                    ret_stmt.bind_text(2, resolved_outer);
                                     if (try ret_stmt.step()) {
                                         const cc = ret_stmt.column_text(0);
                                         if (cc.len > 0) chain_class_buf = try self.alloc.dupe(u8, cc);
                                     }
                                     if (chain_class_buf == null) {
-                                        if (indexer.lookupStdlibReturn(outer_type, recv_word)) |rt| {
+                                        if (indexer.lookupStdlibReturn(resolved_outer, recv_word)) |rt| {
                                             chain_class_buf = try self.alloc.dupe(u8, rt);
                                         }
                                     }
@@ -3175,6 +3268,29 @@ pub const Server = struct {
                         }
                     }
                 }
+                if (chain_class_buf == null and recv_word.len > 0 and recv_word[0] == '@') {
+                    const ivar_name = recv_word[1..];
+                    const enclosing_class_stmt = try self.db.prepare(
+                        "SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1"
+                    );
+                    defer enclosing_class_stmt.finalize();
+                    enclosing_class_stmt.bind_int(1, fdc_id);
+                    enclosing_class_stmt.bind_int(2, cursor_line_db);
+                    if (try enclosing_class_stmt.step()) {
+                        const class_id = enclosing_class_stmt.column_int(0);
+                        const ivar_stmt = try self.cachedStmt(
+                            "SELECT type_hint FROM local_vars WHERE class_id=? AND name=? AND type_hint IS NOT NULL LIMIT 1"
+                        );
+                        defer ivar_stmt.reset();
+                        ivar_stmt.bind_int(1, class_id);
+                        ivar_stmt.bind_text(2, ivar_name);
+                        if (try ivar_stmt.step()) {
+                            const ivar_type = ivar_stmt.column_text(0);
+                            if (ivar_type.len > 0) chain_class_buf = try self.alloc.dupe(u8, ivar_type);
+                        }
+                    }
+                }
+
                 if (chain_class_buf == null and std.mem.eql(u8, recv_word, "self")) {
                     const sc_stmt = try self.db.prepare(
                         "SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1"
@@ -3192,9 +3308,10 @@ pub const Server = struct {
                     chain_class_buf = try self.alloc.dupe(u8, recv_word);
                 }
                 const is_self_recv = std.mem.eql(u8, recv_word, "self");
-                const class_name: []const u8 = if (th_hit) th_stmt.column_text(0)
+                const class_name_raw: []const u8 = if (th_hit) th_stmt.column_text(0)
                                                 else if (chain_class_buf) |cc| cc
                                                 else "";
+                const class_name = extractBaseClass(class_name_raw);
                 if (class_name.len > 0) {
                         var mro_arena = std.heap.ArenaAllocator.init(self.alloc);
                         defer mro_arena.deinit();
@@ -3206,7 +3323,21 @@ pub const Server = struct {
                         var first_dot = true;
                         var seen_names = std.StringHashMap(void).init(ma);
                         var seen_classes = std.StringHashMap(void).init(ma);
-                        var current = try ma.dupe(u8, class_name);
+
+                        // Handle union types: "String | Integer" → query each component
+                        var union_it = std.mem.splitSequence(u8, class_name, " | ");
+                        var union_first = true;
+                        while (union_it.next()) |union_part| {
+                            const part_trimmed = std.mem.trim(u8, union_part, " \t");
+                            if (part_trimmed.len == 0) continue;
+                            const resolved_class = extractBaseClass(part_trimmed);
+                            if (resolved_class.len == 0) continue;
+                            if (!union_first) {
+                                seen_classes.clearRetainingCapacity();
+                            }
+                            union_first = false;
+
+                        var current = try ma.dupe(u8, resolved_class);
                         const own_stmt_hoisted = if (is_self_recv)
                             self.db.prepare(
                                 \\SELECT s.name, s.doc,
@@ -3430,6 +3561,7 @@ pub const Server = struct {
                                 current = try ma.dupe(u8, pname);
                             } else break;
                         }
+                        } // end union_it loop
                         var has_enumerable = false;
                         var has_comparable = false;
                         {
@@ -3716,6 +3848,99 @@ pub const Server = struct {
         };
     }
 
+    fn completeI18n(self: *Server, msg: types.RequestMessage, source: []const u8, offset: usize) !types.ResponseMessage {
+        var key_start = offset;
+        while (key_start > 0 and source[key_start - 1] != '"' and source[key_start - 1] != '\'') {
+            key_start -= 1;
+        }
+        if (key_start > 0) key_start -= 1;
+        if (key_start >= source.len) return emptyResult(msg).?;
+        key_start += 1;
+        const partial_key = source[key_start..offset];
+
+        const i18n_pattern = try buildPrefixPattern(self.alloc, partial_key);
+        defer self.alloc.free(i18n_pattern);
+
+        const stmt = self.db.prepare(
+            \\SELECT DISTINCT key, value FROM i18n_keys
+            \\WHERE key LIKE ? ESCAPE '\'
+            \\ORDER BY key LIMIT 50
+        ) catch return emptyResult(msg).?;
+        defer stmt.finalize();
+        stmt.bind_text(1, i18n_pattern);
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeAll("{\"isIncomplete\":false,\"items\":[");
+        var first = true;
+        while (try stmt.step()) {
+            const key = stmt.column_text(0);
+            const value = stmt.column_text(1);
+            if (!first) try w.writeByte(',');
+            first = false;
+            try w.writeAll("{\"label\":");
+            try writeEscapedJson(w, key);
+            try w.writeAll(",\"kind\":12,\"detail\":");
+            try writeEscapedJson(w, value);
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
+
+        return types.ResponseMessage{
+            .id = msg.id,
+            .result = null,
+            .raw_result = try aw.toOwnedSlice(),
+            .@"error" = null,
+        };
+    }
+
+    fn completeRouteHelpers(self: *Server, msg: types.RequestMessage, word: []const u8) !types.ResponseMessage {
+        if (word.len < 2) return emptyResult(msg).?;
+
+        const route_pattern = try buildPrefixPattern(self.alloc, word);
+        defer self.alloc.free(route_pattern);
+
+        const stmt = self.db.prepare(
+            \\SELECT helper_name, http_method, path_pattern FROM routes
+            \\WHERE helper_name LIKE ? ESCAPE '\'
+            \\ORDER BY helper_name LIMIT 50
+        ) catch return emptyResult(msg).?;
+        defer stmt.finalize();
+        stmt.bind_text(1, route_pattern);
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeAll("{\"isIncomplete\":false,\"items\":[");
+        var first = true;
+        while (try stmt.step()) {
+            const helper_name = stmt.column_text(0);
+            const http_method = stmt.column_text(1);
+            const path_pattern = stmt.column_text(2);
+
+            if (!first) try w.writeByte(',');
+            first = false;
+
+            try w.writeAll("{\"label\":");
+            try writeEscapedJson(w, helper_name);
+            try w.writeAll(",\"kind\":3,\"detail\":");
+            try w.writeByte('"');
+            try writeEscapedJsonContent(w, http_method);
+            try w.writeAll(" ");
+            try writeEscapedJsonContent(w, path_pattern);
+            try w.writeAll("\",\"sortText\":\"1_");
+            try writeEscapedJsonContent(w, helper_name);
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
+
+        return types.ResponseMessage{
+            .id = msg.id,
+            .result = null,
+            .raw_result = try aw.toOwnedSlice(),
+            .@"error" = null,
+        };
+    }
+
     fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, line: u32, character: u32, word: []const u8, offset: usize) !types.ResponseMessage {
         const pattern = try buildQueryPattern(self.alloc, word);
         defer self.alloc.free(pattern);
@@ -3987,6 +4212,23 @@ pub const Server = struct {
         };
     }
 
+    fn detectI18nContext(source: []const u8, offset: usize) bool {
+        if (offset == 0) return false;
+        var i = offset;
+        const limit = if (offset > 30) offset - 30 else 0;
+        while (i > limit) {
+            i -= 1;
+            if (source[i] == '\n') return false;
+            if (source[i] == '"' or source[i] == '\'') {
+                if (i >= 1 and source[i - 1] == '(') {
+                    if (i >= 2 and source[i - 2] == 't') return true;
+                    if (i >= 7 and std.mem.eql(u8, source[i - 7 .. i - 1], "I18n.t")) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
         self.flushDirtyUris();
         if (self.isCancelled(msg.id)) return null;
@@ -4030,6 +4272,8 @@ pub const Server = struct {
 
         if (detectRequireContext(source, offset) != null)
             return try self.completeRequirePath(msg, path, source, offset);
+        if (detectI18nContext(source, offset))
+            return try self.completeI18n(msg, source, offset);
         if (isInStringOrComment(source, offset)) {
             var aw_empty = std.Io.Writer.Allocating.init(self.alloc);
             try aw_empty.writer.writeAll("{\"isIncomplete\":false,\"items\":[]}");
@@ -4045,6 +4289,8 @@ pub const Server = struct {
             return try self.completeInstanceVars(msg, path, source, line, word);
         if (word.len > 0 and word[0] == '$')
             return try self.completeGlobalVars(msg, word);
+        if (word.len > 0 and (std.mem.endsWith(u8, word, "_path") or std.mem.endsWith(u8, word, "_url") or std.mem.endsWith(u8, word, "_p") or std.mem.endsWith(u8, word, "_u")))
+            return try self.completeRouteHelpers(msg, word);
         return try self.completeGeneral(msg, path, source, line, character, word, offset);
     }
 
@@ -5005,6 +5251,88 @@ pub const Server = struct {
         };
     }
 
+    fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+        const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
+        const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
+        defer self.alloc.free(path);
+        if (!self.pathInBounds(path)) return emptyResult(msg);
+        const source = self.readSourceForUri(uri, path) catch return emptyResult(msg);
+        defer self.alloc.free(source);
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        const w = &aw.writer;
+        try w.writeByte('[');
+        var first = true;
+
+        var line_num: i64 = 0;
+        var i: usize = 0;
+
+        while (i < source.len) {
+            var line_end = i;
+            while (line_end < source.len and source[line_end] != '\n') line_end += 1;
+
+            const line_src = source[i..line_end];
+            const trimmed = std.mem.trimLeft(u8, line_src, " \t");
+            const trimmed_offset = @intFromPtr(trimmed.ptr) - @intFromPtr(line_src.ptr);
+
+            const rel_prefix = "require_relative";
+            const req_prefix = "require";
+            var rest: ?[]const u8 = null;
+
+            if (std.mem.startsWith(u8, trimmed, rel_prefix)) {
+                rest = std.mem.trimLeft(u8, trimmed[rel_prefix.len..], " \t");
+            } else if (std.mem.startsWith(u8, trimmed, req_prefix)) {
+                rest = std.mem.trimLeft(u8, trimmed[req_prefix.len..], " \t");
+            }
+
+            if (rest) |r| {
+                if (r.len >= 2) {
+                    const quote = r[0];
+                    if ((quote == '\'' or quote == '"') and std.mem.indexOfScalarPos(u8, r, 1, quote) != null) {
+                        if (std.mem.indexOfScalarPos(u8, r, 1, quote)) |close| {
+                            const req_str = r[1..close];
+                            if (req_str.len > 0) {
+                                const rest_offset_in_line = trimmed_offset + (@intFromPtr(r.ptr) - @intFromPtr(trimmed.ptr));
+                                const str_start_in_line = rest_offset_in_line + 1;
+                                const str_start_offset = i + str_start_in_line;
+                                const str_end_offset = str_start_offset + req_str.len;
+
+                                if (resolveRequireTarget(self.alloc, self.db, source, str_start_offset, path)) |target_path| {
+                                    defer self.alloc.free(target_path);
+
+                                    if (!first) try w.writeByte(',');
+                                    first = false;
+
+                                    const start_char = self.offsetToClientChar(source, str_start_offset, @intCast(line_num));
+                                    const end_char = self.offsetToClientChar(source, str_end_offset, @intCast(line_num));
+
+                                    const target_uri = pathToUri(self.alloc, target_path) catch continue;
+                                    defer self.alloc.free(target_uri);
+
+                                    try w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"target\":\"",
+                                        .{ line_num, start_char, line_num, end_char });
+                                    try writeEscapedJson(w, target_uri);
+                                    try w.writeAll("\"}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (line_end < source.len) i = line_end + 1;
+            line_num += 1;
+        }
+
+        try w.writeByte(']');
+        return types.ResponseMessage{
+            .id = msg.id,
+            .result = null,
+            .raw_result = try aw.toOwnedSlice(),
+            .@"error" = null,
+        };
+    }
+
     fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
         self.db_mutex.lock();
         defer self.db_mutex.unlock();
@@ -5501,6 +5829,8 @@ pub const Server = struct {
                 std.mem.endsWith(u8, path, ".rbs") or
                 std.mem.endsWith(u8, path, ".rbi") or
                 std.mem.endsWith(u8, path, ".erb") or
+                std.mem.endsWith(u8, path, ".haml") or
+                std.mem.endsWith(u8, path, ".slim") or
                 std.mem.endsWith(u8, path, ".rake") or
                 std.mem.endsWith(u8, path, ".gemspec") or
                 std.mem.endsWith(u8, path, ".ru") or
@@ -7109,33 +7439,42 @@ pub const Server = struct {
         const w = &aw.writer;
         try w.writeByte('[');
         var first = true;
-        var current_name = try self.alloc.dupe(u8, class_name);
-        defer self.alloc.free(current_name);
-        var depth: u8 = 0;
-        while (depth < 10) : (depth += 1) {
-            const parent_stmt = self.db.prepare(
-                "SELECT parent_name FROM symbols WHERE name=? AND kind IN ('class','module') LIMIT 1"
-            ) catch break;
-            defer parent_stmt.finalize();
-            parent_stmt.bind_text(1, current_name);
-            if (!(parent_stmt.step() catch false)) break;
-            const parent_name_raw = parent_stmt.column_text(0);
-            if (parent_name_raw.len == 0) break;
-            const parent_name_owned = self.alloc.dupe(u8, parent_name_raw) catch break;
-            self.alloc.free(current_name);
-            current_name = parent_name_owned;
+
+        const mro_stmt = self.db.prepare(
+            \\WITH RECURSIVE mro(name, depth) AS (
+            \\  SELECT parent_name, 1 FROM symbols WHERE name=? AND kind IN ('class','module')
+            \\  UNION ALL
+            \\  SELECT s.parent_name, m.depth+1 FROM mro m
+            \\  JOIN symbols s ON s.name=m.name AND s.kind IN ('class','module')
+            \\  WHERE m.depth < 8
+            \\) SELECT DISTINCT name FROM mro WHERE name IS NOT NULL
+        ) catch {
+            try w.writeByte(']');
+            return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+        };
+        defer mro_stmt.finalize();
+        mro_stmt.bind_text(1, class_name);
+
+        var seen_arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer seen_arena.deinit();
+        var seen_parents = std.StringHashMap(void).init(seen_arena.allocator());
+
+        while (mro_stmt.step() catch false) {
+            const parent_name_raw = mro_stmt.column_text(0);
+            if (parent_name_raw.len == 0 or seen_parents.contains(parent_name_raw)) continue;
+            try seen_parents.put(seen_arena.allocator().dupe(u8, parent_name_raw) catch continue, {});
 
             const sym_stmt = self.db.prepare(
                 "SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module') LIMIT 1"
-            ) catch break;
+            ) catch continue;
             defer sym_stmt.finalize();
-            sym_stmt.bind_text(1, current_name);
+            sym_stmt.bind_text(1, parent_name_raw);
             if (!(sym_stmt.step() catch false)) {
                 // Parent exists in DB but no file — emit minimal item
                 if (!first) try w.writeByte(',');
                 first = false;
                 try w.writeAll("{\"name\":");
-                try writeEscapedJson(w, current_name);
+                try writeEscapedJson(w, parent_name_raw);
                 try w.writeAll(",\"kind\":5,\"uri\":\"\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"selectionRange\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}");
                 continue;
             }
@@ -8202,6 +8541,24 @@ fn extractQualifiedName(source: []const u8, offset: usize) []const u8 {
     return source[start..end];
 }
 
+fn extractBaseClass(type_str: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, type_str, '[')) |bracket| {
+        return std.mem.trim(u8, type_str[0..bracket], " \t");
+    }
+    return std.mem.trim(u8, type_str, " \t");
+}
+
+fn extractGenericElement(type_str: []const u8) ?[]const u8 {
+    const open = std.mem.indexOfScalar(u8, type_str, '[') orelse return null;
+    const close = std.mem.lastIndexOfScalar(u8, type_str, ']') orelse return null;
+    if (close <= open + 1) return null;
+    const inner = std.mem.trim(u8, type_str[open + 1 .. close], " \t");
+    if (std.mem.indexOfScalar(u8, inner, ',')) |comma| {
+        return std.mem.trim(u8, inner[0..comma], " \t");
+    }
+    return inner;
+}
+
 fn isRubyIdent(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '?' or c == '!' or c == '@' or c == '$' or c >= 0x80;
 }
@@ -8332,7 +8689,7 @@ fn writeInsertTextSnippet(w: *std.Io.Writer, name: []const u8, sig: []const u8) 
 }
 
 const init_caps_before_enc =
-    \\{"capabilities":{"textDocumentSync":{"change":2,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.recheckRubocop"]},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
+    \\{"capabilities":{"textDocumentSync":{"change":2,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentLinkProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.recheckRubocop"]},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
 ;
 const init_caps_after_enc =
     \\},"serverInfo":{"name":"refract","version":"
