@@ -41,6 +41,10 @@ const VisitCtx = struct {
     namespace_stack_len: u8 = 0,
     module_function_mode: bool = false,
     error_count: u32 = 0,
+    /// Non-null while visiting inside a `create_table`/`change_table` block.
+    /// Holds the camelized model name (e.g. "User" for table "users").
+    schema_table: ?[]const u8 = null,
+    schema_table_buf: [256]u8 = undefined,
 };
 
 threadlocal var hash_type_buf: [128]u8 = undefined;
@@ -759,6 +763,73 @@ fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name:
     return alloc.dupe(u8, class_name) catch null;
 }
 
+/// Map a Rails schema column method to its Ruby return type.
+fn schemaColumnType(mname: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, mname, "string") or
+        std.mem.eql(u8, mname, "text") or
+        std.mem.eql(u8, mname, "uuid") or
+        std.mem.eql(u8, mname, "binary") or
+        std.mem.eql(u8, mname, "citext")) return "String";
+    if (std.mem.eql(u8, mname, "integer") or
+        std.mem.eql(u8, mname, "bigint") or
+        std.mem.eql(u8, mname, "smallint") or
+        std.mem.eql(u8, mname, "tinyint")) return "Integer";
+    if (std.mem.eql(u8, mname, "float") or
+        std.mem.eql(u8, mname, "decimal") or
+        std.mem.eql(u8, mname, "numeric") or
+        std.mem.eql(u8, mname, "real")) return "Float";
+    if (std.mem.eql(u8, mname, "boolean")) return "TrueClass | FalseClass";
+    if (std.mem.eql(u8, mname, "date")) return "Date";
+    if (std.mem.eql(u8, mname, "datetime") or
+        std.mem.eql(u8, mname, "timestamp") or
+        std.mem.eql(u8, mname, "timestamptz") or
+        std.mem.eql(u8, mname, "time")) return "Time";
+    if (std.mem.eql(u8, mname, "json") or
+        std.mem.eql(u8, mname, "jsonb") or
+        std.mem.eql(u8, mname, "hstore")) return "Hash";
+    if (std.mem.eql(u8, mname, "references") or
+        std.mem.eql(u8, mname, "belongs_to")) return "Integer"; // _id column
+    return null;
+}
+
+/// Convert a snake_case table name to a CamelCase model name.
+/// Writes into `buf`, returns a slice into buf or null if the name is too long.
+fn tableNameToModel(table: []const u8, buf: []u8) ?[]u8 {
+    // Singularize: strip trailing 's' or 'ies'
+    var singular: []const u8 = table;
+    if (std.mem.endsWith(u8, table, "ies") and table.len > 3) {
+        // categories → category
+        const base = table[0 .. table.len - 3];
+        if (base.len + 1 > buf.len) return null;
+        @memcpy(buf[0..base.len], base);
+        buf[base.len] = 'y';
+        singular = buf[0 .. base.len + 1];
+        // Now camelCase below using temp singular
+        return snakeToCamel(singular, buf);
+    }
+    if (std.mem.endsWith(u8, table, "s") and table.len > 1) {
+        singular = table[0 .. table.len - 1];
+    }
+    return snakeToCamel(singular, buf);
+}
+
+fn snakeToCamel(snake: []const u8, buf: []u8) ?[]u8 {
+    if (snake.len == 0 or snake.len > buf.len) return null;
+    var out: usize = 0;
+    var cap_next = true;
+    for (snake) |c| {
+        if (c == '_') {
+            cap_next = true;
+            continue;
+        }
+        if (out >= buf.len) return null;
+        buf[out] = if (cap_next) std.ascii.toUpper(c) else c;
+        out += 1;
+        cap_next = false;
+    }
+    return buf[0..out];
+}
+
 fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
     // default_scope takes a block/lambda, not a named symbol arg — handle before arg checks
     if (std.mem.eql(u8, mname, "default_scope")) {
@@ -844,6 +915,7 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
     }
     // Scan keyword hash options for class_name: and through:
     var class_name_opt: ?[]const u8 = null;
+    var through_join: ?[]const u8 = null;
     if (args_list.size > 1) {
         for (1..args_list.size) |oi| {
             const opt_arg = args_list.nodes[oi];
@@ -863,25 +935,41 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
                         if (cn_sv.unescaped.source != null)
                             class_name_opt = cn_sv.unescaped.source[0..cn_sv.unescaped.length];
                     }
+                } else if (std.mem.eql(u8, kname, "through")) {
+                    if (kh_assoc.value.*.type == prism.NODE_SYMBOL) {
+                        const tj_sym: *const prism.SymbolNode = @ptrCast(@alignCast(kh_assoc.value));
+                        if (tj_sym.unescaped.source != null)
+                            through_join = tj_sym.unescaped.source[0..tj_sym.unescaped.length];
+                    } else if (kh_assoc.value.*.type == prism.NODE_STRING) {
+                        const tj_sv: *const prism.StringNode = @ptrCast(@alignCast(kh_assoc.value));
+                        if (tj_sv.unescaped.source != null)
+                            through_join = tj_sv.unescaped.source[0..tj_sv.unescaped.length];
+                    }
                 }
             }
         }
     }
+    // When through: is present, store a structured value_snippet so MCP tools can detect it.
+    var through_vs_buf: [128]u8 = undefined;
+    const effective_snip: ?[]const u8 = if (through_join) |tj|
+        std.fmt.bufPrint(&through_vs_buf, "through:{s}", .{tj}) catch call_snip
+    else
+        call_snip;
     const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name, class_name_opt);
     defer if (assoc_return_type) |rt| ctx.alloc.free(rt);
     if (assoc_return_type) |rt| {
-        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent, call_snip);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent, effective_snip);
     } else if (std.mem.eql(u8, mname, "scope") and ctx.namespace_stack_len > 0) {
         var scope_buf: [270]u8 = undefined;
         const class_name = parent orelse "";
         const scope_rt = if (class_name.len > 0) std.fmt.bufPrint(&scope_buf, "[{s}]", .{class_name}) catch null else null;
         if (scope_rt) |srt| {
-            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt, mname, parent, call_snip);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, srt, mname, parent, effective_snip);
         } else {
-            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, call_snip);
+            try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, effective_snip);
         }
     } else {
-        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, call_snip);
+        try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, null, mname, parent, effective_snip);
     }
 }
 
@@ -2042,6 +2130,77 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     const inc_blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
                     if (inc_blk.body != null) {
                         prism.visit_child_nodes(inc_blk.body.?, visitor, @ptrCast(ctx));
+                    }
+                }
+            }
+            // schema.rb / migrations: `create_table "users" do |t| ... end`
+            if ((std.mem.eql(u8, mname, "create_table") or std.mem.eql(u8, mname, "change_table")) and
+                cn.block != null and cn.block.?.*.type == prism.NODE_BLOCK)
+            {
+                const tbl_blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+                if (tbl_blk.body != null) {
+                    var table_raw: ?[]const u8 = null;
+                    if (cn.arguments != null) {
+                        const args_list_t = cn.arguments[0].arguments;
+                        if (args_list_t.size > 0) {
+                            const first_arg = args_list_t.nodes[0];
+                            if (first_arg.*.type == prism.NODE_STRING) {
+                                const sn_t: *const prism.StringNode = @ptrCast(@alignCast(first_arg));
+                                if (sn_t.unescaped.source != null)
+                                    table_raw = sn_t.unescaped.source[0..sn_t.unescaped.length];
+                            } else if (first_arg.*.type == prism.NODE_SYMBOL) {
+                                const sym_t: *const prism.SymbolNode = @ptrCast(@alignCast(first_arg));
+                                if (sym_t.unescaped.source != null)
+                                    table_raw = sym_t.unescaped.source[0..sym_t.unescaped.length];
+                            }
+                        }
+                    }
+                    if (table_raw) |traw| {
+                        const model_name = tableNameToModel(traw, &ctx.schema_table_buf);
+                        if (model_name != null) {
+                            ctx.schema_table = model_name;
+                            prism.visit_child_nodes(tbl_blk.body.?, visitor, @ptrCast(ctx));
+                            ctx.schema_table = null;
+                        }
+                    }
+                }
+            }
+            // schema.rb column: `t.string :email` inside a create_table block
+            if (ctx.schema_table) |model_name| {
+                if (cn.receiver != null and cn.receiver.?.*.type == prism.NODE_LOCAL_VAR_READ) {
+                    if (schemaColumnType(mname)) |ruby_type| {
+                        var col_name: ?[]const u8 = null;
+                        if (cn.arguments != null) {
+                            const col_args_list = cn.arguments[0].arguments;
+                            if (col_args_list.size > 0) {
+                                const col_arg = col_args_list.nodes[0];
+                                if (col_arg.*.type == prism.NODE_SYMBOL) {
+                                    const csym: *const prism.SymbolNode = @ptrCast(@alignCast(col_arg));
+                                    if (csym.unescaped.source != null)
+                                        col_name = csym.unescaped.source[0..csym.unescaped.length];
+                                } else if (col_arg.*.type == prism.NODE_STRING) {
+                                    const csv: *const prism.StringNode = @ptrCast(@alignCast(col_arg));
+                                    if (csv.unescaped.source != null)
+                                        col_name = csv.unescaped.source[0..csv.unescaped.length];
+                                }
+                            }
+                        }
+                        if (col_name) |cname| {
+                            const lc_col = locationLineCol(ctx.parser, cn.message_loc.start);
+                            insertSymbolWithReturn(ctx, "def", cname, lc_col.line, lc_col.col, ruby_type, "column", model_name, null) catch {
+                                ctx.error_count += 1;
+                            };
+                            // For references/belongs_to, also insert the _id column
+                            if (std.mem.eql(u8, mname, "references") or std.mem.eql(u8, mname, "belongs_to")) {
+                                var id_buf: [128]u8 = undefined;
+                                const id_name = std.fmt.bufPrint(&id_buf, "{s}_id", .{cname}) catch null;
+                                if (id_name) |iname| {
+                                    insertSymbolWithReturn(ctx, "def", iname, lc_col.line, lc_col.col, "Integer", "column", model_name, null) catch {
+                                        ctx.error_count += 1;
+                                    };
+                                }
+                            }
+                        }
                     }
                 }
             }
