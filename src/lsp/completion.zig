@@ -69,76 +69,92 @@ pub fn detectEnvContext(source: []const u8, offset: usize) ?[]const u8 {
 }
 
 pub fn completeEnvKeys(self: *Server, msg: types.RequestMessage, prefix: []const u8) !types.ResponseMessage {
+    // Rebuild cache on first call or after any file save.
+    if (self.env_keys_dirty.load(.acquire)) {
+        self.env_keys_mu.lockUncancelable(std.Options.debug_io);
+        defer self.env_keys_mu.unlock(std.Options.debug_io);
+        // Double-checked: another thread may have rebuilt between the load and lock.
+        if (self.env_keys_dirty.load(.monotonic)) {
+            // Free existing cache entries.
+            for (self.env_keys_cache.items) |k| self.alloc.free(k);
+            self.env_keys_cache.clearRetainingCapacity();
+
+            var seen = std.StringHashMap(void).init(self.alloc);
+            defer {
+                var it = seen.keyIterator();
+                while (it.next()) |k| self.alloc.free(k.*);
+                seen.deinit();
+            }
+
+            const file_stmt = self.db.prepare("SELECT path FROM files WHERE is_gem = 0") catch null;
+            if (file_stmt) |fs| {
+                defer fs.finalize();
+                while (fs.step() catch false) {
+                    const fpath = fs.column_text(0);
+                    const fsrc = std.Io.Dir.cwd().readFileAllocOptions(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(512 * 1024), .@"1", 0) catch continue;
+                    defer self.alloc.free(fsrc);
+
+                    var pos: usize = 0;
+                    while (pos + 4 < fsrc.len) {
+                        const idx = std.mem.indexOf(u8, fsrc[pos..], "ENV") orelse break;
+                        pos += idx + 3;
+                        if (pos >= fsrc.len) break;
+                        var key_start: usize = 0;
+                        var key_end: usize = 0;
+                        if (fsrc[pos] == '[' and pos + 2 < fsrc.len and (fsrc[pos + 1] == '\'' or fsrc[pos + 1] == '"')) {
+                            const q = fsrc[pos + 1];
+                            key_start = pos + 2;
+                            key_end = key_start;
+                            while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
+                        } else if (pos + 8 < fsrc.len and std.mem.startsWith(u8, fsrc[pos..], ".fetch(")) {
+                            const fpos = pos + 7;
+                            if (fpos < fsrc.len and (fsrc[fpos] == '\'' or fsrc[fpos] == '"')) {
+                                const q = fsrc[fpos];
+                                key_start = fpos + 1;
+                                key_end = key_start;
+                                while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
+                            } else continue;
+                        } else continue;
+
+                        if (key_end > key_start and key_end - key_start < 128) {
+                            const key = fsrc[key_start..key_end];
+                            if (!seen.contains(key)) {
+                                const owned = self.alloc.dupe(u8, key) catch continue;
+                                seen.put(owned, {}) catch {
+                                    self.alloc.free(owned);
+                                    continue;
+                                };
+                                const cache_key = self.alloc.dupe(u8, key) catch continue;
+                                self.env_keys_cache.append(self.alloc, cache_key) catch {
+                                    self.alloc.free(cache_key);
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            self.env_keys_dirty.store(false, .release);
+        }
+    }
+
+    // Emit completions from cache, filtered by prefix.
     var aw = std.Io.Writer.Allocating.init(self.alloc);
     const w = &aw.writer;
     try w.writeAll("{\"isIncomplete\":false,\"items\":[");
     var first = true;
     var count: u32 = 0;
-
-    const file_stmt = self.db.prepare("SELECT path FROM files WHERE is_gem = 0") catch {
-        try w.writeAll("]}");
-        return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
-    };
-    defer file_stmt.finalize();
-
-    var seen = std.StringHashMap(void).init(self.alloc);
-    defer {
-        var it = seen.keyIterator();
-        while (it.next()) |k| self.alloc.free(k.*);
-        seen.deinit();
-    }
-
-    while (file_stmt.step() catch false) {
-        const fpath = file_stmt.column_text(0);
-        const fsrc = std.Io.Dir.cwd().readFileAllocOptions(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(512 * 1024), .@"1", 0) catch continue;
-        defer self.alloc.free(fsrc);
-
-        var pos: usize = 0;
-        while (pos + 4 < fsrc.len) {
-            const idx = std.mem.indexOf(u8, fsrc[pos..], "ENV") orelse break;
-            pos += idx + 3;
-            if (pos >= fsrc.len) break;
-            // Check ENV[' or ENV[" or ENV.fetch('
-            var key_start: usize = 0;
-            var key_end: usize = 0;
-            if (fsrc[pos] == '[' and pos + 2 < fsrc.len and (fsrc[pos + 1] == '\'' or fsrc[pos + 1] == '"')) {
-                const q = fsrc[pos + 1];
-                key_start = pos + 2;
-                key_end = key_start;
-                while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
-            } else if (pos + 8 < fsrc.len and std.mem.startsWith(u8, fsrc[pos..], ".fetch(")) {
-                const fpos = pos + 7;
-                if (fpos < fsrc.len and (fsrc[fpos] == '\'' or fsrc[fpos] == '"')) {
-                    const q = fsrc[fpos];
-                    key_start = fpos + 1;
-                    key_end = key_start;
-                    while (key_end < fsrc.len and fsrc[key_end] != q) key_end += 1;
-                } else continue;
-            } else continue;
-
-            if (key_end > key_start and key_end - key_start < 128) {
-                const key = fsrc[key_start..key_end];
-                if (!seen.contains(key)) {
-                    if (prefix.len == 0 or std.mem.startsWith(u8, key, prefix)) {
-                        const owned = self.alloc.dupe(u8, key) catch continue;
-                        seen.put(owned, {}) catch {
-                            self.alloc.free(owned);
-                            continue;
-                        };
-                        if (!first) try w.writeByte(',');
-                        first = false;
-                        try w.writeAll("{\"label\":");
-                        try writeEscapedJson(w, key);
-                        try w.writeAll(",\"kind\":6}");
-                        count += 1;
-                        if (count >= 100) break;
-                    }
-                }
-            }
-        }
+    self.env_keys_mu.lockUncancelable(std.Options.debug_io);
+    defer self.env_keys_mu.unlock(std.Options.debug_io);
+    for (self.env_keys_cache.items) |key| {
+        if (prefix.len > 0 and !std.mem.startsWith(u8, key, prefix)) continue;
+        if (!first) try w.writeByte(',');
+        first = false;
+        try w.writeAll("{\"label\":");
+        try writeEscapedJson(w, key);
+        try w.writeAll(",\"kind\":6}");
+        count += 1;
         if (count >= 100) break;
     }
-
     try w.writeAll("]}");
     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
 }
