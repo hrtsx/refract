@@ -910,6 +910,9 @@ pub const Server = struct {
     rubocop_mtime_mu: std.Io.Mutex = std.Io.Mutex.init,
     flush_thread: ?std.Thread = null,
     flush_thread_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    env_keys_cache: std.ArrayListUnmanaged([]u8) = .empty,
+    env_keys_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    env_keys_mu: std.Io.Mutex = std.Io.Mutex.init,
 
     pub fn init(io: std.Io, db: db_mod.Db, db_pathz: [:0]const u8, alloc: std.mem.Allocator) !Server {
         var s = Server{
@@ -1004,6 +1007,8 @@ pub const Server = struct {
         var dp_it = self.deleted_paths.keyIterator();
         while (dp_it.next()) |k| self.alloc.free(k.*);
         self.deleted_paths.deinit(self.alloc);
+        for (self.env_keys_cache.items) |k| self.alloc.free(k);
+        self.env_keys_cache.deinit(self.alloc);
         self.db.close();
         self.alloc.free(self.db_pathz);
     }
