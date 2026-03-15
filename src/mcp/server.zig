@@ -90,6 +90,12 @@ const schema_available_code_actions =
 const schema_diagnostic_summary =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Optional file path filter"},"severity_filter":{"type":"string","enum":["error","warning","info"],"description":"Filter by severity"},"code_filter":{"type":"string","description":"Filter by diagnostic code"}},"required":[]}
 ;
+const schema_explain_type_chain =
+    \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"line":{"type":"integer","description":"1-based line number"},"col":{"type":"integer","description":"0-based column offset"}},"required":["file","line"]}
+;
+const schema_suggest_types =
+    \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"limit":{"type":"integer","description":"Max suggestions (default 20)"}},"required":["file"]}
+;
 
 const ToolEntry = struct {
     name: []const u8,
@@ -126,6 +132,8 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "refactor", .description = "Apply refactoring operations (extract_method, extract_variable) to source code", .schema = schema_refactor },
     .{ .name = "available_code_actions", .description = "Get list of available code actions at a specific location", .schema = schema_available_code_actions },
     .{ .name = "diagnostic_summary", .description = "Get diagnostics with optional filtering by file, severity, or code", .schema = schema_diagnostic_summary },
+    .{ .name = "explain_type_chain", .description = "Explain how a local variable's type was inferred — shows chain from source (RBS, YARD, literal, chain)", .schema = schema_explain_type_chain },
+    .{ .name = "suggest_types", .description = "Suggest YARD/RBS type annotations for untyped methods in a file", .schema = schema_suggest_types },
 };
 
 pub const Server = struct {
@@ -285,6 +293,8 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "refactor")) return self.toolRefactor(id, args);
         if (std.mem.eql(u8, name, "available_code_actions")) return self.toolAvailableCodeActions(id, args);
         if (std.mem.eql(u8, name, "diagnostic_summary")) return self.toolDiagnosticSummary(id, args);
+        if (std.mem.eql(u8, name, "explain_type_chain")) return self.toolExplainTypeChain(id, args);
+        if (std.mem.eql(u8, name, "suggest_types")) return self.toolSuggestTypes(id, args);
 
         return self.buildError(id, -32601, "Unknown tool");
     }
@@ -316,7 +326,24 @@ pub const Server = struct {
             try writeJsonStr(w, var_name);
             try w.writeAll(",\"type_hint\":");
             try writeJsonStr(w, type_hint);
-            try w.print(",\"confidence\":{d},\"line\":{d}}}", .{ confidence, line });
+            try w.print(",\"confidence\":{d}", .{confidence});
+            // Describe confidence source
+            const source_label: []const u8 = if (confidence >= 90) "rbs_annotation" else if (confidence >= 85) "literal_or_guard" else if (confidence >= 75) "method_return" else if (confidence >= 55) "chain_1" else if (confidence >= 38) "chain_2" else "inferred";
+            try w.writeAll(",\"source\":");
+            try writeJsonStr(w, source_label);
+            // Split union components
+            if (std.mem.indexOf(u8, type_hint, " | ")) |_| {
+                try w.writeAll(",\"union_components\":[");
+                var union_it = std.mem.splitSequence(u8, type_hint, " | ");
+                var uf = true;
+                while (union_it.next()) |part| {
+                    if (!uf) try w.writeByte(',');
+                    uf = false;
+                    try writeJsonStr(w, std.mem.trim(u8, part, " \t"));
+                }
+                try w.writeByte(']');
+            }
+            try w.print(",\"line\":{d}}}", .{line});
         } else {
             try w.print("{{\"line\":{d},\"type_hint\":null}}", .{line});
         }
@@ -2708,6 +2735,104 @@ pub const Server = struct {
         }
 
         try w.writeAll("]");
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolExplainTypeChain(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
+        const line = getIntArg(args, "line") orelse return self.buildToolError(id, "missing 'line' argument");
+        const col = getIntArg(args, "col") orelse 0;
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+        try w.writeAll("{\"chain\":[");
+
+        const stmt = self.db.prepare(
+            \\SELECT lv.name, lv.type_hint, lv.confidence, lv.line, lv.col
+            \\FROM local_vars lv JOIN files f ON f.id = lv.file_id
+            \\WHERE f.path = ? AND lv.name = (
+            \\  SELECT lv2.name FROM local_vars lv2 JOIN files f2 ON f2.id = lv2.file_id
+            \\  WHERE f2.path = ? AND lv2.line = ? ORDER BY ABS(lv2.col - ?) LIMIT 1
+            \\) AND lv.type_hint IS NOT NULL
+            \\ORDER BY lv.confidence DESC, lv.line ASC
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+        stmt.bind_text(1, file);
+        stmt.bind_text(2, file);
+        stmt.bind_int(3, line);
+        stmt.bind_int(4, col);
+
+        var first = true;
+        while (stmt.step() catch false) {
+            if (!first) try w.writeByte(',');
+            first = false;
+            const var_name = stmt.column_text(0);
+            const type_hint = stmt.column_text(1);
+            const confidence = stmt.column_int(2);
+            const src_line = stmt.column_int(3);
+            const source_label: []const u8 = if (confidence >= 90) "rbs" else if (confidence >= 85) "literal_or_guard" else if (confidence >= 75) "method_return" else if (confidence >= 55) "chain_1_level" else if (confidence >= 30) "chain_multi_level" else "inferred";
+            try w.writeAll("{\"name\":");
+            try writeJsonStr(w, var_name);
+            try w.writeAll(",\"type\":");
+            try writeJsonStr(w, type_hint);
+            try w.print(",\"confidence\":{d},\"source\":", .{confidence});
+            try writeJsonStr(w, source_label);
+            try w.print(",\"line\":{d}}}", .{src_line});
+        }
+        try w.writeAll("]}");
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolSuggestTypes(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
+        const limit_raw = getIntArg(args, "limit");
+        const limit: i64 = if (limit_raw) |l| (if (l > 0 and l <= 100) l else 20) else 20;
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+        try w.writeAll("{\"suggestions\":[");
+
+        const stmt = self.db.prepare(
+            \\SELECT s.name, s.kind, s.line, s.return_type
+            \\FROM symbols s JOIN files f ON f.id = s.file_id
+            \\WHERE f.path = ? AND s.kind = 'def' AND s.return_type IS NULL
+            \\ORDER BY s.line LIMIT ?
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+        stmt.bind_text(1, file);
+        stmt.bind_int(2, limit);
+
+        var first = true;
+        while (stmt.step() catch false) {
+            if (!first) try w.writeByte(',');
+            first = false;
+            const method_name = stmt.column_text(0);
+            const method_line = stmt.column_int(2);
+
+            // Try to infer from return statements or callers
+            var suggested: []const u8 = "untyped";
+            const ret_stmt = self.db.prepare(
+                "SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1"
+            ) catch null;
+            if (ret_stmt) |rs| {
+                defer rs.finalize();
+                rs.bind_text(1, method_name);
+                if (rs.step() catch false) suggested = rs.column_text(0);
+            }
+
+            try w.writeAll("{\"method\":");
+            try writeJsonStr(w, method_name);
+            try w.print(",\"line\":{d},\"suggested_return_type\":", .{method_line});
+            try writeJsonStr(w, suggested);
+            try w.writeAll("}");
+        }
+        try w.writeAll("]}");
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);

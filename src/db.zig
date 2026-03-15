@@ -162,23 +162,33 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
-        const CURRENT_SCHEMA: u32 = 1;
+        const CURRENT_SCHEMA: u32 = 2;
         {
-            const ver_stmt = self.prepare("SELECT value FROM meta WHERE key='schema_version'") catch null;
-            if (ver_stmt) |vs| {
-                defer vs.finalize();
-                if (vs.step() catch false) {
-                    const stored_str = vs.column_text(0);
-                    const stored = std.fmt.parseInt(u32, stored_str, 10) catch 0;
-                    if (stored > CURRENT_SCHEMA) {
-                        var buf: [256]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&buf,
-                            "refract: DB schema version {d} is newer than this binary ({d}); upgrade refract or run --reset-db\n",
-                            .{ stored, CURRENT_SCHEMA }) catch "refract: incompatible DB schema\n";
-                        std.fs.File.stderr().writeAll(msg) catch {};
-                        return DbError.Exec;
+            var needs_reset = false;
+            {
+                const ver_stmt = self.prepare("SELECT value FROM meta WHERE key='schema_version'") catch null;
+                if (ver_stmt) |vs| {
+                    defer vs.finalize();
+                    if (vs.step() catch false) {
+                        const stored_str = vs.column_text(0);
+                        const stored = std.fmt.parseInt(u32, stored_str, 10) catch 0;
+                        if (stored > CURRENT_SCHEMA) needs_reset = true;
                     }
                 }
+            }
+            if (needs_reset) {
+                std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
+                self.exec("DROP TABLE IF EXISTS sem_tokens") catch {};
+                self.exec("DROP TABLE IF EXISTS mixins") catch {};
+                self.exec("DROP TABLE IF EXISTS params") catch {};
+                self.exec("DROP TABLE IF EXISTS local_vars") catch {};
+                self.exec("DROP TABLE IF EXISTS refs") catch {};
+                self.exec("DROP TABLE IF EXISTS routes") catch {};
+                self.exec("DROP TABLE IF EXISTS i18n_keys") catch {};
+                self.exec("DROP TABLE IF EXISTS aliases") catch {};
+                self.exec("DROP TABLE IF EXISTS symbols") catch {};
+                self.exec("DROP TABLE IF EXISTS files") catch {};
+                self.exec("DROP TABLE IF EXISTS meta") catch {};
             }
         }
         try self.exec(
@@ -288,9 +298,15 @@ pub const Db = struct {
         self.execMigration("ALTER TABLE local_vars ADD COLUMN class_id INTEGER DEFAULT NULL"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','1')");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {};
+        // Phase 2: block param marker, composite indexes for query optimization
+        self.execMigration("ALTER TABLE local_vars ADD COLUMN is_block_param INTEGER DEFAULT 0");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','2')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 1) {
+        if (final_ver != 2) {
             std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
         }
     }

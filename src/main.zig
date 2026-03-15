@@ -5,6 +5,8 @@ const transport = @import("lsp/transport.zig");
 const types = @import("lsp/types.zig");
 const server_mod = @import("lsp/server.zig");
 const mcp = @import("mcp/server.zig");
+const indexer = @import("indexer/index.zig");
+const scanner = @import("indexer/scanner.zig");
 
 var stdin_buf: [65536]u8 = undefined;
 var stdout_buf: [65536]u8 = undefined;
@@ -33,6 +35,11 @@ pub fn main() !void {
     var flag_check: bool = false;
     var flag_stats: bool = false;
     var flag_mcp: bool = false;
+    var flag_index_only: bool = false;
+    var flag_dump_symbols: bool = false;
+    var flag_workspace_info: bool = false;
+    var flag_max_workers: ?u32 = null;
+    var flag_json: bool = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -56,6 +63,11 @@ pub fn main() !void {
                     "  --reset-db           Delete the database and exit\n" ++
                     "  --check              Verify database integrity and exit 0/1\n" ++
                     "  --stats              Print index statistics and exit\n" ++
+                    "  --json               Output statistics as JSON (with --stats)\n" ++
+                    "  --max-workers N      Set max indexing worker threads\n" ++
+                    "  --index-only         Index workspace and exit\n" ++
+                    "  --dump-symbols       Dump all indexed symbols as JSON and exit\n" ++
+                    "  --workspace-info     Print workspace info and exit\n" ++
                     "  --mcp                Run as MCP server\n",
             );
             return;
@@ -93,8 +105,21 @@ pub fn main() !void {
             flag_check = true;
         } else if (std.mem.eql(u8, arg, "--stats")) {
             flag_stats = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            flag_json = true;
+        } else if (std.mem.eql(u8, arg, "--max-workers")) {
+            i += 1;
+            if (i < args.len) {
+                flag_max_workers = std.fmt.parseInt(u32, args[i], 10) catch null;
+            }
         } else if (std.mem.eql(u8, arg, "--mcp")) {
             flag_mcp = true;
+        } else if (std.mem.eql(u8, arg, "--index-only")) {
+            flag_index_only = true;
+        } else if (std.mem.eql(u8, arg, "--dump-symbols")) {
+            flag_dump_symbols = true;
+        } else if (std.mem.eql(u8, arg, "--workspace-info")) {
+            flag_workspace_info = true;
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -216,14 +241,203 @@ pub fn main() !void {
             defer schema_stmt.finalize();
             const schema_ver: []const u8 = if (try schema_stmt.step()) schema_stmt.column_text(0) else "unknown";
 
-            var out_buf: [1024]u8 = undefined;
-            const out = std.fmt.bufPrint(&out_buf,
-                "db:      {s}\nschema:  {s}\nfiles:   {d}\ngems:    {d}\nsymbols: {d}\n",
-                .{ db_path, schema_ver, nfiles, ngems, nsyms },
-            ) catch "FAIL: format error\n";
-            try std.fs.File.stdout().writeAll(out);
+            if (flag_json) {
+                var aw = std.Io.Writer.Allocating.init(alloc);
+                try aw.writer.writeAll("{\"db\":\"");
+                try aw.writer.writeAll(db_path);
+                try aw.writer.print("\",\"schema\":\"{s}\",\"files\":{d},\"gems\":{d},\"symbols\":{d}}}", .{ schema_ver, nfiles, ngems, nsyms });
+                const result = try aw.toOwnedSlice();
+                defer alloc.free(result);
+                try std.fs.File.stdout().writeAll(result);
+                try std.fs.File.stdout().writeAll("\n");
+            } else {
+                var out_buf: [1024]u8 = undefined;
+                const out = std.fmt.bufPrint(&out_buf,
+                    "db:      {s}\nschema:  {s}\nfiles:   {d}\ngems:    {d}\nsymbols: {d}\n",
+                    .{ db_path, schema_ver, nfiles, ngems, nsyms },
+                ) catch "FAIL: format error\n";
+                try std.fs.File.stdout().writeAll(out);
+            }
             return;
         }
+    }
+
+    if (flag_index_only) {
+        const index_pathz = try alloc.dupeZ(u8, db_path);
+        defer alloc.free(index_pathz);
+        const index_db = db_mod.Db.open(index_pathz) catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: could not open database\n");
+            return error.DatabaseOpen;
+        };
+        defer index_db.close();
+
+        index_db.init_schema() catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: schema init failed\n");
+            return error.DatabaseOpen;
+        };
+
+        const workspace_root = cwd;
+        const paths = scanner.scanWithNegations(workspace_root, alloc, &.{}, &.{}) catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: workspace scan failed\n");
+            return error.ScanFailed;
+        };
+        defer alloc.free(paths);
+
+        const const_paths = try alloc.alloc([]const u8, paths.len);
+        defer alloc.free(const_paths);
+        for (paths, 0..) |p, idx| const_paths[idx] = p;
+
+        indexer.reindex(index_db, const_paths, false, alloc, 8 * 1024 * 1024) catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: reindex failed\n");
+            return error.IndexFailed;
+        };
+
+        var files_stmt = index_db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0") catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: could not query file count\n");
+            return error.DatabaseOpen;
+        };
+        defer files_stmt.finalize();
+        const nfiles: i64 = if (try files_stmt.step()) files_stmt.column_int(0) else 0;
+
+        var syms_stmt = index_db.prepare("SELECT COUNT(*) FROM symbols") catch {
+            try std.fs.File.stderr().writeAll("refract: --index-only: could not query symbol count\n");
+            return error.DatabaseOpen;
+        };
+        defer syms_stmt.finalize();
+        const nsyms: i64 = if (try syms_stmt.step()) syms_stmt.column_int(0) else 0;
+
+        var out_buf: [256]u8 = undefined;
+        const out = std.fmt.bufPrint(&out_buf, "Indexed {d} files, {d} symbols\n", .{ nfiles, nsyms }) catch "Indexed workspace\n";
+        try std.fs.File.stdout().writeAll(out);
+        return;
+    }
+
+    if (flag_dump_symbols) {
+        const dump_pathz = try alloc.dupeZ(u8, db_path);
+        defer alloc.free(dump_pathz);
+        const dump_db = db_mod.Db.open(dump_pathz) catch {
+            try std.fs.File.stderr().writeAll("refract: --dump-symbols: could not open database\n");
+            return error.DatabaseOpen;
+        };
+        defer dump_db.close();
+
+        dump_db.init_schema() catch {
+            try std.fs.File.stderr().writeAll("refract: --dump-symbols: schema init failed\n");
+            return error.DatabaseOpen;
+        };
+
+        const query = "SELECT s.name, s.kind, s.line, s.col, s.return_type, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE f.is_gem=0 ORDER BY f.path, s.line";
+        var stmt = dump_db.prepare(query) catch {
+            try std.fs.File.stderr().writeAll("refract: --dump-symbols: query failed\n");
+            return error.DatabaseOpen;
+        };
+        defer stmt.finalize();
+
+        var aw = std.Io.Writer.Allocating.init(alloc);
+        try aw.writer.writeAll("[");
+
+        var first = true;
+        while (try stmt.step()) {
+            if (!first) try aw.writer.writeAll(",");
+            first = false;
+
+            const sym_name = stmt.column_text(0);
+            const sym_kind = stmt.column_text(1);
+            const sym_line = stmt.column_int(2);
+            const sym_col = stmt.column_int(3);
+            const sym_return_type = stmt.column_text(4);
+            const file_path = stmt.column_text(5);
+
+            try aw.writer.writeAll("{\"name\":");
+            try writeJsonString(&aw.writer, sym_name);
+            try aw.writer.writeAll(",\"kind\":");
+            try writeJsonString(&aw.writer, sym_kind);
+            try aw.writer.print(",\"line\":{d},\"col\":{d}", .{ sym_line, sym_col });
+            try aw.writer.writeAll(",\"file\":");
+            try writeJsonString(&aw.writer, file_path);
+            try aw.writer.writeAll(",\"return_type\":");
+            try writeJsonString(&aw.writer, sym_return_type);
+            try aw.writer.writeAll("}");
+        }
+
+        try aw.writer.writeAll("]");
+        const result = try aw.toOwnedSlice();
+        defer alloc.free(result);
+        try std.fs.File.stdout().writeAll(result);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
+
+    if (flag_workspace_info) {
+        const info_pathz = try alloc.dupeZ(u8, db_path);
+        defer alloc.free(info_pathz);
+        const info_db = db_mod.Db.open(info_pathz) catch {
+            try std.fs.File.stderr().writeAll("refract: --workspace-info: could not open database\n");
+            return error.DatabaseOpen;
+        };
+        defer info_db.close();
+
+        info_db.init_schema() catch {
+            try std.fs.File.stderr().writeAll("refract: --workspace-info: schema init failed\n");
+            return error.DatabaseOpen;
+        };
+
+        var total_files: i64 = 0;
+        if (info_db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=0")) |stmt| {
+            defer stmt.finalize();
+            if (try stmt.step()) total_files = stmt.column_int(0);
+        } else |_| {}
+
+        var gem_files: i64 = 0;
+        if (info_db.prepare("SELECT COUNT(*) FROM files WHERE is_gem=1")) |stmt| {
+            defer stmt.finalize();
+            if (try stmt.step()) gem_files = stmt.column_int(0);
+        } else |_| {}
+
+        var schema_ver: []const u8 = "unknown";
+        if (info_db.prepare("SELECT value FROM meta WHERE key='schema_version'")) |stmt| {
+            defer stmt.finalize();
+            if (try stmt.step()) schema_ver = stmt.column_text(0);
+        } else |_| {}
+
+        const stat = std.fs.cwd().statFile(db_path) catch {
+            return error.DatabaseOpen;
+        };
+        const db_size_bytes = stat.size;
+
+        var out_buf: [2048]u8 = undefined;
+        const out = std.fmt.bufPrint(&out_buf,
+            "Workspace Info\n" ++
+            "==============\n" ++
+            "Database:     {s}\n" ++
+            "Size:         {d} bytes\n" ++
+            "Schema:       {s}\n" ++
+            "Files:        {d}\n" ++
+            "Gems:         {d}\n",
+            .{ db_path, db_size_bytes, schema_ver, total_files, gem_files },
+        ) catch "refract: format error\n";
+        try std.fs.File.stdout().writeAll(out);
+
+        if (info_db.prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY COUNT(*) DESC")) |stmt| {
+            defer stmt.finalize();
+            var output = std.ArrayList(u8){};
+            defer output.deinit(alloc);
+
+            try output.appendSlice(alloc, "\nSymbols by Kind\n" ++
+                "===============\n");
+
+            while (try stmt.step()) {
+                const kind = stmt.column_text(0);
+                const count = stmt.column_int(1);
+                const line = std.fmt.allocPrint(alloc, "{s:20} {d}\n", .{ kind, count }) catch continue;
+                defer alloc.free(line);
+                try output.appendSlice(alloc, line);
+            }
+
+            try std.fs.File.stdout().writeAll(output.items);
+        } else |_| {}
+
+        return;
     }
 
     const db_pathz = try alloc.dupeZ(u8, db_path);
@@ -254,6 +468,7 @@ pub fn main() !void {
         try std.fs.File.stderr().writeAll("refract: failed to open database\n");
         return error.DatabaseOpen;
     };
+    defer db.close();
     try db.init_schema();
     db.check_integrity() catch {
         try std.fs.File.stderr().writeAll("refract: database is corrupted (PRAGMA quick_check failed)\n");
@@ -279,6 +494,9 @@ pub fn main() !void {
     }
     defer if (g_tmp_dir) |d| alloc.free(d);
     server.disable_rubocop.store(server_disable_rubocop, .monotonic);
+    if (flag_max_workers) |mw| {
+        server.max_workers = @intCast(@max(1, @min(mw, 16)));
+    }
     if (custom_db_path != null) server.lock_db_path = true;
 
     var file_reader = std.fs.File.stdin().readerStreaming(&stdin_buf);
