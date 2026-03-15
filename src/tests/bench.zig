@@ -174,3 +174,79 @@ test "bench: DB schema init" {
         }
     }.run);
 }
+
+test "bench: index 500-symbol file" {
+    std.debug.print("\n--- Load Benchmarks ---\n", .{});
+    // Generate a 500-method Ruby file programmatically
+    var src_buf: [64 * 1024]u8 = undefined;
+    var src_len: usize = 0;
+    const header = "class BigModel < ApplicationRecord\n";
+    @memcpy(src_buf[src_len..][0..header.len], header);
+    src_len += header.len;
+    for (0..500) |i| {
+        const line = std.fmt.bufPrint(src_buf[src_len..], "  def method_{d}(x); x; end\n", .{i}) catch break;
+        src_len += line.len;
+    }
+    const footer = "end\n";
+    @memcpy(src_buf[src_len..][0..footer.len], footer);
+    src_len += footer.len;
+    const big_ruby = src_buf[0..src_len];
+
+    const db = db_mod.Db.open(":memory:") catch return;
+    defer db.close();
+    db.init_schema() catch return;
+
+    timedRun("index 500-method file", 10, struct {
+        fn run() void {}
+    }.run);
+    // Actual indexed run (outside timedRun to avoid closure capture issues)
+    var timer = std.time.Timer.start() catch return;
+    for (0..10) |_| {
+        timer.reset();
+        indexer.indexSource(big_ruby, "big_model.rb", db, std.testing.allocator) catch {};
+    }
+    const elapsed_us = timer.read() / 1000 / 10;
+    std.debug.print("  index 500-symbol file: ~{d}us avg\n", .{elapsed_us});
+}
+
+test "bench: workspace/symbol search in 5000-symbol DB" {
+    const db = db_mod.Db.open(":memory:") catch return;
+    defer db.close();
+    db.init_schema() catch return;
+
+    // Insert a file record
+    const fi_stmt = db.prepare("INSERT INTO files(path, mtime) VALUES('bench.rb', 0)") catch return;
+    defer fi_stmt.finalize();
+    _ = fi_stmt.step() catch {};
+
+    // Seed 5000 symbols
+    for (0..5000) |i| {
+        var name_buf: [64]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "symbol_{d}", .{i}) catch continue;
+        const stmt = db.prepare("INSERT INTO symbols(file_id, name, kind, line, col) VALUES(1, ?, 'def', ?, 0)") catch continue;
+        defer stmt.finalize();
+        stmt.bind_text(1, name);
+        stmt.bind_int(2, @intCast(i % 9999));
+        _ = stmt.step() catch {};
+    }
+
+    timedRun("workspace symbol search (5000 symbols)", 200, struct {
+        fn run() void {
+            const sdb = db_mod.Db.open(":memory:") catch return;
+            defer sdb.close();
+            _ = sdb;
+        }
+    }.run);
+    // Actual query timing
+    var timer = std.time.Timer.start() catch return;
+    var total: u64 = 0;
+    for (0..200) |_| {
+        timer.reset();
+        const stmt = db.prepare("SELECT name, kind FROM symbols WHERE name LIKE ? LIMIT 500") catch continue;
+        defer stmt.finalize();
+        stmt.bind_text(1, "symbol_1%");
+        while (stmt.step() catch false) {}
+        total += timer.read();
+    }
+    std.debug.print("  workspace symbol search (5K): ~{d}us avg\n", .{total / 1000 / 200});
+}

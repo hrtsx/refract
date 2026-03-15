@@ -54,6 +54,10 @@
       {
         "command": "refract.runTest",
         "title": "Refract: Run Test"
+      },
+      {
+        "command": "refract.runDoctor",
+        "title": "Refract: Run Doctor (Diagnostic Report)"
       }
     ],
     "configuration": {
