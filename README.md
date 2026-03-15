@@ -4,11 +4,19 @@ A fast Ruby LSP server backed by SQLite. Powered by [Prism](https://github.com/r
 
 ## Install
 
+**macOS (Homebrew):**
+
+```sh
+brew install hrtsx/refract/refract
+```
+
+**Linux / manual:**
+
 ```sh
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS" in Darwin) OS=macos ;; *) OS=linux ;; esac
 case "$ARCH" in arm64) ARCH=aarch64 ;; esac
-curl -L "https://github.com/Hirintsoa/refract/releases/latest/download/refract-${ARCH}-${OS}" \
+curl -L "https://github.com/hrtsx/refract/releases/latest/download/refract-${ARCH}-${OS}" \
   -o ~/.local/bin/refract && chmod +x ~/.local/bin/refract
 ```
 
@@ -25,6 +33,20 @@ cd editors/vscode && npm install && npm run build
 See [`editors/vscode/README.md`](editors/vscode/README.md) for commands, settings, and troubleshooting.
 
 ### Neovim
+
+Via [refract.nvim](https://github.com/hrtsx/refract.nvim) (handles binary download automatically):
+
+```lua
+-- lazy.nvim
+{
+  "hrtsx/refract.nvim",
+  build = function() require("refract").install() end,
+  ft = { "ruby", "eruby", "haml" },
+  opts = {},
+}
+```
+
+Or manually if the binary is already in `PATH`:
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
@@ -114,10 +136,8 @@ refract                        # start LSP server (stdin/stdout)
 refract --mcp                  # start MCP server
 refract --version              # print version and exit
 refract --help                 # print usage
-refract --verbose              # verbose output
 refract --log-file F           # write logs to file
 refract --log-level N          # set verbosity (1–4)
-refract --disable-rubocop      # disable RuboCop entirely
 refract --db-path PATH         # override database path
 refract --print-db-path        # print database path and exit
 refract --reset-db             # delete database and exit
@@ -197,7 +217,7 @@ refract --check      # verify integrity
 Requires Zig 0.16.0+.
 
 ```sh
-git clone --recurse-submodules https://github.com/Hirintsoa/refract
+git clone --recurse-submodules https://github.com/hrtsx/refract
 cd refract
 zig build --release=safe
 # binary at zig-out/bin/refract

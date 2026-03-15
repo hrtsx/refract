@@ -978,7 +978,7 @@ pub const Server = struct {
         const offset = getIntArg(args, "offset") orelse 0;
 
         const stmt = self.db.prepare(
-            \\SELECT name, kind, return_type, doc FROM symbols
+            \\SELECT name, kind, return_type, doc, value_snippet FROM symbols
             \\WHERE parent_name = ? AND kind IN ('association','scope')
             \\ORDER BY name LIMIT 100 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
@@ -1001,12 +1001,17 @@ pub const Server = struct {
             const akind = stmt.column_text(1);
             const aret = stmt.column_text(2);
             const adoc = stmt.column_text(3);
+            const avs = stmt.column_text(4);
             try w.writeAll("{\"name\":");
             try writeJsonStr(w, aname);
             try w.writeAll(",\"association_type\":");
             if (adoc.len > 0) try writeJsonStr(w, adoc) else try writeJsonStr(w, akind);
             try w.writeAll(",\"return_type\":");
             if (aret.len > 0) try writeJsonStr(w, aret) else try w.writeAll("null");
+            if (std.mem.startsWith(u8, avs, "through:")) {
+                try w.writeAll(",\"through\":");
+                try writeJsonStr(w, avs["through:".len..]);
+            }
             try w.writeByte('}');
         }
         try w.writeAll("]");
