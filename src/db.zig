@@ -463,6 +463,11 @@ pub const Db = struct {
         self.exec("PRAGMA wal_checkpoint(TRUNCATE)") catch {}; // maintenance
     }
 
+    pub fn flushAndClose(self: Db) void {
+        self.checkpoint();
+        self.close();
+    }
+
     pub fn check_integrity(self: Db) DbError!void {
         const stmt = try self.prepare("PRAGMA quick_check");
         defer stmt.finalize();

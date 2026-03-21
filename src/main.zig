@@ -8,6 +8,9 @@ const mcp = @import("mcp/server.zig");
 const indexer = @import("indexer/index.zig");
 const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
+const crash = @import("lsp/crash.zig");
+
+pub const Panic = crash.Panic;
 
 var stdin_buf: [65536]u8 = undefined;
 var stdout_buf: [65536]u8 = undefined;
@@ -17,6 +20,11 @@ var g_tmp_dir: ?[:0]u8 = null;
 
 fn onSigterm(_: std.posix.SIG) callconv(.c) void {
     g_sigterm.store(true, .seq_cst);
+    _ = std.c.alarm(3); // hard-exit ceiling: cleanup must complete within 3s
+}
+
+fn onSigalrm(_: std.posix.SIG) callconv(.c) void {
+    std.c.exit(130);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -44,6 +52,8 @@ pub fn main(init: std.process.Init) !void {
     var flag_workspace_info: bool = false;
     var flag_max_workers: ?u32 = null;
     var flag_json: bool = false;
+    var flag_last_crash: bool = false;
+    var flag_doctor: bool = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -73,6 +83,8 @@ pub fn main(init: std.process.Init) !void {
                     "  --index-only         Index workspace and exit\n" ++
                     "  --dump-symbols       Dump all indexed symbols as JSON and exit\n" ++
                     "  --workspace-info     Print workspace info and exit\n" ++
+                    "  --last-crash         Print most recent crash log and exit\n" ++
+                    "  --doctor             Print diagnostic report (paste-able for issues)\n" ++
                     "  --mcp                Run as MCP server\n",
             );
             return;
@@ -127,6 +139,10 @@ pub fn main(init: std.process.Init) !void {
             flag_dump_symbols = true;
         } else if (std.mem.eql(u8, arg, "--workspace-info")) {
             flag_workspace_info = true;
+        } else if (std.mem.eql(u8, arg, "--last-crash")) {
+            flag_last_crash = true;
+        } else if (std.mem.eql(u8, arg, "--doctor")) {
+            flag_doctor = true;
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -148,6 +164,12 @@ pub fn main(init: std.process.Init) !void {
         };
         std.posix.sigaction(std.posix.SIG.TERM, &term_act, null);
         std.posix.sigaction(std.posix.SIG.INT, &term_act, null);
+        const alrm_act = std.posix.Sigaction{
+            .handler = .{ .handler = onSigalrm },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.ALRM, &alrm_act, null);
     }
 
     const cwd = try std.process.currentPathAlloc(io, alloc);
@@ -185,6 +207,66 @@ pub fn main(init: std.process.Init) !void {
         }
         const msg = std.fmt.bufPrint(&buf, "refract: database reset: {s}\n", .{db_path}) catch "refract: database reset\n";
         try std.Io.File.stdout().writeStreamingAll(io, msg);
+        return;
+    }
+
+    if (flag_last_crash) {
+        var stdout_w_buf: [4096]u8 = undefined;
+        var fw = std.Io.File.stdout().writerStreaming(io, &stdout_w_buf);
+        const w = &fw.interface;
+        crash.dumpLastCrash(io, alloc, w) catch |e| switch (e) {
+            error.NoCrashLog, error.NoStateDir => {
+                try std.Io.File.stdout().writeStreamingAll(io, "refract: no crash log found\n");
+                return;
+            },
+            else => return e,
+        };
+        try w.flush();
+        return;
+    }
+
+    if (flag_doctor) {
+        var doctor_buf: [4096]u8 = undefined;
+        var fw = std.Io.File.stdout().writerStreaming(io, &doctor_buf);
+        const w = &fw.interface;
+        try w.print("refract --doctor\n", .{});
+        try w.print("================\n", .{});
+        try w.print("version:      {s}\n", .{build_meta.version});
+        try w.print("git:          {s}\n", .{build_meta.git_sha});
+        try w.print("zig:          {s}\n", .{build_meta.zig_version});
+        try w.print("os:           {s}\n", .{@tagName(@import("builtin").os.tag)});
+        try w.print("arch:         {s}\n", .{@tagName(@import("builtin").cpu.arch)});
+        try w.print("db path:      {s}\n", .{db_path});
+        if (std.Io.Dir.cwd().statFile(io, db_path, .{})) |st| {
+            try w.print("db size:      {d} bytes\n", .{st.size});
+        } else |_| {
+            try w.print("db size:      (not present)\n", .{});
+        }
+        var exe_buf: [4096]u8 = undefined;
+        const exe_path_opt: ?[]const u8 = blk: {
+            const n = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+            if (n > 0 and n < exe_buf.len) break :blk exe_buf[0..@intCast(n)];
+            if (args.len > 0) break :blk args[0];
+            break :blk null;
+        };
+        if (exe_path_opt) |p| {
+            const install_method: []const u8 = blk: {
+                if (std.mem.indexOf(u8, p, "/Cellar/") != null) break :blk "homebrew";
+                if (std.mem.indexOf(u8, p, ".vscode/extensions") != null) break :blk "vscode-extension";
+                if (std.mem.indexOf(u8, p, "/.local/bin/") != null) break :blk "manual (~/.local/bin)";
+                if (std.mem.startsWith(u8, p, "/usr/local/bin/")) break :blk "manual (/usr/local/bin)";
+                break :blk "unknown";
+            };
+            try w.print("install:      {s}\n", .{install_method});
+            try w.print("exe path:     {s}\n", .{p});
+        }
+        if (crash.lastCrashMtime(io, alloc)) |mt_ns| {
+            const seconds: i64 = @intCast(@divFloor(mt_ns, @as(i96, std.time.ns_per_s)));
+            try w.print("last crash:   mtime={d} (run --last-crash to view)\n", .{seconds});
+        } else {
+            try w.print("last crash:   none\n", .{});
+        }
+        try w.flush();
         return;
     }
 
@@ -654,6 +736,8 @@ pub fn main(init: std.process.Init) !void {
             .method = method,
             .params = obj.get("params"),
         };
+
+        crash.recordMessage(method, msg.id);
 
         const resp = server.dispatch(msg) catch blk: {
             if (msg.id != null) {
