@@ -525,6 +525,14 @@ fn isRailsDsl(mname: []const u8) bool {
         // Sequel validations
              "validates_presence",
         "validates_unique",        "validates_format",          "validates_type",
+        // Rails 5.2 – 8.0 DSL extensions
+                  "has_one_attached",        "has_many_attached",
+        "has_rich_text",           "encrypts",                  "normalizes",            "attribute",
+        "has_secure_password",     "has_secure_token",          "delegated_type",        "connects_to",
+        "composed_of",             "store_accessor",            "accepts_nested_attributes_for",
+        // ActiveJob / ActionMailer class-level DSLs
+                                                                                          "queue_as",
+        "retry_on",                "discard_on",                "default",
     };
     for (dsl) |d| if (std.mem.eql(u8, mname, d)) return true;
     return false;
@@ -576,6 +584,34 @@ fn isBuiltinMethod(name: []const u8) bool {
         "expires_in",                   "expires_now",                "reset_session",         "authenticate_or_request_with_http_basic",
         "authenticate_with_http_basic", "skip_before_action",         "skip_after_action",     "skip_around_action",
         "skip_callback",                "set_callback",               "run_callbacks",
+        // ActionView helpers (Rails 6+)
+                                       "link_to",                    "link_to_if",            "link_to_unless",
+        "button_to",                    "form_with",                  "form_for",              "form_tag",
+        "fields_for",                   "fields",                     "label",                 "text_field",
+        "text_area",                    "select",                     "select_tag",            "check_box",
+        "radio_button",                 "hidden_field",               "submit_tag",            "image_tag",
+        "image_url",                    "asset_path",                 "asset_url",             "video_tag",
+        "audio_tag",                    "favicon_link_tag",           "javascript_tag",        "javascript_include_tag",
+        "stylesheet_link_tag",          "csrf_meta_tags",             "csp_meta_tag",          "auto_discovery_link_tag",
+        "content_tag",                  "tag",                        "concat",                "safe_join",
+        "raw",                          "html_safe",                  "j",                     "sanitize",
+        "strip_tags",                   "simple_format",              "truncate",              "highlight",
+        "excerpt",                      "word_wrap",                  "pluralize",             "cycle",
+        "number_to_currency",           "number_to_human",            "number_to_human_size",  "number_to_percentage",
+        "number_to_phone",              "number_with_delimiter",      "number_with_precision", "time_ago_in_words",
+        "distance_of_time_in_words",    "time_tag",                   "datetime_select",       "date_select",
+        "select_date",                  "select_time",                "select_datetime",       "current_page?",
+        "controller_name",              "action_name",                "view_context",          "yield",
+        "content_for",                  "content_for?",               "provide",               "capture",
+        "render_partial",
+        // Hotwire / Turbo (Rails 7+)
+                            "turbo_frame_tag",             "turbo_stream_from",     "turbo_stream",
+        "turbo_refreshes_with",         "turbo_method_tag",           "turbo_confirm_tag",     "morph",
+        // ActionMailer / ActionMailbox / ActiveJob (call sites; class-level DSLs in isRailsDsl)
+                              "mail",                       "deliver_later",         "deliver_now",
+        "deliver_later!",               "deliver_now!",               "perform_later",         "perform_now",
+        "set",                          "wait",                       "wait_until",            "queue",
+        "headers",                      "attachments",                "default_url_options",
         // RSpec matchers/helpers
                 "expect",
         "expect_any_instance_of",       "allow",                      "allow_any_instance_of", "double",
@@ -859,12 +895,18 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         std.mem.eql(u8, mname, "has_many") or
         std.mem.eql(u8, mname, "has_one") or
         std.mem.eql(u8, mname, "has_and_belongs_to_many") or
+        std.mem.eql(u8, mname, "delegated_type") or
         std.mem.eql(u8, mname, "one_to_many") or
         std.mem.eql(u8, mname, "many_to_one") or
         std.mem.eql(u8, mname, "many_to_many") or
         std.mem.eql(u8, mname, "one_to_one") or
         std.mem.eql(u8, mname, "one_through_one") or
-        std.mem.eql(u8, mname, "many_through_many")) "association" else if (std.mem.eql(u8, mname, "shared_examples_for") or
+        std.mem.eql(u8, mname, "many_through_many")) "association" else if (std.mem.eql(u8, mname, "encrypts") or
+        std.mem.eql(u8, mname, "normalizes")) "validation" else if (std.mem.eql(u8, mname, "connects_to") or
+        std.mem.eql(u8, mname, "queue_as") or
+        std.mem.eql(u8, mname, "retry_on") or
+        std.mem.eql(u8, mname, "discard_on") or
+        std.mem.eql(u8, mname, "default")) "callback" else if (std.mem.eql(u8, mname, "shared_examples_for") or
         std.mem.eql(u8, mname, "shared_context") or
         std.mem.eql(u8, mname, "shared_examples")) "module" else if (std.mem.eql(u8, mname, "describe") or
         std.mem.eql(u8, mname, "context") or
@@ -913,9 +955,10 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         } else call_vlen;
         call_snip = call_snip_buf[0..call_snip_end];
     }
-    // Scan keyword hash options for class_name: and through:
+    // Scan keyword hash options for class_name:, through:, polymorphic:
     var class_name_opt: ?[]const u8 = null;
     var through_join: ?[]const u8 = null;
+    var is_polymorphic = false;
     if (args_list.size > 1) {
         for (1..args_list.size) |oi| {
             const opt_arg = args_list.nodes[oi];
@@ -945,17 +988,23 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
                         if (tj_sv.unescaped.source != null)
                             through_join = tj_sv.unescaped.source[0..tj_sv.unescaped.length];
                     }
+                } else if (std.mem.eql(u8, kname, "polymorphic")) {
+                    if (kh_assoc.value.*.type == prism.NODE_TRUE) is_polymorphic = true;
                 }
             }
         }
     }
     // When through: is present, store a structured value_snippet so MCP tools can detect it.
+    // Polymorphic associations override with a "polymorphic" marker.
     var through_vs_buf: [128]u8 = undefined;
-    const effective_snip: ?[]const u8 = if (through_join) |tj|
+    const effective_snip: ?[]const u8 = if (is_polymorphic)
+        "polymorphic"
+    else if (through_join) |tj|
         std.fmt.bufPrint(&through_vs_buf, "through:{s}", .{tj}) catch call_snip
     else
         call_snip;
-    const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name, class_name_opt);
+    // Polymorphic belongs_to has no static return type — the concrete type lives in *_type column.
+    const assoc_return_type = if (is_polymorphic) null else inferAssocReturnType(ctx.alloc, mname, sym_name, class_name_opt);
     defer if (assoc_return_type) |rt| ctx.alloc.free(rt);
     if (assoc_return_type) |rt| {
         try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent, effective_snip);
@@ -1072,6 +1121,276 @@ fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
 
     const vn = values_node orelse return;
     try insertEnumValues(ctx, vn);
+}
+
+// Rails 5.2 – 8.0 DSL synthesis helpers.
+// Each extracts a first symbol/string arg and emits a small fixed family of
+// accessor methods, mirroring what Rails generates at runtime.
+
+fn extractFirstSymbolName(cn: *const prism.CallNode) ?[]const u8 {
+    if (cn.arguments == null) return null;
+    const args = cn.arguments[0].arguments;
+    if (args.size == 0) return null;
+    const first = args.nodes[0];
+    if (first.*.type == prism.NODE_SYMBOL) {
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(first));
+        if (sym.unescaped.source == null) return null;
+        return sym.unescaped.source[0..sym.unescaped.length];
+    } else if (first.*.type == prism.NODE_STRING) {
+        const sn: *const prism.StringNode = @ptrCast(@alignCast(first));
+        if (sn.unescaped.source == null) return null;
+        return sn.unescaped.source[0..sn.unescaped.length];
+    }
+    return null;
+}
+
+fn insertAttachedSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
+    const sym_name = extractFirstSymbolName(cn) orelse return;
+    if (sym_name.len == 0 or sym_name.len > 100) return;
+    const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
+    const is_many = std.mem.eql(u8, mname, "has_many_attached");
+    const reader_type: []const u8 = if (is_many) "ActiveStorage::Attached::Many" else "ActiveStorage::Attached::One";
+    const att_type: []const u8 = if (is_many) "ActiveStorage::Attachment::Many" else "ActiveStorage::Attachment";
+    const blob_type: []const u8 = if (is_many) "ActiveStorage::Blob::Many" else "ActiveStorage::Blob";
+    const att_suffix: []const u8 = if (is_many) "_attachments" else "_attachment";
+    const blob_suffix: []const u8 = if (is_many) "_blobs" else "_blob";
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, reader_type, mname, parent, null);
+    var w_buf: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, mname, parent, null);
+    var a_buf: [128]u8 = undefined;
+    const a = std.fmt.bufPrint(&a_buf, "{s}{s}", .{ sym_name, att_suffix }) catch return;
+    try insertSymbolWithReturn(ctx, "def", a, lc.line, lc.col, att_type, mname, parent, null);
+    var b_buf: [128]u8 = undefined;
+    const b = std.fmt.bufPrint(&b_buf, "{s}{s}", .{ sym_name, blob_suffix }) catch return;
+    try insertSymbolWithReturn(ctx, "def", b, lc.line, lc.col, blob_type, mname, parent, null);
+}
+
+fn insertRichTextSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    const sym_name = extractFirstSymbolName(cn) orelse return;
+    if (sym_name.len == 0 or sym_name.len > 100) return;
+    const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, "ActionText::RichText", "has_rich_text", parent, null);
+    var w_buf: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "has_rich_text", parent, null);
+    var p_buf: [128]u8 = undefined;
+    const p = std.fmt.bufPrint(&p_buf, "{s}?", .{sym_name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", "has_rich_text", parent, null);
+}
+
+fn insertSecurePasswordSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    var prefix: []const u8 = "password";
+    var line: i32 = 0;
+    var col: u32 = 0;
+    if (cn.arguments != null) {
+        const args = cn.arguments[0].arguments;
+        if (args.size > 0 and args.nodes[0].*.type == prism.NODE_SYMBOL) {
+            const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[0]));
+            if (sym.unescaped.source) |src| {
+                if (sym.unescaped.length > 0 and sym.unescaped.length <= 80) prefix = src[0..sym.unescaped.length];
+            }
+            const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
+            line = lc.line;
+            col = lc.col;
+        } else {
+            const lc = locationLineCol(ctx.parser, cn.base.location.start);
+            line = lc.line;
+            col = lc.col;
+        }
+    } else {
+        const lc = locationLineCol(ctx.parser, cn.base.location.start);
+        line = lc.line;
+        col = lc.col;
+    }
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    var b1: [128]u8 = undefined;
+    const setter = std.fmt.bufPrint(&b1, "{s}=", .{prefix}) catch return;
+    try insertSymbolWithReturn(ctx, "def", setter, line, col, "String", "has_secure_password", parent, null);
+    var b2: [128]u8 = undefined;
+    const conf = std.fmt.bufPrint(&b2, "{s}_confirmation=", .{prefix}) catch return;
+    try insertSymbolWithReturn(ctx, "def", conf, line, col, "String", "has_secure_password", parent, null);
+    var b3: [128]u8 = undefined;
+    const digest = std.fmt.bufPrint(&b3, "{s}_digest", .{prefix}) catch return;
+    try insertSymbolWithReturn(ctx, "def", digest, line, col, "String", "has_secure_password", parent, null);
+    if (std.mem.eql(u8, prefix, "password")) {
+        try insertSymbolWithReturn(ctx, "def", "authenticate", line, col, null, "has_secure_password", parent, null);
+    } else {
+        var b4: [128]u8 = undefined;
+        const auth = std.fmt.bufPrint(&b4, "authenticate_{s}", .{prefix}) catch return;
+        try insertSymbolWithReturn(ctx, "def", auth, line, col, null, "has_secure_password", parent, null);
+    }
+}
+
+fn insertSecureTokenSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    var name: []const u8 = "token";
+    var line: i32 = 0;
+    var col: u32 = 0;
+    if (cn.arguments != null) {
+        const args = cn.arguments[0].arguments;
+        if (args.size > 0 and args.nodes[0].*.type == prism.NODE_SYMBOL) {
+            const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[0]));
+            if (sym.unescaped.source) |src| {
+                if (sym.unescaped.length > 0 and sym.unescaped.length <= 80) name = src[0..sym.unescaped.length];
+            }
+            const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
+            line = lc.line;
+            col = lc.col;
+        } else {
+            const lc = locationLineCol(ctx.parser, cn.base.location.start);
+            line = lc.line;
+            col = lc.col;
+        }
+    } else {
+        const lc = locationLineCol(ctx.parser, cn.base.location.start);
+        line = lc.line;
+        col = lc.col;
+    }
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    try insertSymbolWithReturn(ctx, "def", name, line, col, "String", "has_secure_token", parent, null);
+    var bw: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, line, col, "String", "has_secure_token", parent, null);
+    var br: [128]u8 = undefined;
+    const r = std.fmt.bufPrint(&br, "regenerate_{s}", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", r, line, col, "String", "has_secure_token", parent, null);
+}
+
+fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    const name = extractFirstSymbolName(cn) orelse return;
+    if (name.len == 0 or name.len > 100) return;
+    const args = cn.arguments[0].arguments;
+    const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    var rt: ?[]const u8 = null;
+    if (args.size >= 2 and args.nodes[1].*.type == prism.NODE_SYMBOL) {
+        const t_sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[1]));
+        if (t_sym.unescaped.source) |src| {
+            const tname = src[0..t_sym.unescaped.length];
+            rt = schemaColumnType(tname);
+        }
+    }
+
+    try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, rt, "attribute", parent, null);
+    var bw: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, rt, "attribute", parent, null);
+    var bp: [128]u8 = undefined;
+    const p = std.fmt.bufPrint(&bp, "{s}?", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", "attribute", parent, null);
+}
+
+fn insertStoreAccessorSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    if (args.size < 2) return;
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    var i: usize = 1;
+    while (i < args.size) : (i += 1) {
+        const arg = args.nodes[i];
+        if (arg.*.type != prism.NODE_SYMBOL) continue;
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
+        if (sym.unescaped.source == null) continue;
+        const name = sym.unescaped.source[0..sym.unescaped.length];
+        if (name.len == 0 or name.len > 100) continue;
+        const lc = locationLineCol(ctx.parser, arg.*.location.start);
+        try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, "Object", "store_accessor", parent, null);
+        var bw: [128]u8 = undefined;
+        const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch continue;
+        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "store_accessor", parent, null);
+    }
+}
+
+fn insertComposedOfSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    const name = extractFirstSymbolName(cn) orelse return;
+    if (name.len == 0 or name.len > 100) return;
+    const args = cn.arguments[0].arguments;
+    const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    var class_buf: [128]u8 = undefined;
+    var class_name: ?[]const u8 = null;
+    var idx: usize = 1;
+    while (idx < args.size) : (idx += 1) {
+        const a = args.nodes[idx];
+        if (a.*.type != prism.NODE_KEYWORD_HASH) continue;
+        const kh: *const prism.KeywordHashNode = @ptrCast(@alignCast(a));
+        for (0..kh.elements.size) |ej| {
+            const e = kh.elements.nodes[ej];
+            if (e.*.type != prism.NODE_ASSOC) continue;
+            const ass: *const prism.AssocNode = @ptrCast(@alignCast(e));
+            if (ass.key.*.type != prism.NODE_SYMBOL) continue;
+            const ks: *const prism.SymbolNode = @ptrCast(@alignCast(ass.key));
+            if (ks.unescaped.source == null) continue;
+            const kn = ks.unescaped.source[0..ks.unescaped.length];
+            if (std.mem.eql(u8, kn, "class_name") and ass.value.*.type == prism.NODE_STRING) {
+                const sv: *const prism.StringNode = @ptrCast(@alignCast(ass.value));
+                if (sv.unescaped.source) |src| class_name = src[0..sv.unescaped.length];
+            }
+        }
+    }
+    if (class_name == null) class_name = snakeToCamel(name, &class_buf);
+
+    try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, class_name, "composed_of", parent, null);
+    var bw: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, class_name, "composed_of", parent, null);
+}
+
+fn insertDelegatedTypeSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    const name = extractFirstSymbolName(cn) orelse return;
+    if (name.len == 0 or name.len > 100) return;
+    const args = cn.arguments[0].arguments;
+    const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    try insertSymbolWithReturn(ctx, "association", name, lc.line, lc.col, null, "delegated_type", parent, null);
+    var bt: [128]u8 = undefined;
+    const t = std.fmt.bufPrint(&bt, "{s}_type", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", t, lc.line, lc.col, "String", "delegated_type", parent, null);
+    var bi: [128]u8 = undefined;
+    const i_ = std.fmt.bufPrint(&bi, "{s}_id", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", i_, lc.line, lc.col, "Integer", "delegated_type", parent, null);
+    var bc: [128]u8 = undefined;
+    const c_ = std.fmt.bufPrint(&bc, "{s}_class", .{name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", c_, lc.line, lc.col, "Class", "delegated_type", parent, null);
+}
+
+fn insertNestedAttributesSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    var i: usize = 0;
+    while (i < args.size) : (i += 1) {
+        const arg = args.nodes[i];
+        if (arg.*.type != prism.NODE_SYMBOL) continue;
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
+        if (sym.unescaped.source == null) continue;
+        const name = sym.unescaped.source[0..sym.unescaped.length];
+        if (name.len == 0 or name.len > 100) continue;
+        const lc = locationLineCol(ctx.parser, arg.*.location.start);
+        var bw: [160]u8 = undefined;
+        const w = std.fmt.bufPrint(&bw, "{s}_attributes=", .{name}) catch continue;
+        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "accepts_nested_attributes_for", parent, null);
+    }
 }
 
 fn updateSymbolReturnType(db: db_mod.Db, symbol_id: i64, return_type: []const u8) !void {
@@ -1752,6 +2071,42 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 insertEnumSymbols(ctx, cn) catch {
                     ctx.error_count += 1;
                 };
+            } else if (cn.receiver == null and (std.mem.eql(u8, mname, "has_one_attached") or std.mem.eql(u8, mname, "has_many_attached"))) {
+                insertAttachedSymbols(ctx, cn, mname) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "has_rich_text")) {
+                insertRichTextSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "has_secure_password")) {
+                insertSecurePasswordSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "has_secure_token")) {
+                insertSecureTokenSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "attribute")) {
+                insertAttributeSymbol(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "store_accessor")) {
+                insertStoreAccessorSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "delegated_type")) {
+                insertDelegatedTypeSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "composed_of")) {
+                insertComposedOfSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
+            } else if (cn.receiver == null and std.mem.eql(u8, mname, "accepts_nested_attributes_for")) {
+                insertNestedAttributesSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
             } else if (cn.receiver == null and isRailsDsl(mname)) {
                 insertRailsDslSymbols(ctx, cn, mname) catch {
                     ctx.error_count += 1;
@@ -1866,6 +2221,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     // bare module_function — enable mode for subsequent defs
                     ctx.module_function_mode = true;
                 }
+            }
+            // ActiveSupport::Concern: class_methods do ... end — promote inner defs to classdef
+            if (cn.receiver == null and std.mem.eql(u8, mname, "class_methods") and cn.block != null) {
+                const prev_mf = ctx.module_function_mode;
+                const prev_vis = ctx.current_visibility;
+                ctx.module_function_mode = true;
+                ctx.current_visibility = "public";
+                prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+                ctx.module_function_mode = prev_mf;
+                ctx.current_visibility = prev_vis;
+                return false;
             }
             // private_class_method / public_class_method visibility (Phase 29)
             if (cn.receiver == null and
@@ -2205,7 +2571,46 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
             }
             const lc = locationLineCol(ctx.parser, cn.message_loc.start);
-            insertRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, null) catch {
+            // Compute arg_count and receiver_type at the call site for the type checker.
+            const call_arg_count: i64 = if (cn.arguments != null) @intCast(cn.arguments[0].arguments.size) else 0;
+            var rcv_buf: [128]u8 = undefined;
+            const call_recv_type: ?[]const u8 = blk: {
+                if (cn.receiver) |rcv| {
+                    if (rcv.*.type == prism.NODE_LOCAL_VAR_READ) {
+                        const lvr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(rcv));
+                        const rname = resolveConstant(ctx.parser, lvr.name);
+                        // Pull the most-recent typed binding. Accept confidence >= 70 (RBS/sigs/narrowing)
+                        // OR exactly 'NilClass' regardless of confidence — `x = nil` is unambiguous.
+                        const lookup = ctx.db.prepare(
+                            "SELECT type_hint, confidence FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1",
+                        ) catch break :blk null;
+                        defer lookup.finalize();
+                        lookup.bind_int(1, ctx.file_id);
+                        lookup.bind_text(2, rname);
+                        if (lookup.step() catch false) {
+                            const txt = lookup.column_text(0);
+                            // Accept any non-empty type_hint. The downstream checker queries
+                            // gate by exact-symbol-match (arity) and explicit-NilClass (nil-receiver),
+                            // so low-confidence types simply yield no diagnostic.
+                            if (txt.len > 0 and txt.len < rcv_buf.len) {
+                                @memcpy(rcv_buf[0..txt.len], txt);
+                                break :blk rcv_buf[0..txt.len];
+                            }
+                        }
+                        break :blk null;
+                    } else if (rcv.*.type == prism.NODE_CONSTANT) {
+                        const cr: *const prism.ConstReadNode = @ptrCast(@alignCast(rcv));
+                        const cname = resolveConstant(ctx.parser, cr.name);
+                        if (cname.len > 0 and cname.len < rcv_buf.len) {
+                            @memcpy(rcv_buf[0..cname.len], cname);
+                            break :blk rcv_buf[0..cname.len];
+                        }
+                        break :blk null;
+                    }
+                }
+                break :blk null;
+            };
+            insertCallRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, ctx.scope_id, call_arg_count, call_recv_type) catch {
                 ctx.error_count += 1;
             };
         },
@@ -3224,6 +3629,33 @@ fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32,
     stmt.bind_int(3, line);
     stmt.bind_int(4, @intCast(col));
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
+    _ = try stmt.step();
+}
+
+// Variant for ref insertions where call-site context is known (positional arg count and,
+// when resolvable, receiver static type). The type checker reads these columns.
+fn insertCallRef(
+    db: db_mod.Db,
+    file_id: i64,
+    name: []const u8,
+    line: i32,
+    col: u32,
+    scope_id: ?i64,
+    arg_count: i64,
+    receiver_type: ?[]const u8,
+) !void {
+    const stmt = try db.prepare(
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, arg_count, receiver_type)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?)
+    );
+    defer stmt.finalize();
+    stmt.bind_int(1, file_id);
+    stmt.bind_text(2, name);
+    stmt.bind_int(3, line);
+    stmt.bind_int(4, @intCast(col));
+    if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
+    stmt.bind_int(6, arg_count);
+    if (receiver_type) |rt| stmt.bind_text(7, rt) else stmt.bind_null(7);
     _ = try stmt.step();
 }
 
@@ -4990,6 +5422,102 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
             }) catch {
                 alloc.free(msg);
             };
+        }
+    }
+
+    // Type-checker: method called on a NilClass-narrowed receiver.
+    // The narrower at insertLocalVar marks a var as NilClass when a control-flow guard
+    // proves nil; we emit a warning every time such a var is the receiver of a call.
+    {
+        const nil_stmt = db.prepare(
+            \\SELECT r.name, r.line, r.col FROM refs r
+            \\WHERE r.file_id = ? AND r.receiver_type = 'NilClass'
+        ) catch return diags;
+        defer nil_stmt.finalize();
+        nil_stmt.bind_int(1, file_id);
+        while (nil_stmt.step() catch false) {
+            const rname = nil_stmt.column_text(0);
+            const rline = nil_stmt.column_int(1);
+            const rcol = nil_stmt.column_int(2);
+            const msg = std.fmt.allocPrint(alloc, "method '{s}' called on a value proven to be nil", .{rname}) catch continue;
+            diags.append(alloc, .{
+                .line = @intCast(rline),
+                .col = @intCast(rcol),
+                .message = msg,
+                .severity = 2,
+                .code = "refract/nil-receiver",
+            }) catch alloc.free(msg);
+        }
+    }
+
+    // Type-checker: too many positional arguments for a known method.
+    //
+    // Triggers only when:
+    //   - the call site has a known receiver_type (confidence >= 70 at insertion),
+    //   - that receiver has exactly one matching def in our index,
+    //   - that def has no rest / keyword_rest / block param (which would accept any extras),
+    //   - the call's arg_count exceeds the positional+keyword count.
+    //
+    // We deliberately use COALESCE on parent_name so non-namespaced top-level methods
+    // also match when receiver_type matches their owning class.
+    {
+        const arity_stmt = db.prepare(
+            \\SELECT r.name, r.line, r.col, r.arg_count, r.receiver_type FROM refs r
+            \\WHERE r.file_id = ?
+            \\  AND r.arg_count > 0
+            \\  AND r.receiver_type IS NOT NULL
+            \\  AND r.receiver_type != 'NilClass'
+        ) catch return diags;
+        defer arity_stmt.finalize();
+        arity_stmt.bind_int(1, file_id);
+
+        while (arity_stmt.step() catch false) {
+            const rname = arity_stmt.column_text(0);
+            const rline = arity_stmt.column_int(1);
+            const rcol = arity_stmt.column_int(2);
+            const rargs = arity_stmt.column_int(3);
+            const rtype = arity_stmt.column_text(4);
+            if (rtype.len == 0) continue;
+
+            // Find the matching method definition's id.
+            const sym_stmt = db.prepare(
+                \\SELECT id FROM symbols
+                \\WHERE name = ? AND COALESCE(parent_name,'') = ? AND kind IN ('def','classdef')
+                \\LIMIT 2
+            ) catch continue;
+            defer sym_stmt.finalize();
+            sym_stmt.bind_text(1, rname);
+            sym_stmt.bind_text(2, rtype);
+            if (!(sym_stmt.step() catch false)) continue;
+            const sym_id = sym_stmt.column_int(0);
+            // If multiple defs match (e.g. monkey patches), bail to avoid false positives.
+            if (sym_stmt.step() catch false) continue;
+
+            // Sum non-variadic params and check for variadic kinds.
+            const arity_param_stmt = db.prepare(
+                \\SELECT
+                \\  SUM(CASE WHEN kind IN ('rest','keyword_rest','block') THEN 1 ELSE 0 END) AS variadic,
+                \\  SUM(CASE WHEN kind NOT IN ('rest','keyword_rest','block') OR kind IS NULL THEN 1 ELSE 0 END) AS fixed
+                \\FROM params WHERE symbol_id = ?
+            ) catch continue;
+            defer arity_param_stmt.finalize();
+            arity_param_stmt.bind_int(1, sym_id);
+            if (!(arity_param_stmt.step() catch false)) continue;
+            const variadic = arity_param_stmt.column_int(0);
+            const fixed = arity_param_stmt.column_int(1);
+            if (variadic > 0) continue; // accepts any number of extras
+            if (fixed == 0) continue; // method has no params recorded — likely incomplete index
+
+            if (rargs > fixed) {
+                const msg = std.fmt.allocPrint(alloc, "too many arguments for '{s}': got {d}, expected at most {d}", .{ rname, rargs, fixed }) catch continue;
+                diags.append(alloc, .{
+                    .line = @intCast(rline),
+                    .col = @intCast(rcol),
+                    .message = msg,
+                    .severity = 2,
+                    .code = "refract/wrong-arity",
+                }) catch alloc.free(msg);
+            }
         }
     }
 

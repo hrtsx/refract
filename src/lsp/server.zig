@@ -508,11 +508,6 @@ const BgCtx = struct {
             };
             indexer.ensureBundledRbs(db);
             self.server_ptr.db_mutex.unlock(std.Options.debug_io);
-            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
-            var dp_it = self.server_ptr.deleted_paths.keyIterator();
-            while (dp_it.next()) |k| self.server_ptr.alloc.free(k.*);
-            self.server_ptr.deleted_paths.clearRetainingCapacity();
-            self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
         }
 
         self.server_ptr.sendProgressEnd();
@@ -1169,6 +1164,9 @@ pub const Server = struct {
         if (std.mem.eql(u8, msg.method, "initialized")) {
             if (self.bg_started) return null;
             self.bg_started = true;
+            if (self.db.was_self_healed) {
+                self.sendLogMessage(2, "refract: db was rebuilt from a corrupted state on startup; the index is fresh");
+            }
             self.startBgIndexer();
             if (self.rubocop_thread == null) {
                 self.rubocop_thread = std.Thread.spawn(.{}, rubocopWorkerFn, .{self}) catch null;
@@ -1602,8 +1600,8 @@ pub const Server = struct {
         defer self.writer_mutex.unlock(std.Options.debug_io);
         transport.writeMessage(w, req) catch |e| {
             var wc_buf: [128]u8 = undefined;
-            const wc_msg = std.fmt.bufPrint(&wc_buf, "refract: send workspace/configuration request: {s}\n", .{@errorName(e)}) catch "refract: send failed\n";
-            std.debug.print("{s}", .{wc_msg});
+            const wc_msg = std.fmt.bufPrint(&wc_buf, "refract: send workspace/configuration request: {s}", .{@errorName(e)}) catch "refract: send failed";
+            self.sendLogMessage(2, wc_msg);
         };
     }
 
