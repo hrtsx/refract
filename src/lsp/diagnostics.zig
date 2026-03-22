@@ -23,6 +23,8 @@ pub fn writeDiagItems(
 ) void {
     var disabled_set_opt: ?disabled_codes.DisabledSet = null;
     defer if (disabled_set_opt) |*s| s.deinit();
+    const tc_disabled = self.disable_type_checker.load(.monotonic);
+    const tc_sev = self.type_checker_severity.load(.monotonic);
     var has_refract_code = false;
     for (diags) |d| {
         if (std.mem.startsWith(u8, d.code, "refract/")) {
@@ -30,20 +32,23 @@ pub fn writeDiagItems(
             break;
         }
     }
-    if (has_refract_code) {
+    if (has_refract_code and !tc_disabled) {
         if (self.root_path) |rp| disabled_set_opt = disabled_codes.loadFromWorkspace(self.alloc, rp);
     }
 
     for (diags) |d| {
-        if (disabled_set_opt) |*set| {
-            if (std.mem.startsWith(u8, d.code, "refract/") and set.contains(d.code)) continue;
+        const is_refract = std.mem.startsWith(u8, d.code, "refract/");
+        if (is_refract) {
+            if (tc_disabled) continue;
+            if (disabled_set_opt) |*set| if (set.contains(d.code)) continue;
         }
         if (!first_ptr.*) w.writeByte(',') catch return;
         first_ptr.* = false;
         const l: i64 = if (d.line > 0) d.line - 1 else 0;
         const c0 = computeDiagCol(diag_source, self.encoding_utf8, l, d.col);
         const end_char: i64 = if (d.end_col > 0) computeDiagCol(diag_source, self.encoding_utf8, l, d.end_col) else c0 + 1;
-        w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"severity\":{d},\"source\":", .{ l, c0, l, end_char, d.severity }) catch return;
+        const sev_emit: i64 = if (is_refract) @intCast(tc_sev) else d.severity;
+        w.print("{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"severity\":{d},\"source\":", .{ l, c0, l, end_char, sev_emit }) catch return;
         writeEscapedJson(w, d.source) catch return;
         w.writeAll(",\"message\":") catch return;
         writeEscapedJson(w, d.message) catch return;
@@ -194,7 +199,17 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
         if (err == error.FileNotFound and !self.rubocop_checked.load(.monotonic)) {
             self.rubocop_checked.store(true, .monotonic);
             self.rubocop_available.store(false, .monotonic);
-            self.sendShowMessage(3, "refract: rubocop not found — install it or add to PATH for diagnostics");
+            const has_lock = if (self.root_path) |rp| blk: {
+                var lock_buf: [1024]u8 = undefined;
+                const lock_path = std.fmt.bufPrint(&lock_buf, "{s}/Gemfile.lock", .{rp}) catch break :blk false;
+                std.Io.Dir.accessAbsolute(std.Options.debug_io, lock_path, .{}) catch break :blk false;
+                break :blk true;
+            } else false;
+            const msg_text = if (has_lock)
+                "refract: rubocop binary not found — run `bundle install` or add rubocop to PATH"
+            else
+                "refract: rubocop disabled (no Gemfile.lock and no rubocop in PATH)";
+            self.sendLogMessage(3, msg_text);
         }
         return &.{};
     };

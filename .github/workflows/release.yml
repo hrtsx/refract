@@ -17,19 +17,19 @@ jobs:
           echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - name: Build x86_64-linux-musl
         run: |
-          zig build -Dtarget=x86_64-linux-musl --release=safe
+          zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Dtarget=x86_64-linux-musl --release=safe
           mv zig-out/bin/refract refract-x86_64-linux
       - name: Build aarch64-linux-musl
         run: |
-          zig build -Dtarget=aarch64-linux-musl --release=safe
+          zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Dtarget=aarch64-linux-musl --release=safe
           mv zig-out/bin/refract refract-aarch64-linux
       - name: Build x86_64-macos
         run: |
-          zig build -Dtarget=x86_64-macos --release=safe
+          zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Dtarget=x86_64-macos --release=safe
           mv zig-out/bin/refract refract-x86_64-macos
       - name: Build aarch64-macos
         run: |
-          zig build -Dtarget=aarch64-macos --release=safe
+          zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Dtarget=aarch64-macos --release=safe
           mv zig-out/bin/refract refract-aarch64-macos
       - name: Create checksums
         run: sha256sum refract-* > refract-checksums.txt
@@ -43,3 +43,75 @@ jobs:
             refract-x86_64-macos
             refract-aarch64-macos
             refract-checksums.txt
+
+  publish-vscode:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ secrets.VSCE_PAT != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build and publish to VS Code Marketplace
+        working-directory: editors/vscode
+        run: |
+          npm install
+          npm run build
+          npx -y @vscode/vsce@latest publish -p "$VSCE_PAT"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Publish to OpenVSX
+        if: ${{ secrets.OVSX_PAT != '' }}
+        working-directory: editors/vscode
+        run: npx -y ovsx@latest publish -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+  bump-brew-formula:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute SHAs from release artifacts
+        id: shas
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          base="https://github.com/hrtsx/refract/releases/download/${VERSION}"
+          for tgt in x86_64-linux aarch64-linux x86_64-macos aarch64-macos; do
+            curl -sL "${base}/refract-${tgt}" -o "/tmp/refract-${tgt}"
+            sha=$(sha256sum "/tmp/refract-${tgt}" | awk '{print $1}')
+            echo "sha_${tgt}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Rewrite formula
+        run: |
+          ./scripts/bump-formula.sh \
+            "${{ steps.shas.outputs.version }}" \
+            "${{ steps.shas.outputs.sha_x86_64-linux }}" \
+            "${{ steps.shas.outputs.sha_aarch64-linux }}" \
+            "${{ steps.shas.outputs.sha_x86_64-macos }}" \
+            "${{ steps.shas.outputs.sha_aarch64-macos }}" \
+            > /tmp/refract.rb.new
+          mv /tmp/refract.rb.new packaging/homebrew/refract.rb
+      - name: Open PR against homebrew-refract tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.shas.outputs.version }}"
+          TAP_DIR=/tmp/homebrew-refract
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/hrtsx/homebrew-refract.git" "$TAP_DIR"
+          cp packaging/homebrew/refract.rb "$TAP_DIR/Formula/refract.rb"
+          cd "$TAP_DIR"
+          git config user.name "refract-release-bot"
+          git config user.email "noreply@refract.dev"
+          BR="bump-refract-${VERSION#v}"
+          git checkout -b "$BR"
+          git add Formula/refract.rb
+          git commit -m "refract ${VERSION}"
+          git push -u origin "$BR"
+          gh pr create \
+            --title "refract ${VERSION}" \
+            --body "Automated bump from refract release ${VERSION}." \
+            --base main --head "$BR" || true
