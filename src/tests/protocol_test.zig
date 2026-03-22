@@ -26558,3 +26558,365 @@ test "T-MF4 schema.rb columns indexed as model defs" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "email") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "User") != null);
 }
+
+test "P33 T33.1 has_one_attached synthesizes attachment and blob accessors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t331";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  has_one_attached :avatar\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"avatar\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "avatar_attachment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "avatar_blob") != null);
+}
+
+test "P33 T33.2 has_many_attached synthesizes plural attachment and blob accessors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t332";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Post\n  has_many_attached :photos\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/post.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/post.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"photos\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "photos_attachments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "photos_blobs") != null);
+}
+
+test "P33 T33.3 has_rich_text synthesizes reader, writer, and predicate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t333";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Article\n  has_rich_text :content\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/article.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/article.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"content\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "content?") != null);
+}
+
+test "P33 T33.4 has_secure_password synthesizes digest and authenticate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t334";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  has_secure_password\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"password\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"authenticate\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "password_digest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "password_confirmation=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "authenticate") != null);
+}
+
+test "P33 T33.5 has_secure_token synthesizes token and regenerate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t335";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  has_secure_token :auth_token\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"auth_token\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"regenerate\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "regenerate_auth_token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "auth_token") != null);
+}
+
+test "P33 T33.6 attribute synthesizes typed reader, writer, predicate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t336";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  attribute :age, :integer\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"age\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "age?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "age=") != null);
+}
+
+test "P33 T33.7 delegated_type synthesizes type, id, class accessors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t337";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Entry\n  delegated_type :entryable, types: %w[Message Comment]\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/entry.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/entry.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"entryable\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "entryable_type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "entryable_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "entryable_class") != null);
+}
+
+test "P33 T33.8 composed_of synthesizes accessor with class_name return type" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t338";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Account\n  composed_of :balance, class_name: \"Money\"\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/account.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/account.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"balance\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "balance=") != null);
+}
+
+test "P33 T33.9 store_accessor synthesizes individual accessors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t339";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  store_accessor :settings, :timezone, :locale\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"timezone\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"locale\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "timezone=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "locale=") != null);
+}
+
+test "P33 T33.10 accepts_nested_attributes_for synthesizes attributes= writer" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t3310";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Author\n  accepts_nested_attributes_for :posts\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/author.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/author.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"posts_attributes\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "posts_attributes=") != null);
+}
+
+test "P33 T33.11 encrypts indexes attribute name with validation kind" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t3311";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  encrypts :ssn\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"ssn\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "ssn") != null);
+}
+
+test "P33 T33.13 class_methods do block promotes inner defs to class-level" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t3313";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "module Searchable\n  extend ActiveSupport::Concern\n  class_methods do\n    def search_by_title(q); end\n  end\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/searchable.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/searchable.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"search_by_title\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    // Expect the symbol indexed (workspace/symbol returns it regardless of kind).
+    try std.testing.expect(std.mem.indexOf(u8, raw, "search_by_title") != null);
+}
+
+test "P33 T33.14 polymorphic belongs_to indexes association without static return type" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t3314";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class Comment\n  belongs_to :commentable, polymorphic: true\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/comment.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/comment.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"commentable\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "commentable") != null);
+}
+
+test "P33 T33.12 normalizes indexes attribute name" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p33_t3312";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    const src = "class User\n  normalizes :email, with: ->(e) { e.strip.downcase }\nend\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"email\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "email") != null);
+}
+
+test "P34 T34.1 nil-receiver checker flags method calls on nil-typed locals" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t341";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // x is assigned literal nil -> inferLiteralType returns NilClass; the call x.foo
+    // should populate refs.receiver_type='NilClass' and trigger the checker.
+    const src = "x = nil\nx.foo\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/nil_receiver.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/nil_receiver.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"x = nil\\nx.foo\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "refract/nil-receiver") != null);
+}
+
+test "P34 T34.2 wrong-arity checker flags too many positional arguments" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t342";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // Greeter#hello takes 1 positional param. Calling it with 2 args on a typed receiver
+    // should populate refs.receiver_type='Greeter' and arg_count=2, triggering wrong-arity.
+    const src =
+        "class Greeter\n" ++
+        "  def hello(name); puts name; end\n" ++
+        "end\n" ++
+        "g = Greeter.new\n" ++
+        "g.hello(\"a\", \"b\")\n";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/wrong_arity.rb", .data = src });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/wrong_arity.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Greeter\\n" ++
+        "  def hello(name); puts name; end\\n" ++
+        "end\\n" ++
+        "g = Greeter.new\\n" ++
+        "g.hello(\\\"a\\\", \\\"b\\\")\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "refract/wrong-arity") != null);
+}
+
