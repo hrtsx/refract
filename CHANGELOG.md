@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.2.1] - 2026-04-04
+
+### Safety & Reliability
+- Defer-based mutex locking in all background worker paths (bgWorkerFn, commitParsed)
+- Preserve last-good index on parse failure (broken files keep completion working)
+
+### Type System
+- Union type resolution: `String | Integer` return types now expand into separate method queries
+- Generic element type extraction: `Array[User]` resolves base class for completion
+- Method chain depth extended from 2 to 5 levels with confidence decay
+- Type narrowing for `if x` (truthy guard) and `unless x.nil?` patterns
+- `extractBaseClass` and `extractGenericElement` utilities for type string parsing
+
+### Features
+- Routes: `as:` option support for custom helper names
+- i18n: YAML anchor markers (`&anchor`) now indexed instead of skipped
+- Schema v24 with composite indexes on symbols(name,file_id), params(symbol_id,position), local_vars(file_id,scope_id)
+
+### MCP
+- `resolve_type` enhanced: returns confidence source, union components
+- New `explain_type_chain` tool: trace how a variable's type was inferred
+- New `suggest_types` tool: find untyped methods and suggest annotations
+
+## [0.2.0] - 2026-03-30
+
+### Added
+
+**Template and i18n support**
+- HAML template support (expanded from basic parsing to comprehensive completion and hover)
+- i18n translation key completion and hover (queries i18n_keys table)
+- Route helper completion from `config/routes.rb` (queries routes table)
+
+**Type-aware features**
+- Type-aware dot completion (instance variables, literals, constructors)
+- Nil-aware hover (shows `| nil` when method can return nil)
+- Enhanced inlay hints (method return types, block parameter types)
+
+**Navigation**
+- textDocument/documentLink (clickable require paths for go-to-definition)
+
+**Database**
+- New tables: `i18n_keys`, `routes`, `aliases`
+- MRO query optimization (recursive CTE replaces iterative queries)
+- Compound indexes on frequently queried columns
+- Partial index on return_type for nil-aware detection
+- Schema v24
+
+### Fixed
+
+- Missing i18n_keys/routes/aliases tables no longer crash on insert
+- Schema version test assertions for v24 migration
+
+### Performance
+
+- MRO (Method Resolution Order) traversal using recursive CTE (100x+ faster for deep hierarchies)
+- Compound indexes on (scope, parent_id) and (scope, qualified_name)
+- Partial index on methods with nil return type
+
+---
+
 ## [0.1.0] - 2026-03-17
 
 ### Added
@@ -80,4 +140,4 @@
 
 ---
 
-*Minimum Zig: 0.15.2 · Schema: 23 · Tested: Ruby 2.7 – 3.3*
+*Minimum Zig: 0.15.2 · Schema: 24 · Tested: Ruby 2.7 – 3.3*
