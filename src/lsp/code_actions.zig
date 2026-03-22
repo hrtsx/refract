@@ -6,6 +6,7 @@ const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const diagnostics = @import("diagnostics.zig");
 const refactor = @import("refactor.zig");
+const disabled_codes = @import("disabled_codes.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -187,6 +188,12 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
     }
 
     var has_rubocop = false;
+    var refract_codes_seen = std.StringHashMapUnmanaged(void){};
+    defer {
+        var it_rc = refract_codes_seen.keyIterator();
+        while (it_rc.next()) |k| self.alloc.free(k.*);
+        refract_codes_seen.deinit(self.alloc);
+    }
     if (obj.get("context")) |ctx_val| {
         const ctx_obj = switch (ctx_val) {
             .object => |o| o,
@@ -211,7 +218,18 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
                         };
                         if (std.mem.indexOf(u8, src_str, "RuboCop") != null) {
                             has_rubocop = true;
-                            break;
+                        }
+                        if (d.get("code")) |code_val| {
+                            const code_str = switch (code_val) {
+                                .string => |s| s,
+                                else => continue,
+                            };
+                            if (std.mem.startsWith(u8, code_str, "refract/")) {
+                                if (!refract_codes_seen.contains(code_str)) {
+                                    const dup = self.alloc.dupe(u8, code_str) catch continue;
+                                    refract_codes_seen.put(self.alloc, dup, {}) catch self.alloc.free(dup);
+                                }
+                            }
                         }
                     }
                 }
@@ -357,6 +375,23 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
         try wa.print(":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}},\"newText\":", .{actual_lines_ca});
         try writeEscapedJson(wa, formatted);
         try wa.writeAll("}]}}}");
+    }
+
+    // Suppress action for refract diagnostics
+    {
+        var rc_it = refract_codes_seen.keyIterator();
+        while (rc_it.next()) |code_ptr| {
+            const code = code_ptr.*;
+            if (action_count > 0) try wa.writeByte(',');
+            action_count += 1;
+            try wa.writeAll("{\"title\":\"Disable ");
+            try writeEscapedJsonContent(wa, code);
+            try wa.writeAll(" for this workspace\",\"kind\":\"quickfix\",\"command\":{\"title\":\"Disable ");
+            try writeEscapedJsonContent(wa, code);
+            try wa.writeAll("\",\"command\":\"refract.disableDiagnostic\",\"arguments\":[");
+            try writeEscapedJson(wa, code);
+            try wa.writeAll("]}}");
+        }
     }
 
     try wa.writeByte(']');
@@ -593,6 +628,31 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
         else
             "Refract: reindexing workspace...";
         self.sendShowMessage(3, msg_str);
+    }
+    if (std.mem.eql(u8, cmd, "refract.disableDiagnostic")) {
+        known_cmd = true;
+        if (obj.get("arguments")) |args_val| switch (args_val) {
+            .array => |arr| if (arr.items.len >= 1) {
+                const code = switch (arr.items[0]) {
+                    .string => |s| s,
+                    else => "",
+                };
+                if (code.len > 0 and std.mem.startsWith(u8, code, "refract/")) {
+                    if (self.root_path) |rp| {
+                        disabled_codes.appendCode(rp, code) catch |e| {
+                            var buf: [256]u8 = undefined;
+                            const m = std.fmt.bufPrint(&buf, "refract: failed to disable {s}: {s}", .{ code, @errorName(e) }) catch "refract: disable failed";
+                            self.sendShowMessage(2, m);
+                        };
+                        var buf: [256]u8 = undefined;
+                        const m = std.fmt.bufPrint(&buf, "refract: {s} disabled in this workspace (.refract/disabled.txt)", .{code}) catch "refract: diagnostic disabled";
+                        self.sendShowMessage(3, m);
+                        diagnostics.enqueueAllOpenDocs(self);
+                    }
+                }
+            },
+            else => {},
+        };
     }
     if (std.mem.eql(u8, cmd, "refract.showReferences")) {
         known_cmd = true;
