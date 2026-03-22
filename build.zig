@@ -57,6 +57,14 @@ pub fn build(b: *std.Build) void {
     const meta = b.addOptions();
     meta.addOption([]const u8, "version", version_str);
 
+    const git_sha = b.option([]const u8, "git_sha", "Short git SHA of the build") orelse "unknown";
+    meta.addOption([]const u8, "git_sha", git_sha);
+
+    var zig_ver_buf: [32]u8 = undefined;
+    const zv = @import("builtin").zig_version;
+    const zig_version_str = std.fmt.bufPrint(&zig_ver_buf, "{d}.{d}.{d}", .{ zv.major, zv.minor, zv.patch }) catch "unknown";
+    meta.addOption([]const u8, "zig_version", b.allocator.dupe(u8, zig_version_str) catch "unknown");
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
