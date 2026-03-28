@@ -9,7 +9,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
               ▼
    refract  ── parses Ruby with Prism ── persists to per-project SQLite ── serves LSP queries
               │
-              └─ also: refract --mcp  (35 tools for AI agents)
+              └─ also: refract --mcp  (34 tools for AI agents)
 ```
 
 **Why pick refract**
@@ -18,7 +18,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
 - **Rails 5.2–8.0 DSL coverage** — `has_many`, `has_one_attached`, `delegated_type`, `composed_of`, `attribute :x, :integer`, etc.
 - **Type-aware** — RBS + Sorbet sigs + literal narrowing power completion, hover, inlay hints
 - **Light type checking** — `refract/nil-receiver` and `refract/wrong-arity` ship in v0.1, confidence-gated
-- **AI-native** — `refract --mcp` exposes 35 tools your agent can call directly
+- **AI-native** — `refract --mcp` exposes 34 tools your agent can call directly
 - **Single binary** — drop into Docker, CI, anywhere. No Ruby on the path.
 
 See [`docs/COMPARISON.md`](docs/COMPARISON.md) for an honest comparison with Solargraph, Ruby LSP, and Sorbet, plus when to pick each.
@@ -74,12 +74,12 @@ See [`editors/vscode/README.md`](editors/vscode/README.md) for commands, setting
 
 ### Neovim
 
-Via [refract.nvim](https://github.com/hrtsx/refract.nvim) (handles binary download automatically):
+Via [refract.vim](https://github.com/hrtsx/refract.vim) (handles binary download automatically):
 
 ```lua
 -- lazy.nvim
 {
-  "hrtsx/refract.nvim",
+  "hrtsx/refract.vim",
   build = function() require("refract").install() end,
   ft = { "ruby", "eruby", "haml" },
   opts = {},
@@ -115,7 +115,7 @@ language-servers = ["refract"]
 
 ### Zed
 
-Either install the [Refract Zed extension](editors/zed/README.md), or wire it manually in `.zed/settings.json`:
+Install the extension from the Zed extension registry (search "refract"), or via [zed-refract](https://github.com/hrtsx/zed-refract). For a manual no-extension setup, add to `.zed/settings.json`:
 
 ```json
 {
@@ -228,7 +228,7 @@ To suppress a diagnostic for the workspace, append it to `.refract/disabled.txt`
 
 ## MCP Server
 
-Start with `refract --mcp`. Exposes 35 tools for AI agent integration.
+Start with `refract --mcp`. Exposes 34 tools for AI agent integration.
 
 **Highest-value tools for Rails projects:**
 
