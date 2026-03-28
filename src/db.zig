@@ -412,6 +412,7 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_file_kind_line ON symbols(file_id, kind, line)") catch {}; // migration guard: index already exists on migrated schemas
         self.execMigration("ALTER TABLE local_vars ADD COLUMN class_id INTEGER DEFAULT NULL"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
+        self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class_name ON local_vars(class_id, name)") catch {}; // migration: helps completion.zig:287 instance-variable lookup
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {}; // migration
         // Phase 2: block param marker, composite indexes for query optimization

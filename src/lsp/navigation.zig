@@ -5,6 +5,7 @@ const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
 const editing = @import("editing.zig");
+const hot_index_mod = @import("hot_index.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -118,15 +119,15 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
         }
         const def_col_0: i64 = @intCast(def_word_start - def_line_start);
 
-        const f_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-        defer f_stmt.finalize();
+        const f_stmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+        defer f_stmt.reset();
         f_stmt.bind_text(1, path);
         if (try f_stmt.step()) {
             const fid = f_stmt.column_int(0);
             const scope_opt = editing.resolveScopeId(self, fid, word, cursor_line, def_col_0);
             const lv_stmt = if (scope_opt) |sid| blk: {
                 if (sid != 0) {
-                    const s = try self.db.prepare(
+                    const s = try self.cachedStmt(
                         \\SELECT name, line, col FROM local_vars
                         \\WHERE file_id=? AND name=? AND scope_id=?
                         \\ORDER BY line DESC LIMIT 1
@@ -136,7 +137,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                     s.bind_int(3, sid);
                     break :blk s;
                 } else {
-                    const s = try self.db.prepare(
+                    const s = try self.cachedStmt(
                         \\SELECT name, line, col FROM local_vars
                         \\WHERE file_id=? AND name=? AND scope_id IS NULL
                         \\ORDER BY line DESC LIMIT 1
@@ -146,7 +147,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                     break :blk s;
                 }
             } else blk: {
-                const s = try self.db.prepare(
+                const s = try self.cachedStmt(
                     \\SELECT name, line, col FROM local_vars
                     \\WHERE file_id = ? AND name = ? AND line <= ?
                     \\ORDER BY line DESC LIMIT 1
@@ -156,7 +157,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                 s.bind_int(3, cursor_line);
                 break :blk s;
             };
-            defer lv_stmt.finalize();
+            defer lv_stmt.reset();
             if (try lv_stmt.step()) {
                 const lv_name = lv_stmt.column_text(0);
                 const lv_line = lv_stmt.column_int(1);
@@ -207,13 +208,13 @@ pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.Re
     // Find the parent class of the method at cursor to identify its context
     var parent_name: []const u8 = "";
     {
-        const ctx_stmt = self.db.prepare(
+        const ctx_stmt = self.cachedStmt(
             \\SELECT s.parent_name FROM symbols s
             \\JOIN files f ON f.id = s.file_id
             \\WHERE f.path = ? AND s.name = ? AND s.kind IN ('def','classdef')
             \\LIMIT 1
         ) catch return emptyResult(msg);
-        defer ctx_stmt.finalize();
+        defer ctx_stmt.reset();
         ctx_stmt.bind_text(1, path);
         ctx_stmt.bind_text(2, word);
         if (ctx_stmt.step() catch false) {
@@ -227,7 +228,7 @@ pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.Re
     try w.writeByte('[');
     var first = true;
 
-    const impl_stmt = self.db.prepare(
+    const impl_stmt = self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path, s.parent_name
         \\FROM symbols s JOIN files f ON f.id = s.file_id
         \\WHERE s.name = ? AND s.kind IN ('def','classdef') AND s.parent_name != ?
@@ -236,7 +237,7 @@ pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.Re
         try w.writeByte(']');
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
     };
-    defer impl_stmt.finalize();
+    defer impl_stmt.reset();
     impl_stmt.bind_text(1, word);
     impl_stmt.bind_text(2, if (parent_name.len > 0) parent_name else "\x00");
 
@@ -310,8 +311,8 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
     const ref_col_0: i64 = @intCast(ref_word_start - ref_line_start);
 
     // Check if cursor is on a local variable; if so, scope the query
-    const file_stmt_ref = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer file_stmt_ref.finalize();
+    const file_stmt_ref = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer file_stmt_ref.reset();
     file_stmt_ref.bind_text(1, path);
     var ref_scope_id: ?i64 = null;
     var is_local_ref = false;
@@ -340,11 +341,11 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
     if (is_local_ref) {
         if (ref_scope_id) |sid| {
             // Scoped: emit local_var writes + scoped refs for this scope only
-            const lv_stmt = try self.db.prepare(
+            const lv_stmt = try self.cachedStmt(
                 \\SELECT f.path, lv.line, lv.col FROM local_vars lv JOIN files f ON lv.file_id=f.id
                 \\WHERE lv.name=? AND lv.scope_id=?
             );
-            defer lv_stmt.finalize();
+            defer lv_stmt.reset();
             lv_stmt.bind_text(1, word);
             lv_stmt.bind_int(2, sid);
             var lv_i: usize = 0;
@@ -372,11 +373,11 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                 try w.print("{d}", .{rc_client + @as(u32, @intCast(word.len))});
                 try w.writeAll("}}}");
             }
-            const scoped_ref = try self.db.prepare(
+            const scoped_ref = try self.cachedStmt(
                 \\SELECT f.path, r.line, r.col FROM refs r JOIN files f ON r.file_id=f.id
                 \\WHERE r.name=? AND r.scope_id=?
             );
-            defer scoped_ref.finalize();
+            defer scoped_ref.reset();
             scoped_ref.bind_text(1, word);
             scoped_ref.bind_int(2, sid);
             var sr_i: usize = 0;
@@ -408,12 +409,12 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
         // else top-level local — no cross-file refs, return empty
     } else {
         // Global: all refs across all files
-        const stmt = try self.db.prepare(
+        const stmt = try self.cachedStmt(
             \\SELECT f.path, r.line, r.col
             \\FROM refs r JOIN files f ON r.file_id = f.id
             \\WHERE r.name = ?
         );
-        defer stmt.finalize();
+        defer stmt.reset();
         stmt.bind_text(1, word);
         var gref_i: usize = 0;
         while (try stmt.step()) {
@@ -498,20 +499,20 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
     const cursor_line: i64 = @intCast(line + 1); // 1-based for DB
 
     // Check local_vars for type_hint
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer file_stmt.finalize();
+    const file_stmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer file_stmt.reset();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) return emptyResult(msg);
     const file_id = file_stmt.column_int(0);
 
     var type_name: ?[]const u8 = null;
 
-    const lv_stmt = try self.db.prepare(
+    const lv_stmt = try self.cachedStmt(
         \\SELECT type_hint FROM local_vars
         \\WHERE file_id = ? AND name = ? AND line <= ? AND type_hint IS NOT NULL
         \\ORDER BY line DESC LIMIT 1
     );
-    defer lv_stmt.finalize();
+    defer lv_stmt.reset();
     lv_stmt.bind_int(1, file_id);
     lv_stmt.bind_text(2, word);
     lv_stmt.bind_int(3, cursor_line);
@@ -540,13 +541,13 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
         frc_td.deinit(self.alloc);
     }
 
-    const sym_stmt = try self.db.prepare(
+    const sym_stmt = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
         \\WHERE (s.name = ? OR s.name LIKE '%::' || ?) AND s.kind IN ('class', 'module')
         \\ORDER BY CASE WHEN s.name = ? THEN 0 ELSE 1 END, s.id LIMIT 5
     );
-    defer sym_stmt.finalize();
+    defer sym_stmt.reset();
     sym_stmt.bind_text(1, tn);
     sym_stmt.bind_text(2, tn);
     sym_stmt.bind_text(3, tn);
@@ -586,8 +587,104 @@ pub const DefOrigin = struct {
     end_char: u32,
 };
 
+/// Emit one definition entry (LocationLink or Location) for a symbol the
+/// caller has already located. Mirrors the per-row emission inside the SQL
+/// path of queryAndEmitDefinitions so hot-index and SQL paths produce
+/// byte-identical JSON.
+fn emitOneDef(
+    self: *Server,
+    w: *std.Io.Writer,
+    sym_name: []const u8,
+    sym_line: i64,
+    sym_col: i64,
+    sym_path: []const u8,
+    found_any: *bool,
+    frc: *std.StringHashMapUnmanaged([]const u8),
+    origin: ?DefOrigin,
+) !void {
+    if (found_any.*) try w.writeByte(',');
+    found_any.* = true;
+    const start_char = self.toClientColFromPath(frc, sym_path, sym_line - 1, sym_col);
+    if (self.client_caps_def_link) {
+        try w.writeAll("{\"targetUri\":\"file://");
+        try writePathAsUri(w, sym_path);
+        try w.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+            sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+        });
+        try w.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+            sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+        });
+        if (origin) |orig| {
+            try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                orig.line, orig.start_char, orig.line, orig.end_char,
+            });
+        }
+        try w.writeByte('}');
+    } else {
+        try w.writeAll("{\"uri\":\"file://");
+        try writePathAsUri(w, sym_path);
+        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+        try w.print("{d}", .{sym_line - 1});
+        try w.writeAll(",\"character\":");
+        try w.print("{d}", .{start_char});
+        try w.writeAll("},\"end\":{\"line\":");
+        try w.print("{d}", .{sym_line - 1});
+        try w.writeAll(",\"character\":");
+        try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
+        try w.writeAll("}}}");
+    }
+}
+
+/// Try to satisfy a definition lookup from the in-memory hot index. Returns
+/// the number of results emitted. Caller falls back to SQL if zero.
+/// Replicates the semantics of the SQL `s.name = ?` and qualified-suffix
+/// branches; the rare mixin-walk case still goes to SQL.
+fn tryEmitFromHotIndex(
+    self: *Server,
+    w: *std.Io.Writer,
+    name: []const u8,
+    found_any: *bool,
+    frc: *std.StringHashMapUnmanaged([]const u8),
+    origin: ?DefOrigin,
+) !u32 {
+    if (!self.hot_index_enabled.load(.monotonic)) return 0;
+    const hot = self.hot orelse return 0;
+
+    var emitted: u32 = 0;
+    var seen: std.AutoHashMap(u64, void) = .init(self.alloc);
+    defer seen.deinit();
+
+    for (hot.lookupName(name)) |sym| {
+        if (emitted >= 10) break;
+        const path = hot.pathFor(sym.file_id) orelse continue;
+        const key = hashSymbol(sym);
+        if (seen.contains(key)) continue;
+        seen.put(key, {}) catch return emitted;
+        try emitOneDef(self, w, sym.name, @intCast(sym.line), @intCast(sym.col), path, found_any, frc, origin);
+        emitted += 1;
+    }
+    for (hot.lookupTail(name)) |sym| {
+        if (emitted >= 10) break;
+        if (!sym.kind.matchesQualifiedSuffix()) continue;
+        const path = hot.pathFor(sym.file_id) orelse continue;
+        const key = hashSymbol(sym);
+        if (seen.contains(key)) continue;
+        seen.put(key, {}) catch return emitted;
+        try emitOneDef(self, w, sym.name, @intCast(sym.line), @intCast(sym.col), path, found_any, frc, origin);
+        emitted += 1;
+    }
+    return emitted;
+}
+
+fn hashSymbol(sym: hot_index_mod.HotSymbol) u64 {
+    return (@as(u64, sym.file_id) << 32) ^ (@as(u64, sym.line) << 16) ^ @as(u64, sym.col);
+}
+
 pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u8, found_any: *bool, frc: *std.StringHashMapUnmanaged([]const u8), origin: ?DefOrigin) !void {
-    const stmt = try self.db.prepare(
+    const hot_hits = tryEmitFromHotIndex(self, w, name, found_any, frc, origin) catch 0;
+    if (hot_hits > 0) return;
+
+    const stmt = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
         \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
@@ -600,7 +697,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
         \\WHERE s2.name = ? AND s2.kind = 'def'
         \\LIMIT 10
     );
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, name);
     stmt.bind_text(2, name);
     stmt.bind_text(3, name);
@@ -684,8 +781,8 @@ pub fn handlePrepareTypeHierarchy(self: *Server, msg: types.RequestMessage) !?ty
     const word = extractWord(source, offset);
     if (word.len == 0) return emptyResult(msg);
 
-    const stmt = try self.db.prepare("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module','classdef') LIMIT 1");
-    defer stmt.finalize();
+    const stmt = try self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module','classdef') LIMIT 1");
+    defer stmt.reset();
     stmt.bind_text(1, word);
     if (!(try stmt.step())) return emptyResult(msg);
     const sym_id = stmt.column_int(0);
@@ -745,7 +842,7 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
     try w.writeByte('[');
     var first = true;
 
-    const mro_stmt = self.db.prepare(
+    const mro_stmt = self.cachedStmt(
         \\WITH RECURSIVE mro(name, depth) AS (
         \\  SELECT parent_name, 1 FROM symbols WHERE name=? AND kind IN ('class','module')
         \\  UNION ALL
@@ -757,7 +854,7 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
         try w.writeByte(']');
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
     };
-    defer mro_stmt.finalize();
+    defer mro_stmt.reset();
     mro_stmt.bind_text(1, class_name);
 
     var seen_arena = std.heap.ArenaAllocator.init(self.alloc);
@@ -769,8 +866,8 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
         if (parent_name_raw.len == 0 or seen_parents.contains(parent_name_raw)) continue;
         try seen_parents.put(seen_arena.allocator().dupe(u8, parent_name_raw) catch continue, {});
 
-        const sym_stmt = self.db.prepare("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module') LIMIT 1") catch continue;
-        defer sym_stmt.finalize();
+        const sym_stmt = self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module') LIMIT 1") catch continue;
+        defer sym_stmt.reset();
         sym_stmt.bind_text(1, parent_name_raw);
         if (!(sym_stmt.step() catch false)) {
             // Parent exists in DB but no file — emit minimal item
@@ -801,11 +898,11 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
         });
     }
     // Also include mixins as supertypes
-    const mix_stmt = self.db.prepare("SELECT m.module_name FROM mixins m JOIN symbols s ON m.class_id=s.id WHERE s.name=?") catch {
+    const mix_stmt = self.cachedStmt("SELECT m.module_name FROM mixins m JOIN symbols s ON m.class_id=s.id WHERE s.name=?") catch {
         try w.writeByte(']');
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
     };
-    defer mix_stmt.finalize();
+    defer mix_stmt.reset();
     mix_stmt.bind_text(1, class_name);
     while (mix_stmt.step() catch false) {
         const mod_name = mix_stmt.column_text(0);
@@ -837,8 +934,8 @@ pub fn handleTypeHierarchySubtypes(self: *Server, msg: types.RequestMessage) !?t
         else => return emptyResult(msg),
     };
 
-    const stmt = try self.db.prepare("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.parent_name=? AND s.kind='class' LIMIT 50");
-    defer stmt.finalize();
+    const stmt = try self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.parent_name=? AND s.kind='class' LIMIT 50");
+    defer stmt.reset();
     stmt.bind_text(1, class_name);
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -912,12 +1009,12 @@ pub fn handleCallHierarchyPrepare(self: *Server, msg: types.RequestMessage) !?ty
     const word = extractWord(source, offset);
     if (word.len == 0) return emptyResult(msg);
 
-    const stmt = try self.db.prepare(
+    const stmt = try self.cachedStmt(
         \\SELECT s.name, s.kind, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id=f.id
         \\WHERE s.name=? LIMIT 1
     );
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, word);
     if (!(try stmt.step())) return emptyResult(msg);
 
@@ -976,20 +1073,20 @@ pub fn handleCallHierarchyIncomingCalls(self: *Server, msg: types.RequestMessage
         else => return emptyResult(msg),
     };
 
-    const ref_stmt = try self.db.prepare(
+    const ref_stmt = try self.cachedStmt(
         \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
         \\WHERE r.name=? ORDER BY f.path, r.line LIMIT 100
     );
-    defer ref_stmt.finalize();
+    defer ref_stmt.reset();
     ref_stmt.bind_text(1, name);
 
     // Enclosing-method lookup: given (path, line), find innermost def/classdef/test
-    const enc_stmt = self.db.prepare(
+    const enc_stmt = self.cachedStmt(
         \\SELECT s.name, s.kind FROM symbols s JOIN files f ON s.file_id=f.id
         \\WHERE f.path=? AND s.kind IN ('def','classdef','test') AND s.line<=?
         \\ORDER BY s.line DESC LIMIT 1
     ) catch null;
-    defer if (enc_stmt) |es| es.finalize();
+    defer if (enc_stmt) |es| es.reset();
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
     const w = &aw.writer;
@@ -1103,8 +1200,8 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const fid_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer fid_stmt.finalize();
+    const fid_stmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer fid_stmt.reset();
     fid_stmt.bind_text(1, path);
     if (!(try fid_stmt.step())) {
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try self.alloc.dupe(u8, empty_json_array), .@"error" = null };
@@ -1114,11 +1211,11 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
     const db_start_line: i64 = start_line + 1;
     const db_end_line: i64 = end_line + 1;
 
-    const ref_stmt = try self.db.prepare(
+    const ref_stmt = try self.cachedStmt(
         \\SELECT DISTINCT r.name, r.line, r.col FROM refs r
         \\WHERE r.file_id = ? AND r.line BETWEEN ? AND ?
     );
-    defer ref_stmt.finalize();
+    defer ref_stmt.reset();
     ref_stmt.bind_int(1, file_id);
     ref_stmt.bind_int(2, db_start_line);
     ref_stmt.bind_int(3, db_end_line);
@@ -1149,11 +1246,11 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
         const ref_name = entry.key_ptr.*;
         const ref_positions = entry.value_ptr.*;
 
-        const def_stmt = try self.db.prepare(
+        const def_stmt = try self.cachedStmt(
             \\SELECT s.name, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
             \\WHERE s.name = ? AND s.kind = 'def' LIMIT 1
         );
-        defer def_stmt.finalize();
+        defer def_stmt.reset();
         def_stmt.bind_text(1, ref_name);
         if (!(try def_stmt.step())) continue;
 

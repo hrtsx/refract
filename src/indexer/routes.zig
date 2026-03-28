@@ -527,7 +527,7 @@ fn handleMemberCollection(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn
             .action = action_name,
             .line = lc.line,
             .col = lc.col,
-        }) catch {};
+        }) catch |e| std.log.warn("routes: insert route: {s}", .{@errorName(e)});
     }
 }
 
@@ -683,13 +683,13 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (extractSymbolName(ctx.parser, first_arg)) |ns_name| {
                 const path_prefix = (std.fmt.allocPrint(ctx.alloc, "/{s}", .{ns_name}) catch return true);
                 const controller_prefix = (std.fmt.allocPrint(ctx.alloc, "{s}::", .{ns_name}) catch return true);
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {};
-                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch {};
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| std.log.warn("routes: push ns path: {s}", .{@errorName(e)});
+                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch |e| std.log.warn("routes: push ns ctrl: {s}", .{@errorName(e)});
             }
         } else if (std.mem.eql(u8, mname, "scope")) {
             if (extractSymbolName(ctx.parser, first_arg)) |scope_path| {
                 const path_prefix = ctx.alloc.dupe(u8, scope_path) catch return true;
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {};
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| std.log.warn("routes: push scope: {s}", .{@errorName(e)});
             }
         } else if (std.mem.eql(u8, mname, "resources")) {
             if (extractSymbolName(ctx.parser, first_arg)) |name| {
@@ -962,7 +962,7 @@ fn rodaVisitNode(ctx: *RodaCtx, node: *const prism.Node) void {
                     .action = method,
                     .line = lc.line,
                     .col = lc.col,
-                }) catch {};
+                }) catch |e| std.log.warn("routes: insert req: {s}", .{@errorName(e)});
                 ctx.route_count.* += 1;
                 return;
             }

@@ -4,6 +4,18 @@ const Server = S.Server;
 const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
+const hot_index_mod = @import("hot_index.zig");
+
+fn hoverScore(s: hot_index_mod.HotSymbol, query_name: []const u8, current_path: []const u8, hot: *const hot_index_mod.HotIndex) i64 {
+    var v: i64 = 0;
+    if (hot.pathFor(s.file_id)) |p| {
+        if (std.mem.eql(u8, p, current_path)) v += 1_000_000;
+    }
+    if (std.mem.eql(u8, s.name, query_name)) v += 500_000;
+    if (!s.is_bundled) v += 200_000;
+    v -= @as(i64, s.file_id);
+    return v;
+}
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractPosition = S.extractPosition;
@@ -465,18 +477,67 @@ fn relPathFor(sym_path: []const u8, root_path: ?[]u8) []const u8 {
 }
 
 pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, current_path: []const u8, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
-    const stmt = try self.db.prepare(
-        \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
-        \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
-        \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, CASE WHEN s.name = ? THEN 0 ELSE 1 END, s.id
-        \\LIMIT 1
-    );
+    // Hot-index fast path: pick the best candidate by same-file/exact-name/non-bundled
+    // priority, then fetch metadata via an indexed (file_id, line, name) SELECT.
+    var hot_file_id: i64 = 0;
+    var hot_line: i64 = 0;
+    var hot_name: []const u8 = "";
+    var hot_hit = false;
+    if (self.hot_index_enabled.load(.monotonic)) {
+        if (self.hot) |hot| {
+            var best: ?hot_index_mod.HotSymbol = null;
+            var best_score: i64 = std.math.minInt(i64);
+            for (hot.lookupName(name)) |s| {
+                const v = hoverScore(s, name, current_path, hot);
+                if (v > best_score) {
+                    best = s;
+                    best_score = v;
+                }
+            }
+            for (hot.lookupTail(name)) |s| {
+                if (!s.kind.matchesQualifiedSuffix()) continue;
+                const v = hoverScore(s, name, current_path, hot);
+                if (v > best_score) {
+                    best = s;
+                    best_score = v;
+                }
+            }
+            if (best) |w| {
+                hot_file_id = @intCast(w.file_id);
+                hot_line = @intCast(w.line);
+                hot_name = w.name;
+                hot_hit = true;
+            }
+        }
+    }
+
+    const stmt = stmt: {
+        if (hot_hit) {
+            const fs = try self.db.prepare(
+                \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
+                \\FROM symbols s JOIN files f ON s.file_id = f.id
+                \\WHERE s.file_id = ? AND s.line = ? AND s.name = ?
+                \\LIMIT 1
+            );
+            fs.bind_int(1, hot_file_id);
+            fs.bind_int(2, hot_line);
+            fs.bind_text(3, hot_name);
+            break :stmt fs;
+        }
+        const ss = try self.db.prepare(
+            \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
+            \\FROM symbols s JOIN files f ON s.file_id = f.id
+            \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
+            \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, CASE WHEN s.name = ? THEN 0 ELSE 1 END, s.id
+            \\LIMIT 1
+        );
+        ss.bind_text(1, name);
+        ss.bind_text(2, name);
+        ss.bind_text(3, current_path);
+        ss.bind_text(4, name);
+        break :stmt ss;
+    };
     defer stmt.finalize();
-    stmt.bind_text(1, name);
-    stmt.bind_text(2, name);
-    stmt.bind_text(3, current_path);
-    stmt.bind_text(4, name);
 
     if (!(try stmt.step())) return null;
 

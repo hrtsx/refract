@@ -15,6 +15,8 @@ pub const Panic = crash.Panic;
 var stdin_buf: [65536]u8 = undefined;
 var stdout_buf: [65536]u8 = undefined;
 
+const REINDEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
 var g_sigterm = std.atomic.Value(bool).init(false);
 var g_tmp_dir: ?[:0]u8 = null;
 
@@ -40,6 +42,7 @@ pub fn main(init: std.process.Init) !void {
     var server_log_path: ?[]const u8 = null;
     var server_log_level: u8 = 2;
     var server_disable_rubocop: bool = false;
+    var server_disable_hot_index: bool = false;
     var custom_db_path: ?[]const u8 = null;
     var flag_reset_db: bool = false;
     var flag_print_db_path: bool = false;
@@ -73,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
                     "  --verbose            Enable verbose logging\n" ++
                     "  --log-level 1|2|3|4  Set log verbosity (1=error … 4=debug)\n" ++
                     "  --disable-rubocop    Disable RuboCop diagnostics\n" ++
+                    "  --no-hot-index       Disable in-memory hot symbol index (A/B for benchmarks)\n" ++
                     "  --db-path PATH       Override database file path\n" ++
                     "  --print-db-path      Print computed database path and exit\n" ++
                     "  --reset-db           Delete the database and exit\n" ++
@@ -107,6 +111,8 @@ pub fn main(init: std.process.Init) !void {
             server_log_level = @max(1, @min(lvl, 4));
         } else if (std.mem.eql(u8, arg, "--disable-rubocop")) {
             server_disable_rubocop = true;
+        } else if (std.mem.eql(u8, arg, "--no-hot-index")) {
+            server_disable_hot_index = true;
         } else if (std.mem.eql(u8, arg, "--db-path")) {
             if (i + 1 >= args.len) {
                 try std.Io.File.stderr().writeStreamingAll(io, "refract: --db-path requires a value\n");
@@ -409,7 +415,7 @@ pub fn main(init: std.process.Init) !void {
         defer alloc.free(const_paths);
         for (paths, 0..) |p, idx| const_paths[idx] = p;
 
-        indexer.reindex(index_db, const_paths, false, alloc, 8 * 1024 * 1024, null) catch {
+        indexer.reindex(index_db, const_paths, false, alloc, REINDEX_BUFFER_BYTES, null) catch {
             try std.Io.File.stderr().writeStreamingAll(io, "refract: --index-only: reindex failed\n");
             return error.IndexFailed;
         };
@@ -649,7 +655,7 @@ pub fn main(init: std.process.Init) !void {
             const const_paths = try alloc.alloc([]const u8, paths.len);
             defer alloc.free(const_paths);
             for (paths, 0..) |p, idx| const_paths[idx] = p;
-            indexer.reindex(db, const_paths, false, alloc, 8 * 1024 * 1024, null) catch {
+            indexer.reindex(db, const_paths, false, alloc, REINDEX_BUFFER_BYTES, null) catch {
                 try std.Io.File.stderr().writeStreamingAll(io, "refract: auto-index failed\n");
                 return error.IndexFailed;
             };
@@ -683,6 +689,7 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (g_tmp_dir) |d| alloc.free(d);
     server.disable_rubocop.store(server_disable_rubocop, .monotonic);
+    server.hot_index_enabled.store(!server_disable_hot_index, .monotonic);
     if (flag_max_workers) |mw| {
         server.max_workers = @intCast(@max(1, @min(mw, 16)));
     }
@@ -845,7 +852,7 @@ fn indexStdlibRbs(io: std.Io, db: db_mod.Db, cwd_path: []const u8, alloc: std.me
     const stdlib_const = alloc.alloc([]const u8, stdlib_paths.len) catch return;
     defer alloc.free(stdlib_const);
     for (stdlib_paths, 0..) |p, si| stdlib_const[si] = p;
-    indexer.reindex(db, stdlib_const, true, alloc, 8 * 1024 * 1024, null) catch return;
+    indexer.reindex(db, stdlib_const, true, alloc, REINDEX_BUFFER_BYTES, null) catch return;
     var sbuf: [128]u8 = undefined;
     const smsg = std.fmt.bufPrint(&sbuf, "refract: indexed {d} stdlib RBS files\n", .{stdlib_const.len}) catch "refract: indexed stdlib RBS\n";
     std.debug.print("{s}", .{smsg});
@@ -855,4 +862,5 @@ test {
     _ = @import("lsp/transport.zig");
     _ = @import("db.zig");
     _ = @import("indexer/index.zig");
+    _ = @import("lsp/hot_index.zig");
 }

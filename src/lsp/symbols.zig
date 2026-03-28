@@ -235,15 +235,21 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
 
         // Infix fallback: add symbols where query appears anywhere but not as prefix
         if (result_count < 10 and query.len > 0) {
+            const glob_pattern = try self.alloc.dupe(u8, pattern);
+            defer self.alloc.free(glob_pattern);
+            std.mem.replaceScalar(u8, glob_pattern, '%', '*');
+            const glob_prefix = try self.alloc.dupe(u8, prefix_pattern);
+            defer self.alloc.free(glob_prefix);
+            std.mem.replaceScalar(u8, glob_prefix, '%', '*');
             const infix_stmt = try self.db.prepare(
                 \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
-                \\WHERE s.name LIKE ? ESCAPE '\' AND s.name NOT LIKE ? ESCAPE '\' AND f.is_gem = 0
+                \\WHERE s.name GLOB ? AND s.name NOT GLOB ? AND f.is_gem = 0
                 \\LIMIT 100
             );
             defer infix_stmt.finalize();
-            infix_stmt.bind_text(1, pattern);
-            infix_stmt.bind_text(2, prefix_pattern);
+            infix_stmt.bind_text(1, glob_pattern);
+            infix_stmt.bind_text(2, glob_prefix);
             while (try infix_stmt.step()) {
                 if (!first) try w.writeByte(',');
                 first = false;
@@ -280,14 +286,17 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
         if (result_count < 10 and query.len >= 2) {
             const fuzzy_exclude = try buildQueryPattern(self.alloc, query);
             defer self.alloc.free(fuzzy_exclude);
+            const glob_exclude = try self.alloc.dupe(u8, fuzzy_exclude);
+            defer self.alloc.free(glob_exclude);
+            std.mem.replaceScalar(u8, glob_exclude, '%', '*');
             const fuzzy_stmt = try self.db.prepare(
                 \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
-                \\WHERE s.name NOT LIKE ? ESCAPE '\' AND f.is_gem = 0
+                \\WHERE s.name NOT GLOB ? AND f.is_gem = 0
                 \\LIMIT 500
             );
             defer fuzzy_stmt.finalize();
-            fuzzy_stmt.bind_text(1, fuzzy_exclude);
+            fuzzy_stmt.bind_text(1, glob_exclude);
             while (try fuzzy_stmt.step()) {
                 const fname = fuzzy_stmt.column_text(0);
                 if (!matchesCamelInitials(query, fname) and !isSubsequence(query, fname)) continue;

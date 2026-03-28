@@ -6,6 +6,24 @@ const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
 const indexer = @import("../indexer/index.zig");
 const snippets = @import("snippets.zig");
+const hot_index_mod = @import("hot_index.zig");
+
+fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]const u8 {
+    if (!self.hot_index_enabled.load(.monotonic)) return null;
+    const hot = self.hot orelse return null;
+    for (hot.lookupName(method_name)) |sym| {
+        if (sym.kind != .def) continue;
+        const ret = sym.return_type orelse continue;
+        if (sym.parent_name) |p| {
+            if (std.mem.eql(u8, p, parent_class)) return ret;
+            continue;
+        }
+        for (hot.classesIn(sym.file_id)) |cls_name| {
+            if (std.mem.eql(u8, cls_name, parent_class)) return ret;
+        }
+    }
+    return null;
+}
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractPosition = S.extractPosition;
@@ -86,9 +104,9 @@ pub fn completeEnvKeys(self: *Server, msg: types.RequestMessage, prefix: []const
                 seen.deinit();
             }
 
-            const file_stmt = self.db.prepare("SELECT path FROM files WHERE is_gem = 0") catch null;
+            const file_stmt = self.cachedStmt("SELECT path FROM files WHERE is_gem = 0") catch null;
             if (file_stmt) |fs| {
-                defer fs.finalize();
+                defer fs.reset();
                 while (fs.step() catch false) {
                     const fpath = fs.column_text(0);
                     const fsrc = std.Io.Dir.cwd().readFileAllocOptions(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(512 * 1024), .@"1", 0) catch continue;
@@ -258,13 +276,17 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             const outer_type = oth_stmt.column_text(0);
                             if (outer_type.len > 0) {
                                 const resolved_outer = extractBaseClass(outer_type);
-                                const ret_stmt = try self.cachedStmt("SELECT return_type FROM symbols WHERE name=?1 AND kind='def' AND return_type IS NOT NULL AND (parent_name=?2 OR (parent_name IS NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2))) LIMIT 1");
-                                defer ret_stmt.reset();
-                                ret_stmt.bind_text(1, recv_word);
-                                ret_stmt.bind_text(2, resolved_outer);
-                                if (try ret_stmt.step()) {
-                                    const cc = ret_stmt.column_text(0);
-                                    if (cc.len > 0) chain_class_buf = try self.alloc.dupe(u8, cc);
+                                if (hotCrossFileReturnType(self, recv_word, resolved_outer)) |rt| {
+                                    chain_class_buf = try self.alloc.dupe(u8, rt);
+                                } else {
+                                    const ret_stmt = try self.cachedStmt("SELECT return_type FROM symbols WHERE name=?1 AND kind='def' AND return_type IS NOT NULL AND (parent_name=?2 OR (parent_name IS NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2))) LIMIT 1");
+                                    defer ret_stmt.reset();
+                                    ret_stmt.bind_text(1, recv_word);
+                                    ret_stmt.bind_text(2, resolved_outer);
+                                    if (try ret_stmt.step()) {
+                                        const cc = ret_stmt.column_text(0);
+                                        if (cc.len > 0) chain_class_buf = try self.alloc.dupe(u8, cc);
+                                    }
                                 }
                                 if (chain_class_buf == null) {
                                     if (indexer.lookupStdlibReturn(resolved_outer, recv_word)) |rt| {
@@ -278,8 +300,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
             if (chain_class_buf == null and recv_word.len > 0 and recv_word[0] == '@') {
                 const ivar_name = recv_word[1..];
-                const enclosing_class_stmt = try self.db.prepare("SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-                defer enclosing_class_stmt.finalize();
+                const enclosing_class_stmt = try self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
+                defer enclosing_class_stmt.reset();
                 enclosing_class_stmt.bind_int(1, fdc_id);
                 enclosing_class_stmt.bind_int(2, cursor_line_db);
                 if (try enclosing_class_stmt.step()) {
@@ -296,8 +318,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
 
             if (chain_class_buf == null and std.mem.eql(u8, recv_word, "self")) {
-                const sc_stmt = try self.db.prepare("SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-                defer sc_stmt.finalize();
+                const sc_stmt = try self.cachedStmt("SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
+                defer sc_stmt.reset();
                 sc_stmt.bind_int(1, fdc_id);
                 sc_stmt.bind_int(2, cursor_line_db);
                 if (try sc_stmt.step()) {
@@ -339,7 +361,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
 
                     var current = try ma.dupe(u8, resolved_class);
                     const own_stmt_hoisted = if (is_self_recv)
-                        self.db.prepare(
+                        self.cachedStmt(
                             \\SELECT s.name, s.doc,
                             \\  (SELECT GROUP_CONCAT(
                             \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
@@ -359,7 +381,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\)))
                         ) catch null
                     else
-                        self.db.prepare(
+                        self.cachedStmt(
                             \\SELECT s.name, s.doc,
                             \\  (SELECT GROUP_CONCAT(
                             \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
@@ -378,9 +400,9 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
                             \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
                         ) catch null;
-                    defer if (own_stmt_hoisted) |s2| s2.finalize();
+                    defer if (own_stmt_hoisted) |s2| s2.reset();
                     const cls_stmt_hoisted = if (is_constant_recv)
-                        self.db.prepare(
+                        self.cachedStmt(
                             \\SELECT s.name, s.doc FROM symbols s
                             \\WHERE s.kind='classdef' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
@@ -388,7 +410,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         ) catch null
                     else
                         null;
-                    defer if (cls_stmt_hoisted) |s2| s2.finalize();
+                    defer if (cls_stmt_hoisted) |s2| s2.reset();
                     var depth: u8 = 0;
                     while (depth < 8) : (depth += 1) {
                         if (seen_classes.contains(current)) break;
@@ -598,9 +620,9 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 var has_enumerable = false;
                 var has_comparable = false;
                 {
-                    const enum_stmt = self.db.prepare("SELECT module_name FROM mixins WHERE class_id IN (SELECT id FROM symbols WHERE kind IN ('class','module') AND name=?) AND kind IN ('include','prepend')") catch null;
+                    const enum_stmt = self.cachedStmt("SELECT module_name FROM mixins WHERE class_id IN (SELECT id FROM symbols WHERE kind IN ('class','module') AND name=?) AND kind IN ('include','prepend')") catch null;
                     if (enum_stmt) |es| {
-                        defer es.finalize();
+                        defer es.reset();
                         es.bind_text(1, class_name);
                         while (es.step() catch false) {
                             const mn = es.column_text(0);
@@ -659,14 +681,14 @@ pub fn completeNamespace(self: *Server, msg: types.RequestMessage, source: []con
     while (ns_offset > 0 and (source[ns_offset] == ' ' or source[ns_offset] == '\t')) : (ns_offset -= 1) {}
     const ns_word = extractWord(source, ns_offset);
     if (ns_word.len == 0) return null;
-    const ns_stmt = try self.db.prepare(
+    const ns_stmt = try self.cachedStmt(
         \\SELECT name, kind
         \\FROM symbols
         \\WHERE parent_name = ?
         \\  AND kind IN ('classdef', 'moduledef', 'constant', 'def', 'class', 'module')
         \\ORDER BY name LIMIT 100
     );
-    defer ns_stmt.finalize();
+    defer ns_stmt.reset();
     ns_stmt.bind_text(1, ns_word);
     var aw_ns = std.Io.Writer.Allocating.init(self.alloc);
     const wns = &aw_ns.writer;
@@ -701,16 +723,16 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
     var first = true;
 
     // Local variables in scope
-    const fstmt = self.db.prepare("SELECT id FROM files WHERE path = ?") catch null;
+    const fstmt = self.cachedStmt("SELECT id FROM files WHERE path = ?") catch null;
     if (fstmt) |fs| {
-        defer fs.finalize();
+        defer fs.reset();
         fs.bind_text(1, path);
         if (fs.step() catch false) {
             const fid = fs.column_int(0);
             const cursor_line: i64 = @intCast(line + 1);
-            const lv_stmt = self.db.prepare("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id=? AND line<=? ORDER BY line DESC LIMIT 50") catch null;
+            const lv_stmt = self.cachedStmt("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id=? AND line<=? ORDER BY line DESC LIMIT 50") catch null;
             if (lv_stmt) |lv| {
-                defer lv.finalize();
+                defer lv.reset();
                 lv.bind_int(1, fid);
                 lv.bind_int(2, cursor_line);
                 while (lv.step() catch false) {
@@ -735,11 +757,11 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
     }
 
     // Then global symbols (methods, classes, constants)
-    const stmt = self.db.prepare(
+    const stmt = self.cachedStmt(
         \\SELECT DISTINCT name, kind FROM symbols WHERE kind IN ('def','classdef','class','module','constant') ORDER BY length(name), name LIMIT 200
     ) catch null;
     if (stmt) |s| {
-        defer s.finalize();
+        defer s.reset();
         while (s.step() catch false) {
             if (!first) try w.writeByte(',');
             first = false;
@@ -759,10 +781,10 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
 }
 
 pub fn completeAllSymbols(self: *Server, msg: types.RequestMessage) !types.ResponseMessage {
-    const stmt2 = try self.db.prepare(
+    const stmt2 = try self.cachedStmt(
         \\SELECT DISTINCT name, kind FROM symbols ORDER BY length(name), name LIMIT 500
     );
-    defer stmt2.finalize();
+    defer stmt2.reset();
     var items_aw2 = std.Io.Writer.Allocating.init(self.alloc);
     var first2 = true;
     var count2: usize = 0;
@@ -811,8 +833,8 @@ pub fn completeInstanceVars(self: *Server, msg: types.RequestMessage, path: []co
     _ = source;
     const ivar_pattern = try buildQueryPattern(self.alloc, word);
     defer self.alloc.free(ivar_pattern);
-    const ifc_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer ifc_stmt.finalize();
+    const ifc_stmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer ifc_stmt.reset();
     ifc_stmt.bind_text(1, path);
     var aw_iv = std.Io.Writer.Allocating.init(self.alloc);
     const wi = &aw_iv.writer;
@@ -820,18 +842,18 @@ pub fn completeInstanceVars(self: *Server, msg: types.RequestMessage, path: []co
     var first_iv = true;
     if (try ifc_stmt.step()) {
         const fid = ifc_stmt.column_int(0);
-        const cls_stmt = self.db.prepare("SELECT id FROM symbols WHERE file_id=? AND line<=? AND (kind='class' OR kind='module') ORDER BY line DESC LIMIT 1") catch null;
+        const cls_stmt = self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND line<=? AND (kind='class' OR kind='module') ORDER BY line DESC LIMIT 1") catch null;
         const class_id: i64 = blk: {
             if (cls_stmt) |cs| {
-                defer cs.finalize();
+                defer cs.reset();
                 cs.bind_int(1, fid);
                 cs.bind_int(2, @intCast(line + 1));
                 if (cs.step() catch false) break :blk cs.column_int(0);
             }
             break :blk 0;
         };
-        const iv_stmt = try self.db.prepare("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id=? AND (class_id=? OR class_id IS NULL) AND name LIKE ? ESCAPE '\\'");
-        defer iv_stmt.finalize();
+        const iv_stmt = try self.cachedStmt("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id=? AND (class_id=? OR class_id IS NULL) AND name LIKE ? ESCAPE '\\'");
+        defer iv_stmt.reset();
         iv_stmt.bind_int(1, fid);
         iv_stmt.bind_int(2, class_id);
         iv_stmt.bind_text(3, ivar_pattern);
@@ -870,12 +892,12 @@ pub fn completeInstanceVars(self: *Server, msg: types.RequestMessage, path: []co
 pub fn completeGlobalVars(self: *Server, msg: types.RequestMessage, word: []const u8) !types.ResponseMessage {
     const gv_pat = try buildPrefixPattern(self.alloc, word);
     defer self.alloc.free(gv_pat);
-    const gv_stmt = try self.db.prepare(
+    const gv_stmt = try self.cachedStmt(
         \\SELECT DISTINCT name FROM local_vars
         \\WHERE name LIKE ? ESCAPE '\'
         \\ORDER BY name LIMIT 200
     );
-    defer gv_stmt.finalize();
+    defer gv_stmt.reset();
     gv_stmt.bind_text(1, gv_pat);
     var aw_gv = std.Io.Writer.Allocating.init(self.alloc);
     const wg = &aw_gv.writer;
@@ -954,12 +976,12 @@ pub fn completeI18n(self: *Server, msg: types.RequestMessage, source: []const u8
     const i18n_pattern = try buildPrefixPattern(self.alloc, partial_key);
     defer self.alloc.free(i18n_pattern);
 
-    const stmt = self.db.prepare(
+    const stmt = self.cachedStmt(
         \\SELECT DISTINCT key, value FROM i18n_keys
         \\WHERE key LIKE ? ESCAPE '\'
         \\ORDER BY key LIMIT 50
     ) catch return emptyResult(msg).?;
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, i18n_pattern);
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -993,12 +1015,12 @@ pub fn completeRouteHelpers(self: *Server, msg: types.RequestMessage, word: []co
     const route_pattern = try buildPrefixPattern(self.alloc, word);
     defer self.alloc.free(route_pattern);
 
-    const stmt = self.db.prepare(
+    const stmt = self.cachedStmt(
         \\SELECT helper_name, http_method, path_pattern FROM routes
         \\WHERE helper_name LIKE ? ESCAPE '\'
         \\ORDER BY helper_name LIMIT 50
     ) catch return emptyResult(msg).?;
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, route_pattern);
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -1040,7 +1062,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     const prefix_pattern = try buildPrefixPattern(self.alloc, word);
     defer self.alloc.free(prefix_pattern);
 
-    const stmt = try self.db.prepare(
+    const stmt = try self.cachedStmt(
         \\SELECT s.name, s.kind,
         \\  (SELECT GROUP_CONCAT(
         \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
@@ -1051,7 +1073,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         \\FROM symbols s WHERE s.name LIKE ? ESCAPE '\'
         \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 200
     );
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, pattern);
     stmt.bind_text(2, prefix_pattern);
 
@@ -1143,13 +1165,13 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         }
     }
 
-    const fc_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer fc_stmt.finalize();
+    const fc_stmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer fc_stmt.reset();
     fc_stmt.bind_text(1, path);
     if (try fc_stmt.step()) {
         const fid = fc_stmt.column_int(0);
-        const lv_stmt = try self.db.prepare("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id = ? AND name LIKE ? ESCAPE '\\'");
-        defer lv_stmt.finalize();
+        const lv_stmt = try self.cachedStmt("SELECT DISTINCT name, type_hint FROM local_vars WHERE file_id = ? AND name LIKE ? ESCAPE '\\'");
+        defer lv_stmt.reset();
         lv_stmt.bind_int(1, fid);
         lv_stmt.bind_text(2, pattern);
         while (try lv_stmt.step()) {
@@ -1246,8 +1268,8 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         const kco = kp_open orelse break :kw_params_detect;
         const kp_method = extractWord(source, if (kco > 0) kco - 1 else 0);
         if (kp_method.len == 0) break :kw_params_detect;
-        const kp_q = self.db.prepare("SELECT p.name FROM params p JOIN symbols s ON p.symbol_id=s.id WHERE s.name=? AND s.kind='def' AND p.kind='keyword' ORDER BY p.position LIMIT 20") catch break :kw_params_detect;
-        defer kp_q.finalize();
+        const kp_q = self.cachedStmt("SELECT p.name FROM params p JOIN symbols s ON p.symbol_id=s.id WHERE s.name=? AND s.kind='def' AND p.kind='keyword' ORDER BY p.position LIMIT 20") catch break :kw_params_detect;
+        defer kp_q.reset();
         kp_q.bind_text(1, kp_method);
         while (kp_q.step() catch false) {
             const pname = kp_q.column_text(0);
@@ -1398,6 +1420,8 @@ pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.Respon
         try aw_empty.writer.writeAll("{\"isIncomplete\":true,\"items\":[]}");
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw_empty.toOwnedSlice(), .@"error" = null };
     }
+    if (word.len > 0 and word[0] == '$')
+        return try completeGlobalVars(self, msg, word);
     if (indexing_in_progress) {
         var aw_busy = std.Io.Writer.Allocating.init(self.alloc);
         try aw_busy.writer.writeAll("{\"isIncomplete\":true,\"items\":[]}");
@@ -1409,8 +1433,6 @@ pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.Respon
         return try completeAllSymbols(self, msg);
     if (word.len > 0 and word[0] == '@')
         return try completeInstanceVars(self, msg, path, source, line, word);
-    if (word.len > 0 and word[0] == '$')
-        return try completeGlobalVars(self, msg, word);
     if (word.len > 0 and (std.mem.endsWith(u8, word, "_path") or std.mem.endsWith(u8, word, "_url") or std.mem.endsWith(u8, word, "_p") or std.mem.endsWith(u8, word, "_u")))
         return try completeRouteHelpers(self, msg, word);
     return try completeGeneral(self, msg, path, source, line, character, word, offset);
@@ -1468,8 +1490,8 @@ pub fn handleCompletionItemResolve(self: *Server, msg: types.RequestMessage) !?t
         },
     };
 
-    const def_stmt = try self.db.prepare("SELECT doc, return_type FROM symbols WHERE name = ? AND kind = 'def' LIMIT 1");
-    defer def_stmt.finalize();
+    const def_stmt = try self.cachedStmt("SELECT doc, return_type FROM symbols WHERE name = ? AND kind = 'def' LIMIT 1");
+    defer def_stmt.reset();
     def_stmt.bind_text(1, name);
     if (!(try def_stmt.step())) {
         const raw = std.json.Stringify.valueAlloc(self.alloc, params, .{}) catch null;

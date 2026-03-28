@@ -21,6 +21,7 @@ const semantic_tokens = @import("semantic_tokens.zig");
 const code_actions = @import("code_actions.zig");
 const editing = @import("editing.zig");
 const rename = @import("rename.zig");
+const hot_index_mod = @import("hot_index.zig");
 
 pub const ruby_block_keywords = [_][]const u8{ "if ", "unless ", "case ", "while ", "until ", "begin", "for " };
 pub const empty_json_array = "[]";
@@ -74,6 +75,38 @@ fn indexBundledRbsLsp(ctx: *BgCtx) void {
         const bmsg = std.fmt.bufPrint(&bbuf, "refract: indexed {d} bundled RBS files", .{bundled_count}) catch "refract: indexed bundled RBS";
         ctx.server_ptr.sendLogMessage(3, bmsg);
     }
+    rebuildHotIndex(ctx.server_ptr);
+}
+
+/// Rebuild the in-memory hot symbol index from the current SQLite state.
+/// Safe to call after any indexer commit. No-op if hot index is disabled.
+/// On failure, logs a warning and leaves the previous hot index in place
+/// (or null, in which case readers fall back to SQL).
+pub fn rebuildHotIndex(self: *Server) void {
+    if (!self.hot_index_enabled.load(.monotonic)) return;
+
+    self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer self.hot_mu.unlock(std.Options.debug_io);
+
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
+
+    const new_idx = hot_index_mod.buildFromDb(self.alloc, self.db) catch |e| {
+        var ebuf: [256]u8 = undefined;
+        const emsg = std.fmt.bufPrint(&ebuf, "refract: hot index rebuild failed: {s}", .{@errorName(e)}) catch "refract: hot index rebuild failed";
+        self.sendLogMessage(2, emsg);
+        return;
+    };
+
+    if (self.hot) |old| {
+        old.deinit();
+        self.alloc.destroy(old);
+    }
+    self.hot = new_idx;
+
+    var ibuf: [128]u8 = undefined;
+    const imsg = std.fmt.bufPrint(&ibuf, "refract: hot index built ({d} symbols, {d} files)", .{ new_idx.symbol_count, new_idx.file_count }) catch "refract: hot index built";
+    self.sendLogMessage(3, imsg);
 }
 
 fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
@@ -663,6 +696,7 @@ const BgCtx = struct {
         }
 
         self.server_ptr.bg_indexing_done.store(true, .release);
+        rebuildHotIndex(self.server_ptr);
 
         // Incremental reindex watch loop: drain queued paths every 200ms
         while (!self.server_ptr.bg_cancelled.load(.acquire)) {
@@ -706,7 +740,8 @@ const BgCtx = struct {
                         filtered.append(self.server_ptr.alloc, p) catch logOomOnce("bgctx.filtered");
                 }
             }
-            if (filtered.items.len > 0) {
+            const incr_did_index = filtered.items.len > 0;
+            if (incr_did_index) {
                 indexer.reindex(db, filtered.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
                     var ebuf: [256]u8 = undefined;
                     const emsg = std.fmt.bufPrint(&ebuf, "refract: incremental reindex failed: {s}", .{@errorName(e)}) catch "refract: incremental reindex failed";
@@ -714,6 +749,7 @@ const BgCtx = struct {
                 };
             }
             self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            if (incr_did_index) rebuildHotIndex(self.server_ptr);
             _ = arena.reset(.retain_capacity);
         }
     }
@@ -889,6 +925,9 @@ pub const Server = struct {
     writer_mutex: std.Io.Mutex,
     db_mutex: std.Io.Mutex,
     log_mutex: std.Io.Mutex,
+    hot_mu: std.Io.Mutex = std.Io.Mutex.init,
+    hot: ?*hot_index_mod.HotIndex = null,
+    hot_index_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     stdout_writer: ?*std.Io.Writer,
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -998,6 +1037,13 @@ pub const Server = struct {
         var rmc_it = self.rubocop_mtime_cache.keyIterator();
         while (rmc_it.next()) |k| self.alloc.free(k.*);
         self.rubocop_mtime_cache.deinit(self.alloc);
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        if (self.hot) |h| {
+            h.deinit();
+            self.alloc.destroy(h);
+            self.hot = null;
+        }
+        self.hot_mu.unlock(std.Options.debug_io);
         self.db.runOptimize();
         self.db.runVacuum();
         if (self.root_uri) |uri| self.alloc.free(uri);
