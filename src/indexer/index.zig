@@ -5535,13 +5535,27 @@ pub const ProgressCallback = struct {
 const PROGRESS_STRIDE = 25;
 
 pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: std.mem.Allocator, max_file_size: usize, progress: ?ProgressCallback) !void {
-    try db.begin();
-    var committed = false;
-    defer if (!committed) {
-        db.rollback() catch {}; // rollback best-effort
+    // Chunked commit strategy: a single transaction over 10k+ files makes the
+    // WAL grow to hundreds of MB and the final COMMIT becomes pathological.
+    // Committing every CHUNK_SIZE files lets the WAL auto-checkpoint (PRAGMA
+    // wal_autocheckpoint=100 pages) and keeps memory + write throughput steady.
+    // Refs are keyed by name, not symbol_id, so cross-chunk lookups still work.
+    const CHUNK_SIZE: usize = 500;
+
+    var in_tx = false;
+    defer if (in_tx) {
+        db.rollback() catch {}; // rollback best-effort if we never reached the final commit
     };
 
     for (paths, 0..) |path, i| {
+        if (i % CHUNK_SIZE == 0) {
+            if (in_tx) {
+                try db.commit();
+                in_tx = false;
+            }
+            try db.begin();
+            in_tx = true;
+        }
         // Fire progress every PROGRESS_STRIDE files (and on the final file)
         if (progress) |cb| {
             if (i % PROGRESS_STRIDE == 0 or i + 1 == paths.len) {
@@ -5717,8 +5731,10 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
     }
 
-    try db.commit();
-    committed = true;
+    if (in_tx) {
+        try db.commit();
+        in_tx = false;
+    }
 }
 
 fn deleteSymbolData(db: db_mod.Db, file_id: i64) void {
