@@ -41,6 +41,12 @@ pub fn writeDiagItems(
         if (is_refract) {
             if (tc_disabled) continue;
             if (disabled_set_opt) |*set| if (set.contains(d.code)) continue;
+            var skip_via_config = false;
+            for (self.disabled_diag_codes.items) |c| if (std.mem.eql(u8, c, d.code)) {
+                skip_via_config = true;
+                break;
+            };
+            if (skip_via_config) continue;
         }
         if (!first_ptr.*) w.writeByte(',') catch return;
         first_ptr.* = false;
