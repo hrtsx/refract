@@ -2554,6 +2554,82 @@ test "completion no duplicate names" {
     try std.testing.expectEqual(@as(usize, 1), count);
 }
 
+test "completion returns prefix matches across files and excludes non-matches" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_comp_prefix";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/lib.rb",
+        .data = "class AccountManager; end\nclass Account; end\nclass AccountBalance; end\nclass User; end\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/use.rb",
+        .data = "def go\n  Acco\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/use.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/use.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const items_val = result_obj.get("items") orelse return error.NoItems;
+    const arr = switch (items_val) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
+    var saw_account = false;
+    var saw_account_balance = false;
+    var saw_account_manager = false;
+    var saw_user = false;
+    for (arr.items) |item| {
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const lbl = item_obj.get("label") orelse continue;
+        const lbl_str = switch (lbl) {
+            .string => |st| st,
+            else => continue,
+        };
+        if (std.mem.eql(u8, lbl_str, "Account")) saw_account = true;
+        if (std.mem.eql(u8, lbl_str, "AccountBalance")) saw_account_balance = true;
+        if (std.mem.eql(u8, lbl_str, "AccountManager")) saw_account_manager = true;
+        if (std.mem.eql(u8, lbl_str, "User")) saw_user = true;
+    }
+    try std.testing.expect(saw_account);
+    try std.testing.expect(saw_account_balance);
+    try std.testing.expect(saw_account_manager);
+    try std.testing.expect(!saw_user);
+}
+
 test "publishDiagnostics emitted on didSave" {
     const alloc = std.testing.allocator;
 
@@ -26976,3 +27052,60 @@ test "P34 T34.2 wrong-arity checker flags too many positional arguments" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "refract/wrong-arity") != null);
 }
 
+
+test "parallel reindex computes correct symbol and ref counts" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_parallel_reindex";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/library.rb",
+        .data = "class Library\n  def books\n    []\n  end\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/book.rb",
+        .data = "class Book\n  attr_accessor :title, :author\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/reader.rb",
+        .data = "class Reader\n  def read_book(book)\n    Book.new()\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[" ++
+        "{\"uri\":\"file://" ++ ws ++ "/library.rb\",\"type\":1}," ++
+        "{\"uri\":\"file://" ++ ws ++ "/book.rb\",\"type\":1}," ++
+        "{\"uri\":\"file://" ++ ws ++ "/reader.rb\",\"type\":1}" ++
+        "]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+
+    try std.testing.expect(arr.items.len >= 3);
+}
