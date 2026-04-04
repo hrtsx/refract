@@ -45,7 +45,23 @@ const VisitCtx = struct {
     /// Holds the camelized model name (e.g. "User" for table "users").
     schema_table: ?[]const u8 = null,
     schema_table_buf: [256]u8 = undefined,
+    /// When true, skip speculative cross-file return-type lookups during
+    /// indexing (the `SELECT return_type … file_id IN (…)` pattern that
+    /// scales super-linearly on >5k-symbol workspaces). Inference falls
+    /// back to LSP query time.
+    defer_cross_file: bool = false,
 };
+
+const DEFER_CROSS_FILE_THRESHOLD: i64 = 5000;
+
+fn shouldDeferCrossFile(db: db_mod.Db) bool {
+    const stmt = db.prepare("SELECT COUNT(*) FROM symbols") catch return false;
+    defer stmt.finalize();
+    if (stmt.step() catch false) {
+        return stmt.column_int(0) > DEFER_CROSS_FILE_THRESHOLD;
+    }
+    return false;
+}
 
 threadlocal var hash_type_buf: [128]u8 = undefined;
 threadlocal var generic_return_buf: [256]u8 = undefined;
@@ -3138,25 +3154,27 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     else
                         current_type;
                     var found = false;
-                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
-                        "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                    {
-                        defer rs.finalize();
-                        rs.bind_text(1, method_name);
-                        rs.bind_text(2, base_type);
-                        if (rs.step() catch false) {
-                            const raw = rs.column_text(0);
-                            if (raw.len > 0) {
-                                const ft_len = @min(raw.len, step_buf.len);
-                                @memcpy(step_buf[0..ft_len], raw[0..ft_len]);
-                                const cpy_len = @min(ft_len, root_type_storage.len);
-                                @memcpy(root_type_storage[0..cpy_len], step_buf[0..cpy_len]);
-                                current_type = root_type_storage[0..cpy_len];
-                                found = true;
+                    if (!ctx.defer_cross_file) {
+                        if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                            "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
+                            "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                        {
+                            defer rs.finalize();
+                            rs.bind_text(1, method_name);
+                            rs.bind_text(2, base_type);
+                            if (rs.step() catch false) {
+                                const raw = rs.column_text(0);
+                                if (raw.len > 0) {
+                                    const ft_len = @min(raw.len, step_buf.len);
+                                    @memcpy(step_buf[0..ft_len], raw[0..ft_len]);
+                                    const cpy_len = @min(ft_len, root_type_storage.len);
+                                    @memcpy(root_type_storage[0..cpy_len], step_buf[0..cpy_len]);
+                                    current_type = root_type_storage[0..cpy_len];
+                                    found = true;
+                                }
                             }
-                        }
-                    } else |_| {}
+                        } else |_| {}
+                    }
                     if (!found) {
                         if (lookupStdlibReturn(base_type, method_name)) |stdlib_rt| {
                             const ft_len = @min(stdlib_rt.len, step_buf.len);
@@ -3189,22 +3207,24 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     current_type;
                 var leaf_type_buf: [128]u8 = undefined;
                 var leaf_type: ?[]const u8 = null;
-                if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
-                    "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                    "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                {
-                    defer rs.finalize();
-                    rs.bind_text(1, leaf_method);
-                    rs.bind_text(2, leaf_base);
-                    if (rs.step() catch false) {
-                        const raw = rs.column_text(0);
-                        if (raw.len > 0) {
-                            const lt_len = @min(raw.len, leaf_type_buf.len);
-                            @memcpy(leaf_type_buf[0..lt_len], raw[0..lt_len]);
-                            leaf_type = leaf_type_buf[0..lt_len];
+                if (!ctx.defer_cross_file) {
+                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                        "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
+                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                    {
+                        defer rs.finalize();
+                        rs.bind_text(1, leaf_method);
+                        rs.bind_text(2, leaf_base);
+                        if (rs.step() catch false) {
+                            const raw = rs.column_text(0);
+                            if (raw.len > 0) {
+                                const lt_len = @min(raw.len, leaf_type_buf.len);
+                                @memcpy(leaf_type_buf[0..lt_len], raw[0..lt_len]);
+                                leaf_type = leaf_type_buf[0..lt_len];
+                            }
                         }
-                    }
-                } else |_| {}
+                    } else |_| {}
+                }
                 if (leaf_type == null) {
                     if (lookupStdlibReturn(leaf_base, leaf_method)) |stdlib_lt| {
                         const lt_len = @min(stdlib_lt.len, leaf_type_buf.len);
@@ -5541,6 +5561,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
     // wal_autocheckpoint=100 pages) and keeps memory + write throughput steady.
     // Refs are keyed by name, not symbol_id, so cross-chunk lookups still work.
     const CHUNK_SIZE: usize = 500;
+    const defer_cross_file = shouldDeferCrossFile(db);
 
     var in_tx = false;
     defer if (in_tx) {
@@ -5717,6 +5738,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             .alloc = alloc,
             .sem_tokens = std.ArrayList(SemToken).empty,
             .source = parse_source,
+            .defer_cross_file = defer_cross_file,
         };
         defer ctx.sem_tokens.deinit(alloc);
 
@@ -6056,6 +6078,7 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
         .alloc = alloc,
         .sem_tokens = std.ArrayList(SemToken).empty,
         .source = src,
+        .defer_cross_file = shouldDeferCrossFile(db),
     };
     defer ctx.sem_tokens.deinit(alloc);
 

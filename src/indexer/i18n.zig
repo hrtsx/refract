@@ -3,7 +3,10 @@ const db_mod = @import("../db.zig");
 
 pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
     // Delete existing i18n_keys for this file
-    const del = db.prepare("DELETE FROM i18n_keys WHERE file_id=?") catch return;
+    const del = db.prepare("DELETE FROM i18n_keys WHERE file_id=?") catch |e| {
+        std.log.warn("i18n: prepare delete: {s}", .{@errorName(e)});
+        return;
+    };
     defer del.finalize();
     del.bind_int(1, file_id);
     _ = del.step() catch |e| {
