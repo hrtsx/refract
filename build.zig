@@ -113,6 +113,14 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_bench.step);
 
+    // LSP head-to-head bench: drives refract/solargraph/ruby-lsp via JSON-RPC,
+    // captures perf + accuracy into bench-results/<ts>-<sha>.json,
+    // prints a delta vs the previous snapshot. See docs/BENCHMARK.md.
+    const bench_lsp_cmd = b.addSystemCommand(&.{ "scripts/bench/snapshot.sh" });
+    bench_lsp_cmd.step.dependOn(b.getInstallStep());
+    const bench_lsp_step = b.step("bench-lsp", "Run head-to-head LSP benchmark vs solargraph + ruby-lsp");
+    bench_lsp_step.dependOn(&bench_lsp_cmd.step);
+
     // Fuzz harness — linked against source
     const fuzz_mod = b.createModule(.{
         .root_source_file = b.path("src/tests/fuzz.zig"),

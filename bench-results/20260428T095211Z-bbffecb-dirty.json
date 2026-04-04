@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "git_sha": "bbffecb-dirty",
+    "timestamp": "20260428T095211Z",
+    "host": "Linux 6.19.11-200.fc43.x86_64 x86_64",
+    "refract_version": "refract 0.1.0"
+  },
+  "perf": {
+    "refract": {
+  "name": "refract",
+  "root": "/tmp/refract-perf-corpus",
+  "fixture": "bench_fixture.rb",
+  "initialize_ms": 767.5,
+  "cold_to_first_def_ms": 154.5,
+  "first_def_attempts": 1,
+  "first_def_ok": true,
+  "def_p50_ms": 1.3,
+  "def_p95_ms": 589.7,
+  "hover_p50_ms": 7.5,
+  "hover_p95_ms": 7.7,
+  "completion_p50_ms": 9.3,
+  "completion_p95_ms": 10.2,
+  "peak_rss_mb": 45.8
+},
+    "solargraph": {
+  "name": "solargraph",
+  "root": "/tmp/refract-perf-corpus",
+  "fixture": "bench_fixture.rb",
+  "initialize_ms": 231.7,
+  "cold_to_first_def_ms": 2050.4,
+  "first_def_attempts": 1,
+  "first_def_ok": true,
+  "def_p50_ms": 1.0,
+  "def_p95_ms": 2.0,
+  "hover_p50_ms": 1.4,
+  "hover_p95_ms": 21.3,
+  "completion_p50_ms": 1.3,
+  "completion_p95_ms": 8.7,
+  "peak_rss_mb": 190.8
+},
+    "ruby-lsp": {
+  "name": "ruby-lsp",
+  "root": "/tmp/refract-perf-corpus",
+  "fixture": "bench_fixture.rb",
+  "initialize_ms": 519.6,
+  "cold_to_first_def_ms": 525.8,
+  "first_def_attempts": 2,
+  "first_def_ok": true,
+  "def_p50_ms": 1.6,
+  "def_p95_ms": 3.6,
+  "hover_p50_ms": 0.9,
+  "hover_p95_ms": 3.5,
+  "completion_p50_ms": 1.2,
+  "completion_p95_ms": 81.4,
+  "peak_rss_mb": 80.4
+}
+  },
+  "accuracy": {
+    "refract": {"name":"refract","hit":3,"wrong":1,"miss":0,"scored":4,"stdlib_resolved":1,"stdlib_total":1,"detail":[["same-file method call -> def","wrong (enumerable.rbs:1571)"],["same-file class ref -> class def","hit"],["cross-file module ref -> module","hit"],["cross-file method ref -> def","hit"],["stdlib method (String#upcase)","stdlib resolved (file_999.rb:28)"]]},
+    "solargraph": {"name":"solargraph","hit":4,"wrong":0,"miss":0,"scored":4,"stdlib_resolved":0,"stdlib_total":1,"detail":[["same-file method call -> def","hit"],["same-file class ref -> class def","hit"],["cross-file module ref -> module","hit"],["cross-file method ref -> def","hit"],["stdlib method (String#upcase)","stdlib unresolved"]]},
+    "ruby-lsp": {"name":"ruby-lsp","hit":4,"wrong":0,"miss":0,"scored":4,"stdlib_resolved":1,"stdlib_total":1,"detail":[["same-file method call -> def","hit"],["same-file class ref -> class def","hit"],["cross-file module ref -> module","hit"],["cross-file method ref -> def","hit"],["stdlib method (String#upcase)","stdlib resolved (string.rbs:5450)"]]}
+  }
+}
