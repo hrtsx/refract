@@ -47,6 +47,10 @@ pub const HotSymbol = struct {
     is_bundled: bool,
     return_type: ?[]const u8,
     parent_name: ?[]const u8,
+    /// Pre-formatted parameter signature for completion items (mirrors the
+    /// SQL `GROUP_CONCAT(...)` over `params`). Empty when symbol has no params.
+    params_sig: ?[]const u8,
+    doc: ?[]const u8,
 };
 
 pub const HotIndex = struct {
@@ -59,6 +63,9 @@ pub const HotIndex = struct {
     /// file_id → workspace path. Mirrors `JOIN files f ON s.file_id = f.id`.
     file_paths: std.AutoHashMapUnmanaged(u32, []const u8),
     classes_by_file: std.AutoHashMapUnmanaged(u32, []const []const u8),
+    /// All symbols sorted ascending by name for prefix scans.
+    /// Equivalent to `WHERE s.name LIKE ? ESCAPE '\'` with a leading-anchor pattern.
+    sorted_by_name: []HotSymbol,
     symbol_count: u32,
     file_count: u32,
 
@@ -86,6 +93,42 @@ pub const HotIndex = struct {
     pub fn classesIn(self: *const HotIndex, file_id: u32) []const []const u8 {
         return if (self.classes_by_file.get(file_id)) |s| s else &.{};
     }
+
+    /// Append every symbol whose `name` contains `needle` (excluding leading-anchor
+    /// matches already covered by `lookupPrefix`) into `out`. Linear scan; cheap
+    /// on real corpora because comparisons short-circuit on the first byte.
+    pub fn appendSubstringMatches(self: *const HotIndex, needle: []const u8, out: *std.ArrayList(HotSymbol), alloc: std.mem.Allocator) !void {
+        if (needle.len == 0) return;
+        for (self.sorted_by_name) |sym| {
+            if (sym.name.len <= needle.len) continue;
+            if (std.mem.startsWith(u8, sym.name, needle)) continue;
+            if (std.mem.indexOf(u8, sym.name, needle) != null) {
+                try out.append(alloc, sym);
+            }
+        }
+    }
+
+    /// Returns all symbols whose `name` begins with `prefix`. Empty prefix
+    /// yields nothing (callers should not run unbounded completion).
+    pub fn lookupPrefix(self: *const HotIndex, prefix: []const u8) []const HotSymbol {
+        if (prefix.len == 0) return &.{};
+        const items = self.sorted_by_name;
+        var lo: usize = 0;
+        var hi: usize = items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (std.mem.lessThan(u8, items[mid].name, prefix)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        var end: usize = lo;
+        while (end < items.len and std.mem.startsWith(u8, items[end].name, prefix)) {
+            end += 1;
+        }
+        return items[lo..end];
+    }
 };
 
 const BUNDLED_PREFIX = "<bundled>/";
@@ -102,6 +145,7 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
         .tail_map = .empty,
         .file_paths = .empty,
         .classes_by_file = .empty,
+        .sorted_by_name = &.{},
         .symbol_count = 0,
         .file_count = 0,
     };
@@ -137,7 +181,13 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
 
     {
         const sstmt = try db.prepare(
-            \\SELECT s.name, s.kind, s.line, s.col, s.file_id, s.return_type, s.parent_name
+            \\SELECT s.name, s.kind, s.line, s.col, s.file_id, s.return_type, s.parent_name,
+            \\  s.doc,
+            \\  (SELECT GROUP_CONCAT(
+            \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
+            \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
+            \\    ELSE p.name END, ', ')
+            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position)
             \\FROM symbols s
         );
         defer sstmt.finalize();
@@ -151,10 +201,14 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
             const file_id: u32 = @intCast(@max(0, sstmt.column_int(4)));
             const ret_text = sstmt.column_text(5);
             const par_text = sstmt.column_text(6);
+            const doc_text = sstmt.column_text(7);
+            const sig_text = sstmt.column_text(8);
 
             const owned_name = try arena_alloc.dupe(u8, name_text);
             const owned_return: ?[]const u8 = if (ret_text.len == 0) null else try arena_alloc.dupe(u8, ret_text);
             const owned_parent: ?[]const u8 = if (par_text.len == 0) null else try arena_alloc.dupe(u8, par_text);
+            const owned_doc: ?[]const u8 = if (doc_text.len == 0) null else try arena_alloc.dupe(u8, doc_text);
+            const owned_sig: ?[]const u8 = if (sig_text.len == 0) null else try arena_alloc.dupe(u8, sig_text);
             const path_opt = idx.file_paths.get(file_id);
             const kind = SymbolKind.fromText(kind_text);
             const sym = HotSymbol{
@@ -166,6 +220,8 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
                 .is_bundled = if (path_opt) |p| std.mem.startsWith(u8, p, BUNDLED_PREFIX) else false,
                 .return_type = owned_return,
                 .parent_name = owned_parent,
+                .params_sig = owned_sig,
+                .doc = owned_doc,
             };
 
             const ngop = try name_lists.getOrPut(parent, owned_name);
@@ -220,7 +276,26 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
         try idx.classes_by_file.put(parent, entry.key_ptr.*, slice);
     }
 
+    var sorted = try arena_alloc.alloc(HotSymbol, idx.symbol_count);
+    var sorted_i: usize = 0;
+    var nm_it = idx.name_map.iterator();
+    while (nm_it.next()) |entry| {
+        for (entry.value_ptr.*) |sym| {
+            sorted[sorted_i] = sym;
+            sorted_i += 1;
+        }
+    }
+    std.mem.sort(HotSymbol, sorted[0..sorted_i], {}, lessByName);
+    idx.sorted_by_name = sorted[0..sorted_i];
+
     return idx;
+}
+
+fn lessByName(_: void, a: HotSymbol, b: HotSymbol) bool {
+    const c = std.mem.order(u8, a.name, b.name);
+    if (c != .eq) return c == .lt;
+    if (a.is_bundled != b.is_bundled) return !a.is_bundled;
+    return a.file_id < b.file_id;
 }
 
 fn lessByBundled(_: void, a: HotSymbol, b: HotSymbol) bool {
@@ -276,6 +351,38 @@ test "user code wins precedence over bundled stdlib on name collision" {
     try std.testing.expectEqual(@as(usize, 2), matches.len);
     try std.testing.expectEqual(false, matches[0].is_bundled);
     try std.testing.expectEqual(true, matches[1].is_bundled);
+}
+
+test "lookupPrefix returns matching symbols sorted by name" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('a.rb',1)");
+    const fid = db.last_insert_rowid();
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col) VALUES(?,?,?,?,?)");
+    defer ins.finalize();
+    const names = [_][]const u8{ "Account", "AccountBalance", "User", "AccountManager", "Foo" };
+    for (names) |nm| {
+        ins.bind_int(1, fid);
+        ins.bind_text(2, nm);
+        ins.bind_text(3, "class");
+        ins.bind_int(4, 1);
+        ins.bind_int(5, 0);
+        _ = try ins.step();
+        ins.reset();
+    }
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+    const matches = idx.lookupPrefix("Account");
+    try std.testing.expectEqual(@as(usize, 3), matches.len);
+    try std.testing.expectEqualStrings("Account", matches[0].name);
+    try std.testing.expectEqualStrings("AccountBalance", matches[1].name);
+    try std.testing.expectEqualStrings("AccountManager", matches[2].name);
+    try std.testing.expectEqual(@as(usize, 0), idx.lookupPrefix("").len);
+    try std.testing.expectEqual(@as(usize, 0), idx.lookupPrefix("Z").len);
 }
 
 test "build with one symbol" {

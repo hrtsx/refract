@@ -8,6 +8,44 @@ const indexer = @import("../indexer/index.zig");
 const snippets = @import("snippets.zig");
 const hot_index_mod = @import("hot_index.zig");
 
+fn kindStr(k: hot_index_mod.SymbolKind) []const u8 {
+    return switch (k) {
+        .def => "def",
+        .classdef => "classdef",
+        .class_ => "class",
+        .module => "module",
+        .constant => "constant",
+        .association => "association",
+        .scope => "scope",
+        .validation => "validation",
+        .callback => "callback",
+        .other => "other",
+    };
+}
+
+fn kindNum(k: hot_index_mod.SymbolKind) u8 {
+    return switch (k) {
+        .class_ => 7,
+        .module => 9,
+        .def, .classdef => 3,
+        .constant => 21,
+        else => 1,
+    };
+}
+
+const RankedSymbol = struct {
+    sym: hot_index_mod.HotSymbol,
+    /// 0 = prefix match (LIKE 'word%'), 1 = substring match (LIKE '%word%').
+    /// Mirrors the SQL `ORDER BY CASE WHEN s.name LIKE prefix THEN 0 ELSE 1 END`.
+    tier: u8,
+};
+
+fn lessRanked(_: void, a: RankedSymbol, b: RankedSymbol) bool {
+    if (a.tier != b.tier) return a.tier < b.tier;
+    if (a.sym.name.len != b.sym.name.len) return a.sym.name.len < b.sym.name.len;
+    return std.mem.lessThan(u8, a.sym.name, b.sym.name);
+}
+
 fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]const u8 {
     if (!self.hot_index_enabled.load(.monotonic)) return null;
     const hot = self.hot orelse return null;
@@ -1062,21 +1100,6 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     const prefix_pattern = try buildPrefixPattern(self.alloc, word);
     defer self.alloc.free(prefix_pattern);
 
-    const stmt = try self.cachedStmt(
-        \\SELECT s.name, s.kind,
-        \\  (SELECT GROUP_CONCAT(
-        \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
-        \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
-        \\    ELSE p.name END, ', ')
-        \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
-        \\  s.doc
-        \\FROM symbols s WHERE s.name LIKE ? ESCAPE '\'
-        \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 200
-    );
-    defer stmt.reset();
-    stmt.bind_text(1, pattern);
-    stmt.bind_text(2, prefix_pattern);
-
     var seen_arena = std.heap.ArenaAllocator.init(self.alloc);
     defer seen_arena.deinit();
     var seen = std.StringHashMap(void).init(seen_arena.allocator());
@@ -1085,56 +1108,150 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     const w = &items_aw.writer;
     var first = true;
     var symbol_count: usize = 0;
-    while (try stmt.step()) {
-        const name = stmt.column_text(0);
-        if (seen.contains(name)) continue;
-        try seen.put(try seen_arena.allocator().dupe(u8, name), {});
-        if (!first) try w.writeByte(',');
-        first = false;
-        symbol_count += 1;
-        const kind_str = stmt.column_text(1);
-        const sig = stmt.column_text(2);
-        const doc = stmt.column_text(3);
-        const kind_num: u8 = if (std.mem.eql(u8, kind_str, "class")) 7 else if (std.mem.eql(u8, kind_str, "module")) 9 else if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) 3 else if (std.mem.eql(u8, kind_str, "constant")) 21 else 1;
-        try w.writeAll("{\"label\":");
-        try writeEscapedJson(w, name);
-        try w.print(",\"kind\":{d},\"detail\":\"(", .{kind_num});
-        if ((std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) and sig.len > 0) {
-            try writeEscapedJsonContent(w, sig);
-        } else {
-            try writeEscapedJsonContent(w, kind_str);
+
+    const use_hot = self.hot_index_enabled.load(.monotonic) and self.hot != null and word.len > 0;
+    if (use_hot) {
+        const hot = self.hot.?;
+        var ranked = std.ArrayList(RankedSymbol).empty;
+        defer ranked.deinit(self.alloc);
+        for (hot.lookupPrefix(word)) |sym| {
+            if (sym.name.len == 0) continue;
+            if (seen.contains(sym.name)) continue;
+            try seen.put(try seen_arena.allocator().dupe(u8, sym.name), {});
+            try ranked.append(self.alloc, .{ .sym = sym, .tier = 0 });
         }
-        try w.writeAll(")\"");
-        // Deprecation-aware sort: push deprecated symbols after all other items.
-        // Exact-name boost: float exact-match to the top of its tier while preserving tier prefix.
-        const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
-        const is_exact = word.len > 0 and std.mem.eql(u8, name, word);
-        const sort_prefix: []const u8 = if (is_deprecated) "8_" else if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) (if (is_exact) "0_0_" else "0_1_") else if (std.mem.eql(u8, kind_str, "class") or std.mem.eql(u8, kind_str, "module")) (if (is_exact) "1_0_" else "1_1_") else (if (is_exact) "2_0_" else "2_1_");
-        try w.writeAll(",\"sortText\":\"");
-        try writeEscapedJsonContent(w, sort_prefix);
-        try writeEscapedJsonContent(w, name);
-        try w.writeByte('"');
-        try w.writeAll(",\"filterText\":\"");
-        try writeEscapedJsonContent(w, name);
-        try w.writeByte('"');
-        if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) {
-            try w.writeAll(",\"commitCharacters\":[\"(\"]");
+        // Mirror SQL substring fallback only for words long enough to be specific
+        // (`buildQueryPattern` itself only adds a leading `%` when len > 3).
+        if (word.len > 3) {
+            var sub_buf = std.ArrayList(hot_index_mod.HotSymbol).empty;
+            defer sub_buf.deinit(self.alloc);
+            try hot.appendSubstringMatches(word, &sub_buf, self.alloc);
+            for (sub_buf.items) |sym| {
+                if (sym.name.len == 0) continue;
+                if (seen.contains(sym.name)) continue;
+                try seen.put(try seen_arena.allocator().dupe(u8, sym.name), {});
+                try ranked.append(self.alloc, .{ .sym = sym, .tier = 1 });
+            }
         }
-        if ((std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) and sig.len > 0) {
-            writeInsertTextSnippet(w, name, sig) catch {}; // response building
-        }
-        if (doc.len > 0) {
-            try w.writeAll(",\"documentation\":{\"kind\":\"markdown\",\"value\":");
-            try writeEscapedJson(w, doc);
+        std.mem.sort(RankedSymbol, ranked.items, {}, lessRanked);
+        const cap = @min(ranked.items.len, @as(usize, 200));
+        for (ranked.items[0..cap]) |entry| {
+            const sym = entry.sym;
+            if (!first) try w.writeByte(',');
+            first = false;
+            symbol_count += 1;
+            const sig: []const u8 = sym.params_sig orelse "";
+            const doc: []const u8 = sym.doc orelse "";
+            const kind_str = kindStr(sym.kind);
+            const kind_num: u8 = kindNum(sym.kind);
+            try w.writeAll("{\"label\":");
+            try writeEscapedJson(w, sym.name);
+            try w.print(",\"kind\":{d},\"detail\":\"(", .{kind_num});
+            if ((sym.kind == .def or sym.kind == .classdef) and sig.len > 0) {
+                try writeEscapedJsonContent(w, sig);
+            } else {
+                try writeEscapedJsonContent(w, kind_str);
+            }
+            try w.writeAll(")\"");
+            const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
+            const is_exact = std.mem.eql(u8, sym.name, word);
+            const sort_prefix: []const u8 = if (is_deprecated) "8_" else switch (sym.kind) {
+                .def, .classdef => if (is_exact) "0_0_" else "0_1_",
+                .class_, .module => if (is_exact) "1_0_" else "1_1_",
+                else => if (is_exact) "2_0_" else "2_1_",
+            };
+            try w.writeAll(",\"sortText\":\"");
+            try writeEscapedJsonContent(w, sort_prefix);
+            try writeEscapedJsonContent(w, sym.name);
+            try w.writeByte('"');
+            try w.writeAll(",\"filterText\":\"");
+            try writeEscapedJsonContent(w, sym.name);
+            try w.writeByte('"');
+            if (sym.kind == .def or sym.kind == .classdef) {
+                try w.writeAll(",\"commitCharacters\":[\"(\"]");
+            }
+            if ((sym.kind == .def or sym.kind == .classdef) and sig.len > 0) {
+                writeInsertTextSnippet(w, sym.name, sig) catch {};
+            }
+            if (doc.len > 0) {
+                try w.writeAll(",\"documentation\":{\"kind\":\"markdown\",\"value\":");
+                try writeEscapedJson(w, doc);
+                try w.writeByte('}');
+            }
+            const te_start_char = @as(u32, @intCast(character)) -| @as(u32, @intCast(word.len));
+            try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
+                line, te_start_char, line, character,
+            });
+            try writeEscapedJson(w, sym.name);
+            try w.writeByte('}');
             try w.writeByte('}');
         }
-        const te_start_char = @as(u32, @intCast(character)) -| @as(u32, @intCast(word.len));
-        try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
-            line, te_start_char, line, character,
-        });
-        try writeEscapedJson(w, name);
-        try w.writeByte('}');
-        try w.writeByte('}');
+    } else {
+        const stmt = try self.cachedStmt(
+            \\SELECT s.name, s.kind,
+            \\  (SELECT GROUP_CONCAT(
+            \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
+            \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
+            \\    ELSE p.name END, ', ')
+            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
+            \\  s.doc
+            \\FROM symbols s WHERE s.name LIKE ? ESCAPE '\'
+            \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 200
+        );
+        defer stmt.reset();
+        stmt.bind_text(1, pattern);
+        stmt.bind_text(2, prefix_pattern);
+        while (try stmt.step()) {
+            const name = stmt.column_text(0);
+            if (seen.contains(name)) continue;
+            try seen.put(try seen_arena.allocator().dupe(u8, name), {});
+            if (!first) try w.writeByte(',');
+            first = false;
+            symbol_count += 1;
+            const kind_str = stmt.column_text(1);
+            const sig = stmt.column_text(2);
+            const doc = stmt.column_text(3);
+            const kind_num: u8 = if (std.mem.eql(u8, kind_str, "class")) 7 else if (std.mem.eql(u8, kind_str, "module")) 9 else if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) 3 else if (std.mem.eql(u8, kind_str, "constant")) 21 else 1;
+            try w.writeAll("{\"label\":");
+            try writeEscapedJson(w, name);
+            try w.print(",\"kind\":{d},\"detail\":\"(", .{kind_num});
+            if ((std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) and sig.len > 0) {
+                try writeEscapedJsonContent(w, sig);
+            } else {
+                try writeEscapedJsonContent(w, kind_str);
+            }
+            try w.writeAll(")\"");
+            // Deprecation-aware sort: push deprecated symbols after all other items.
+            // Exact-name boost: float exact-match to the top of its tier while preserving tier prefix.
+            const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
+            const is_exact = word.len > 0 and std.mem.eql(u8, name, word);
+            const sort_prefix: []const u8 = if (is_deprecated) "8_" else if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) (if (is_exact) "0_0_" else "0_1_") else if (std.mem.eql(u8, kind_str, "class") or std.mem.eql(u8, kind_str, "module")) (if (is_exact) "1_0_" else "1_1_") else (if (is_exact) "2_0_" else "2_1_");
+            try w.writeAll(",\"sortText\":\"");
+            try writeEscapedJsonContent(w, sort_prefix);
+            try writeEscapedJsonContent(w, name);
+            try w.writeByte('"');
+            try w.writeAll(",\"filterText\":\"");
+            try writeEscapedJsonContent(w, name);
+            try w.writeByte('"');
+            if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) {
+                try w.writeAll(",\"commitCharacters\":[\"(\"]");
+            }
+            if ((std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) and sig.len > 0) {
+                writeInsertTextSnippet(w, name, sig) catch {}; // response building
+            }
+            if (doc.len > 0) {
+                try w.writeAll(",\"documentation\":{\"kind\":\"markdown\",\"value\":");
+                try writeEscapedJson(w, doc);
+                try w.writeByte('}');
+            }
+            const te_start_char = @as(u32, @intCast(character)) -| @as(u32, @intCast(word.len));
+            try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
+                line, te_start_char, line, character,
+            });
+            try writeEscapedJson(w, name);
+            try w.writeByte('}');
+            try w.writeByte('}');
+        }
     }
     const truncated = symbol_count >= 200;
 
@@ -1338,7 +1455,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
 
 pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.flushDirtyUris();
+    self.flushDirtyUrisDebounced();
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const indexing_in_progress = !self.bg_started_event.load(.acquire);

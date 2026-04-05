@@ -28,7 +28,7 @@ const isRubyIdent = S.isRubyIdent;
 const empty_json_array = S.empty_json_array;
 
 pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.flushDirtyUris();
+    self.flushDirtyUrisDebounced();
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
@@ -190,7 +190,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.flushDirtyUris();
+    self.flushDirtyUrisDebounced();
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
