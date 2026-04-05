@@ -22,6 +22,7 @@ const code_actions = @import("code_actions.zig");
 const editing = @import("editing.zig");
 const rename = @import("rename.zig");
 const hot_index_mod = @import("hot_index.zig");
+const workspace_config = @import("workspace_config.zig");
 
 pub const ruby_block_keywords = [_][]const u8{ "if ", "unless ", "case ", "while ", "until ", "begin", "for " };
 pub const empty_json_array = "[]";
@@ -972,6 +973,7 @@ pub const Server = struct {
     encoding_utf8: bool = false,
     deleted_paths_mu: std.Io.Mutex = std.Io.Mutex.init,
     deleted_paths: std.StringHashMapUnmanaged(void) = .{},
+    disabled_diag_codes: std.ArrayListUnmanaged([]u8) = .empty,
     exit_code: ?u8 = null,
     last_user_error_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     rubocop_thread: ?std.Thread = null,
@@ -1089,6 +1091,8 @@ pub const Server = struct {
         var dp_it = self.deleted_paths.keyIterator();
         while (dp_it.next()) |k| self.alloc.free(k.*);
         self.deleted_paths.deinit(self.alloc);
+        for (self.disabled_diag_codes.items) |c| self.alloc.free(c);
+        self.disabled_diag_codes.deinit(self.alloc);
         for (self.env_keys_cache.items) |k| self.alloc.free(k);
         self.env_keys_cache.deinit(self.alloc);
         self.db.close();
@@ -1893,6 +1897,9 @@ pub const Server = struct {
                                 else => {},
                             }
                         }
+                    }
+                    if (self.root_path) |rp| {
+                        _ = workspace_config.loadAndApply(self, rp);
                     }
                     if (obj.get("initializationOptions")) |opts_val| {
                         if (opts_val == .object) {

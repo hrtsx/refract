@@ -2089,6 +2089,62 @@ test "references on local var returns only scoped refs" {
     try std.testing.expectEqual(@as(usize, 2), arr.items.len);
 }
 
+test "references on a class constant returns cross-file uses" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_refs_const";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/account.rb",
+        .data = "class Account\n  def self.find(id)\n    new\n  end\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/user.rb",
+        .data = "class User\n  def initialize\n    @account = Account.find(1)\n    @other = Account.new\n  end\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/billing.rb",
+        .data = "module Billing\n  def self.charge\n    Account.find(2)\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/account.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/billing.rb\",\"type\":1}]}}");
+    // Cursor on `Account` in user.rb at line 2 col 15 (the `Account.find(1)` use)
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/user.rb\"},\"position\":{\"line\":2,\"character\":15},\"context\":{\"includeDeclaration\":false}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoRefsResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // Three USE sites across two files: user.rb line 2, user.rb line 3, billing.rb line 2.
+    // includeDeclaration=false should exclude `class Account` itself.
+    try std.testing.expectEqual(@as(usize, 3), arr.items.len);
+}
+
 test "gem indexing no crash when no Gemfile.lock" {
     const alloc = std.testing.allocator;
 

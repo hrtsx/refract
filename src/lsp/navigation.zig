@@ -284,6 +284,18 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
     const line: u32 = pos.line;
     const character: u32 = pos.character;
+    var include_decl: bool = true;
+    if (msg.params) |params_val| {
+        if (params_val == .object) {
+            if (params_val.object.get("context")) |ctx_val| {
+                if (ctx_val == .object) {
+                    if (ctx_val.object.get("includeDeclaration")) |id_val| {
+                        if (id_val == .bool) include_decl = id_val.bool;
+                    }
+                }
+            }
+        }
+    }
 
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
@@ -408,12 +420,28 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
         }
         // else top-level local — no cross-file refs, return empty
     } else {
-        // Global: all refs across all files
-        const stmt = try self.cachedStmt(
-            \\SELECT f.path, r.line, r.col
-            \\FROM refs r JOIN files f ON r.file_id = f.id
-            \\WHERE r.name = ?
-        );
+        // Global: all refs across all files. When includeDeclaration=false, exclude
+        // ref rows that coincide with a definition site (the visitor over-inserts
+        // when a class/module name is walked as a NODE_CONSTANT child).
+        const stmt = if (include_decl)
+            try self.cachedStmt(
+                \\SELECT f.path, r.line, r.col
+                \\FROM refs r JOIN files f ON r.file_id = f.id
+                \\WHERE r.name = ?
+            )
+        else
+            try self.cachedStmt(
+                \\SELECT f.path, r.line, r.col
+                \\FROM refs r JOIN files f ON r.file_id = f.id
+                \\WHERE r.name = ?
+                \\AND NOT EXISTS (
+                \\  SELECT 1 FROM symbols s
+                \\  WHERE s.file_id = r.file_id
+                \\    AND s.name = r.name
+                \\    AND s.line = r.line
+                \\    AND s.col = r.col
+                \\)
+            );
         defer stmt.reset();
         stmt.bind_text(1, word);
         var gref_i: usize = 0;

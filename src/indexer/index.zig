@@ -50,7 +50,18 @@ const VisitCtx = struct {
     /// scales super-linearly on >5k-symbol workspaces). Inference falls
     /// back to LSP query time.
     defer_cross_file: bool = false,
+    /// Source-byte range in which constant refs should NOT be inserted —
+    /// used while traversing the name path of a class/module declaration
+    /// (the visitor would otherwise emit a self-ref at the def site).
+    suppress_const_ref_start: u32 = 0,
+    suppress_const_ref_end: u32 = 0,
 };
+
+inline fn inSuppressedConstRange(ctx: *const VisitCtx, start: u32) bool {
+    return ctx.suppress_const_ref_end > ctx.suppress_const_ref_start and
+        start >= ctx.suppress_const_ref_start and
+        start < ctx.suppress_const_ref_end;
+}
 
 const DEFER_CROSS_FILE_THRESHOLD: i64 = 5000;
 
@@ -1705,7 +1716,13 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
                 ctx.namespace_stack_len += 1;
             }
+            const prev_supp_start = ctx.suppress_const_ref_start;
+            const prev_supp_end = ctx.suppress_const_ref_end;
+            ctx.suppress_const_ref_start = cn.constant_path.*.location.start;
+            ctx.suppress_const_ref_end = cn.constant_path.*.location.start + cn.constant_path.*.location.length;
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            ctx.suppress_const_ref_start = prev_supp_start;
+            ctx.suppress_const_ref_end = prev_supp_end;
             if (ns_pushed_class and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
             ctx.current_visibility = prev_vis;
@@ -1756,7 +1773,13 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
                 ctx.namespace_stack_len += 1;
             }
+            const prev_supp_start_mod = ctx.suppress_const_ref_start;
+            const prev_supp_end_mod = ctx.suppress_const_ref_end;
+            ctx.suppress_const_ref_start = mn.constant_path.*.location.start;
+            ctx.suppress_const_ref_end = mn.constant_path.*.location.start + mn.constant_path.*.location.length;
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            ctx.suppress_const_ref_start = prev_supp_start_mod;
+            ctx.suppress_const_ref_end = prev_supp_end_mod;
             if (ns_pushed_mod and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
             ctx.current_visibility = prev_vis;
@@ -2065,9 +2088,11 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, rn.base.location.start);
             const name = resolveConstant(ctx.parser, rn.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
-                ctx.error_count += 1;
-            };
+            if (!inSuppressedConstRange(ctx, rn.base.location.start)) {
+                insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
+                    ctx.error_count += 1;
+                };
+            }
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
         },
         prism.NODE_CALL => {
@@ -2675,7 +2700,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 if (pn.name != 0) break :blk resolveConstant(ctx.parser, pn.name);
                 break :blk "";
             };
-            if (ref_name.len > 0) {
+            if (ref_name.len > 0 and !inSuppressedConstRange(ctx, pn.base.location.start)) {
                 const lc = locationLineCol(ctx.parser, pn.base.location.start);
                 insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null) catch {
                     ctx.error_count += 1;
