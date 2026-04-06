@@ -119,6 +119,8 @@ pub const Db = struct {
     was_self_healed: bool = false,
 
     pub fn open(path: [:0]const u8) DbError!Db {
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const open_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
         var attempt: u8 = 0;
         var healed = false;
         while (attempt < 2) : (attempt += 1) {
@@ -131,10 +133,18 @@ pub const Db = struct {
             _ = c.sqlite3_busy_timeout(db.?, 5000);
 
             var stmt: ?*c.sqlite3_stmt = null;
+            const check_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
             const prc = c.sqlite3_prepare_v2(db.?, "PRAGMA integrity_check", -1, &stmt, null);
             if (prc == c.SQLITE_OK) {
                 _ = c.sqlite3_step(stmt);
                 _ = c.sqlite3_finalize(stmt);
+                if (profiling) {
+                    const check_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - check_start;
+                    const open_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - open_start;
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "refract_profile: db.open={d}ms integrity_check={d}ms\n", .{ open_ms, check_ms }) catch "";
+                    if (msg.len > 0) std.debug.print("{s}", .{msg});
+                }
                 return Db{ .raw = db.?, .was_self_healed = healed };
             }
 
@@ -213,6 +223,8 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const schema_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
         const CURRENT_SCHEMA: u32 = 5;
         {
             var needs_reset = false;
@@ -430,6 +442,12 @@ pub const Db = struct {
         if (final_ver != 5) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
+        if (profiling) {
+            const schema_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - schema_start;
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "refract_profile: init_schema={d}ms\n", .{schema_ms}) catch "";
+            if (msg.len > 0) std.debug.print("{s}", .{msg});
+        }
     }
 
     pub fn getSchemaVersion(self: Db) ?i64 {
@@ -470,10 +488,18 @@ pub const Db = struct {
     }
 
     pub fn check_integrity(self: Db) DbError!void {
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const check_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
         const stmt = try self.prepare("PRAGMA quick_check");
         defer stmt.finalize();
         if (try stmt.step()) {
             if (!std.mem.eql(u8, stmt.column_text(0), "ok")) return DbError.Exec;
+        }
+        if (profiling) {
+            const check_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - check_start;
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "refract_profile: check_integrity_quick_check={d}ms\n", .{check_ms}) catch "";
+            if (msg.len > 0) std.debug.print("{s}", .{msg});
         }
     }
 };

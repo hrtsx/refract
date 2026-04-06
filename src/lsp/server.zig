@@ -86,6 +86,9 @@ fn indexBundledRbsLsp(ctx: *BgCtx) void {
 pub fn rebuildHotIndex(self: *Server) void {
     if (!self.hot_index_enabled.load(.monotonic)) return;
 
+    const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+    const hot_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
+
     self.hot_mu.lockUncancelable(std.Options.debug_io);
     defer self.hot_mu.unlock(std.Options.debug_io);
 
@@ -104,6 +107,13 @@ pub fn rebuildHotIndex(self: *Server) void {
         self.alloc.destroy(old);
     }
     self.hot = new_idx;
+
+    if (profiling) {
+        const hot_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - hot_start;
+        var pbuf: [128]u8 = undefined;
+        const pmsg = std.fmt.bufPrint(&pbuf, "refract_profile: rebuildHotIndex={d}ms symbols={d}\n", .{ hot_ms, new_idx.symbol_count }) catch "refract_profile: rebuildHotIndex\n";
+        self.sendLogMessage(3, pmsg);
+    }
 
     var ibuf: [128]u8 = undefined;
     const imsg = std.fmt.bufPrint(&ibuf, "refract: hot index built ({d} symbols, {d} files)", .{ new_idx.symbol_count, new_idx.file_count }) catch "refract: hot index built";
@@ -1844,6 +1854,8 @@ pub const Server = struct {
     }
 
     pub fn handleInitialize(self: *Server, msg: types.RequestMessage) types.ResponseMessage {
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const init_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
         if (self.initialized) {
             return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = null, .@"error" = .{ .code = @intFromEnum(types.ErrorCode.invalid_request), .message = "Server already initialized" } };
         }
@@ -2062,6 +2074,14 @@ pub const Server = struct {
         iw.writeAll(build_meta.version) catch {}; // response building
         iw.writeAll("\"}}") catch {}; // response building
         const raw = aw.toOwnedSlice() catch return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = null, .@"error" = .{ .code = @intFromEnum(types.ErrorCode.internal_error), .message = "internal error" } };
+
+        if (profiling) {
+            const init_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - init_start;
+            var buf: [256]u8 = undefined;
+            const msg_final = std.fmt.bufPrint(&buf, "refract_profile: handleInitialize total={d}ms\n", .{init_ms}) catch "refract_profile: handleInitialize\n";
+            std.debug.print("{s}", .{msg_final});
+        }
+
         return types.ResponseMessage{
             .id = msg.id,
             .raw_result = raw,
