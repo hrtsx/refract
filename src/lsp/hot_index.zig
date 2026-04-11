@@ -180,6 +180,8 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
     }
 
     {
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const query_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
         const sstmt = try db.prepare(
             \\SELECT s.name, s.kind, s.line, s.col, s.file_id, s.return_type, s.parent_name,
             \\  s.doc,
@@ -192,7 +194,9 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
         );
         defer sstmt.finalize();
 
+        var row_count: u32 = 0;
         while (try sstmt.step()) {
+            row_count += 1;
             const name_text = sstmt.column_text(0);
             if (name_text.len == 0) continue;
             const kind_text = sstmt.column_text(1);
@@ -251,6 +255,12 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
             }
 
             idx.symbol_count += 1;
+        }
+        if (profiling) {
+            const query_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - query_start;
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "refract_profile: hot_index_query={d}ms rows={d}\n", .{ query_ms, row_count }) catch "refract_profile: hot_index_query\n";
+            std.debug.print("{s}", .{msg});
         }
     }
 

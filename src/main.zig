@@ -602,6 +602,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+    const main_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
     const db = db_mod.Db.open(db_pathz) catch {
         try std.Io.File.stderr().writeStreamingAll(io, "refract: failed to open database\n");
         return error.DatabaseOpen;
@@ -615,6 +617,12 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stderr().writeStreamingAll(io, "refract: database is corrupted (PRAGMA quick_check failed)\n");
         return error.CorruptDatabase;
     };
+    if (profiling) {
+        const main_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - main_start;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "refract_profile: main startup db operations total={d}ms\n", .{main_ms}) catch "refract_profile: main startup\n";
+        try std.Io.File.stderr().writeStreamingAll(io, msg);
+    }
 
     if (flag_mcp) {
         var needs_index = false;
