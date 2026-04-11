@@ -6032,6 +6032,64 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         _ = try ins_st.step();
     }
 
+    // Copy routes (Rails route definitions)
+    const del_routes = try real_db.prepare("DELETE FROM routes WHERE file_id = ?");
+    defer del_routes.finalize();
+    del_routes.bind_int(1, real_file_id);
+    _ = try del_routes.step();
+
+    const sel_rt = try mem_db.prepare(
+        \\SELECT http_method, path_pattern, helper_name, controller, action, line, col
+        \\FROM routes WHERE file_id = ?
+    );
+    defer sel_rt.finalize();
+    sel_rt.bind_int(1, mem_file_id);
+
+    const ins_rt = try real_db.prepare(
+        \\INSERT INTO routes (file_id, http_method, path_pattern, helper_name, controller, action, line, col)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    );
+    defer ins_rt.finalize();
+
+    while (try sel_rt.step()) {
+        ins_rt.reset();
+        ins_rt.bind_int(1, real_file_id);
+        ins_rt.bind_text(2, sel_rt.column_text(0));
+        ins_rt.bind_text(3, sel_rt.column_text(1));
+        ins_rt.bind_text(4, sel_rt.column_text(2));
+        ins_rt.bind_text(5, sel_rt.column_text(3));
+        ins_rt.bind_text(6, sel_rt.column_text(4));
+        ins_rt.bind_int(7, sel_rt.column_int(5));
+        ins_rt.bind_int(8, sel_rt.column_int(6));
+        _ = try ins_rt.step();
+    }
+
+    // Copy i18n_keys (translation entries from locale files)
+    const del_i18n = try real_db.prepare("DELETE FROM i18n_keys WHERE file_id = ?");
+    defer del_i18n.finalize();
+    del_i18n.bind_int(1, real_file_id);
+    _ = try del_i18n.step();
+
+    const sel_i18n = try mem_db.prepare(
+        \\SELECT key, value, locale FROM i18n_keys WHERE file_id = ?
+    );
+    defer sel_i18n.finalize();
+    sel_i18n.bind_int(1, mem_file_id);
+
+    const ins_i18n = try real_db.prepare(
+        \\INSERT INTO i18n_keys (key, value, locale, file_id) VALUES (?, ?, ?, ?)
+    );
+    defer ins_i18n.finalize();
+
+    while (try sel_i18n.step()) {
+        ins_i18n.reset();
+        ins_i18n.bind_text(1, sel_i18n.column_text(0));
+        ins_i18n.bind_text(2, sel_i18n.column_text(1));
+        ins_i18n.bind_text(3, sel_i18n.column_text(2));
+        ins_i18n.bind_int(4, real_file_id);
+        _ = try ins_i18n.step();
+    }
+
     try real_db.commit();
     committed = true;
 }

@@ -213,6 +213,17 @@ const WorkQueue = struct {
         self.head += 1;
         return item;
     }
+
+    pub fn markDone(self: *WorkQueue) void {
+        self.mu.lockUncancelable(std.Options.debug_io);
+        self.done = true;
+        self.cond.broadcast(std.Options.debug_io);
+        self.mu.unlock(std.Options.debug_io);
+    }
+
+    pub fn deinit(self: *WorkQueue) void {
+        self.items.deinit(std.heap.c_allocator);
+    }
 };
 
 const BgWorkerCtx = struct {
@@ -295,6 +306,7 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
         }
         // Clear mem_db for next file (CASCADE handles all child tables)
         mem_db.exec("DELETE FROM files") catch {}; // cleanup
+        _ = wctx.bg_ctx.progress_done.fetchAdd(1, .monotonic);
         _ = arena.reset(.retain_capacity);
     }
 }
@@ -419,6 +431,7 @@ const BgCtx = struct {
     bundle_timeout_ms: u64 = 15_000,
     max_workers: usize = 8,
     index_failures: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    progress_done: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     io: std.Io = std.Options.debug_io,
 
     pub fn run(self: *BgCtx) void {
@@ -507,11 +520,9 @@ const BgCtx = struct {
             .ctx = &pg_ctx,
             .report = ProgressCtx.report,
         };
-        self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-        // Re-filter against deleted_paths after acquiring db_mutex — covers the race
-        // where type=3 added a path AFTER the snapshot above but BEFORE we got db_mutex.
-        // type=3 grabs db_mutex serially, so once we hold it, all earlier type=3 deletions
-        // are visible in deleted_paths.
+        // Re-filter against deleted_paths just before fanning out — type=3 grabs
+        // db_mutex serially. Workers grab db_mutex per-file in their commit phase,
+        // so any type=3 that runs concurrently is observed at filter time.
         var refiltered_paths = std.ArrayList([]const u8).empty;
         defer refiltered_paths.deinit(alloc);
         {
@@ -522,12 +533,68 @@ const BgCtx = struct {
                 refiltered_paths.append(alloc, p) catch {};
             }
         }
-        indexer.reindex(db, refiltered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
-            var ebuf: [256]u8 = undefined;
-            const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
-            self.server_ptr.sendLogMessage(2, emsg);
-        };
-        self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+
+        // Parallel cold-index pipeline. Workers parse (CPU-bound) outside the
+        // db_mutex and grab it briefly per-file to commit parsed data. Letting
+        // queries interleave during cold-index keeps the LSP responsive.
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        const desired_workers = @min(@max(cpu_count, 1), self.max_workers);
+        const total_paths = refiltered_paths.items.len;
+        const num_workers: usize = if (total_paths == 0) 0 else @min(desired_workers, total_paths);
+        if (num_workers > 0) {
+            var queue = WorkQueue{};
+            defer queue.deinit();
+            for (refiltered_paths.items) |p| {
+                _ = queue.push(.{ .path = p, .is_gem = false });
+            }
+            queue.markDone();
+
+            self.progress_done.store(0, .monotonic);
+            const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &queue };
+            var workers = std.ArrayList(std.Thread).empty;
+            defer workers.deinit(alloc);
+            var w: usize = 0;
+            while (w < num_workers) : (w += 1) {
+                const t = std.Thread.spawn(.{}, bgWorkerFn, .{wctx}) catch break;
+                workers.append(alloc, t) catch {
+                    t.detach();
+                    break;
+                };
+            }
+
+            // Progress poller: report progress while workers run. If we couldn't
+            // spawn any workers, drain the queue inline as a fallback.
+            if (workers.items.len > 0) {
+                var last_reported: usize = 0;
+                while (true) {
+                    const done_now = self.progress_done.load(.monotonic);
+                    if (done_now != last_reported) {
+                        const sample_path = if (done_now > 0 and done_now <= total_paths)
+                            refiltered_paths.items[done_now - 1]
+                        else if (refiltered_paths.items.len > 0)
+                            refiltered_paths.items[0]
+                        else
+                            "";
+                        progress_cb.report(progress_cb.ctx, done_now, total_paths, sample_path);
+                        last_reported = done_now;
+                    }
+                    if (done_now >= total_paths) break;
+                    if (self.server_ptr.bg_cancelled.load(.acquire)) break;
+                    var poll_ts: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+                    _ = std.c.nanosleep(&poll_ts, null);
+                }
+                for (workers.items) |t| t.join();
+            } else {
+                // Worker spawn failed entirely — fall back to serial reindex on the main thread.
+                self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+                indexer.reindex(db, refiltered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
+                    var ebuf: [256]u8 = undefined;
+                    const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
+                    self.server_ptr.sendLogMessage(2, emsg);
+                };
+                self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            }
+        }
 
         // Push diagnostics only for currently-open documents
         {

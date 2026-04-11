@@ -134,15 +134,24 @@ pub const Db = struct {
 
             var stmt: ?*c.sqlite3_stmt = null;
             const check_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
-            const prc = c.sqlite3_prepare_v2(db.?, "PRAGMA integrity_check", -1, &stmt, null);
-            if (prc == c.SQLITE_OK) {
-                _ = c.sqlite3_step(stmt);
+            // Lightweight integrity probe. Forces SQLite to parse the schema btree,
+            // which validates the header and the schema page. Microseconds on a warm
+            // DB. Fails on garbage files / corrupted headers, keeping the self-heal
+            // flow intact while avoiding the multi-second full-DB scan that
+            // PRAGMA integrity_check imposes on every Db.open().
+            const prc = c.sqlite3_prepare_v2(db.?, "SELECT count(*) FROM sqlite_master", -1, &stmt, null);
+            var probe_ok = prc == c.SQLITE_OK;
+            if (probe_ok) {
+                const sc = c.sqlite3_step(stmt);
+                if (sc != c.SQLITE_ROW and sc != c.SQLITE_DONE) probe_ok = false;
                 _ = c.sqlite3_finalize(stmt);
+            }
+            if (probe_ok) {
                 if (profiling) {
                     const check_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - check_start;
                     const open_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - open_start;
                     var buf: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "refract_profile: db.open={d}ms integrity_check={d}ms\n", .{ open_ms, check_ms }) catch "";
+                    const msg = std.fmt.bufPrint(&buf, "refract_profile: db.open={d}ms schema_check={d}ms\n", .{ open_ms, check_ms }) catch "";
                     if (msg.len > 0) std.debug.print("{s}", .{msg});
                 }
                 return Db{ .raw = db.?, .was_self_healed = healed };
