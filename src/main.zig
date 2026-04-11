@@ -613,10 +613,12 @@ pub fn main(init: std.process.Init) !void {
         db.close();
     }
     try db.init_schema();
-    db.check_integrity() catch {
-        try std.Io.File.stderr().writeStreamingAll(io, "refract: database is corrupted (PRAGMA quick_check failed)\n");
-        return error.CorruptDatabase;
-    };
+    if (db.was_self_healed) {
+        db.check_integrity() catch {
+            try std.Io.File.stderr().writeStreamingAll(io, "refract: database is corrupted (PRAGMA quick_check failed)\n");
+            return error.CorruptDatabase;
+        };
+    }
     if (profiling) {
         const main_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - main_start;
         var buf: [256]u8 = undefined;
