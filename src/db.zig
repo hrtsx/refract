@@ -162,7 +162,7 @@ pub const Db = struct {
     }
 
     pub fn init_schema(self: Db) DbError!void {
-        const CURRENT_SCHEMA: u32 = 4;
+        const CURRENT_SCHEMA: u32 = 5;
         {
             var needs_reset = false;
             var needs_reindex = false;
@@ -349,9 +349,13 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
         self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')");
+        // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {};
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','5')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 4) {
+        if (final_ver != 5) {
             std.fs.File.stderr().writeAll("refract: schema migration incomplete; run --reset-db\n") catch {};
         }
     }
