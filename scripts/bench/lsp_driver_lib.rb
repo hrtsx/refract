@@ -108,6 +108,81 @@ class LspClient
     }, timeout: timeout)
   end
 
+  def references(uri, line, char, timeout: 15)
+    request("textDocument/references", {
+      textDocument: { uri: uri },
+      position: { line: line, character: char },
+      context: { includeDeclaration: true },
+    }, timeout: timeout)
+  end
+
+  def document_symbol(uri, timeout: 15)
+    request("textDocument/documentSymbol", {
+      textDocument: { uri: uri },
+    }, timeout: timeout)
+  end
+
+  def workspace_symbol(query, timeout: 15)
+    request("workspace/symbol", { query: query }, timeout: timeout)
+  end
+
+  def rename(uri, line, char, new_name, timeout: 15)
+    request("textDocument/rename", {
+      textDocument: { uri: uri },
+      position: { line: line, character: char },
+      newName: new_name,
+    }, timeout: timeout)
+  end
+
+  def did_save(uri, text)
+    send_notify("textDocument/didSave", {
+      textDocument: { uri: uri },
+      text: text,
+    })
+  end
+
+  def did_change(uri, text)
+    @doc_versions ||= Hash.new(1)
+    @doc_versions[uri] += 1
+    send_notify("textDocument/didChange", {
+      textDocument: { uri: uri, version: @doc_versions[uri] },
+      contentChanges: [{ text: text }],
+    })
+  end
+
+  def wait_for_diagnostics(uri:, started_at:, settle_ms: 600, hard_timeout: 12)
+    deadline = started_at + hard_timeout
+    settle_window = settle_ms / 1000.0
+    first_ms = nil
+    last_msg_at = nil
+    received = 0
+    loop do
+      remaining = deadline - monotonic
+      break if remaining <= 0
+      timeout = if last_msg_at
+                  [settle_window - (monotonic - last_msg_at), 0.05].max
+                else
+                  remaining
+                end
+      msg = read_msg(timeout)
+      if msg.nil?
+        break if last_msg_at && (monotonic - last_msg_at) >= settle_window
+        next
+      end
+      next unless msg.is_a?(Hash) && msg["method"] == "textDocument/publishDiagnostics"
+      next unless msg.dig("params", "uri") == uri
+      first_ms ||= ((monotonic - started_at) * 1000).round(2)
+      last_msg_at = monotonic
+      received += 1
+    end
+    settle_ms_val = last_msg_at ? ((last_msg_at - started_at) * 1000).round(2) : nil
+    { first_ms: first_ms, settle_ms: settle_ms_val, received_count: received }
+  end
+
+  def write_dead?
+    @stdin.nil? || @stdin.closed?
+  end
+
   private
 
   def write(obj)
