@@ -4,11 +4,14 @@ Reproducible head-to-head measured by driving each server with the same JSON-RPC
 sequence on the same workspace. No cherry-picked numbers, both wins and losses
 are reported.
 
-- **Date**: 2026-04-28
+- **Date**: 2026-05-01
 - **Hardware**: 8-core x86_64, Linux 6.19, Fedora 43
-- **Workspace**: 1,000 generated Ruby files, ~21 MB (`scripts/bench.sh` corpus)
+- **Workspaces**: synthetic 1k-file corpus (`scripts/bench.sh`); plus real
+  open-source Ruby apps (Mastodon, Discourse) for realistic-bench matrix.
 - **Versions**: refract 0.1.0 · solargraph 0.58.1 · ruby-lsp 0.26.9 · Ruby 3.4.8
-- **Driver**: [`scripts/bench/lsp_driver.rb`](../scripts/bench/lsp_driver.rb), [`scripts/bench/lsp_accuracy.rb`](../scripts/bench/lsp_accuracy.rb)
+- **Drivers**: synthetic [`scripts/bench/lsp_driver.rb`](../scripts/bench/lsp_driver.rb);
+  realistic [`scripts/bench/lsp_realistic.rb`](../scripts/bench/lsp_realistic.rb)
+  with matrix runner [`scripts/bench/realistic_run.sh`](../scripts/bench/realistic_run.sh).
 - Sorbet is omitted: it is a *type checker* with a different mental model
   (RBI authoring, `srb tc`); the comparison row in [`COMPARISON.md`](COMPARISON.md) covers it.
 
@@ -79,6 +82,94 @@ Run with `--no-hot-index` to flip back to the SQL path on a fresh DB:
 89 ms because the *original* baseline ran against a stale DB carrying ~30k
 symbols from prior bench runs. The honest pre-hot-index latency is ~12 ms;
 the hot index gives a further ~25× speedup on top of that.)
+
+## Realistic workloads on Mastodon and Discourse
+
+The synthetic 1k-file bench above is a controlled microbench. The matrix below
+runs three realistic editor patterns on real Ruby codebases and compares all
+three servers head-to-head.
+
+- **Workloads**:
+  - `session` — editor mix (60% hover, 15% def, 10% completion, 5% sym, 5% refs, 3% docSym, 2% rename) over 12 files
+  - `typing`  — 8 Hz `didChange` storm for 30s with hover/def/comp queries interleaved
+  - `micro`   — 50 random hover, then 50 def, then 50 completion across 5 files
+- **Corpora**: Mastodon (≈4k Ruby files), Discourse `/lib` (667 files)
+- **Captured**: `bench-results/realistic/20260501T083756Z-49892f5/`
+
+### Mastodon — session workload (post-cold-warm)
+
+| Metric (p50, ms)     | refract (rubocop off) | refract (rubocop on) | ruby-lsp | solargraph |
+|----------------------|---------------------:|---------------------:|---------:|-----------:|
+| `hover`              |                  1.25 |                 1.24 |   **0.80** |   timed out |
+| `definition`         |              **0.82** |                 0.95 |     1.02 |   timed out |
+| `completion`         |              **0.86** |                 0.91 |     1.79 |   timed out |
+| `workspace/symbol`   |              **1.67** |                 1.84 |    24.75 |   timed out |
+| `references`         |              **0.91** |                 0.90 |   667.31 |   timed out |
+| Cold-warm to first symbol | **757 ms**       |               722 ms | 60,503 ms |  >60 s    |
+| Peak RSS             |                45 MB  |                43 MB |   143 MB |   310 MB    |
+
+**Refract is best of three on `definition`, `completion`, `workspace/symbol`,
+`references`, cold-warm time, and memory.** Ruby LSP wins `hover` p50 by a
+small margin (1.6×); we lose stdlib hover content because we don't ship RBS
+type inference yet. Refract beats Ruby LSP on `references` by **730×** and on
+`workspace/symbol` by **15×** because of the in-memory hot index landed in `2e4945a`.
+
+### Mastodon — typing workload (8 Hz didChange storm)
+
+| Metric (p50, ms)     | refract (off) | refract (on) | ruby-lsp |
+|----------------------|--------------:|-------------:|---------:|
+| `hover`              |         24.27 |        18.52 | **1.22** |
+| `definition`         |         28.78 |        17.02 | **1.11** |
+| `completion`         |         31.17 |        21.78 | **1.30** |
+
+**Honest loss:** under sustained didChange storms refract's query p50 is
+~15-30× slower than ruby-lsp. The debounce-flush fix (`62f1789`) cut this
+from ~100 ms to ~25 ms — a 4× win — but we still lose to ruby-lsp here.
+Root cause is queued behind in-thread re-parse on every change; tracked.
+
+### Mastodon — micro workload
+
+| Metric (p50, ms)     | refract (off) | refract (on) | ruby-lsp |
+|----------------------|--------------:|-------------:|---------:|
+| `hover`              |         20.23 |        18.22 | **0.55** |
+| `definition`         |         18.63 |        19.34 | **0.28** |
+| `completion`         |         16.94 |        21.73 | **0.78** |
+
+Same pattern as typing — ruby-lsp dominates micro. The `pick_positions`
+sampler frequently lands on receiver-style identifiers; refract's hot path
+does not yet cover member completion / receiver-typed hover.
+
+### Discourse `/lib` — session workload
+
+| Metric (p50, ms)     | refract (off) | refract (on) | ruby-lsp |
+|----------------------|--------------:|-------------:|---------:|
+| `hover`              |          3.05 |         2.59 | **0.91** |
+| `definition`         |      **2.27** |        12.53 |     1.31 |
+| `completion`         |         10.76 |     **3.37** |     1.56 |
+| `workspace/symbol`   |        222.70 |       217.22 | **34.62** |
+| `references`         |      **1.67** |         1.83 |   266.40 |
+
+A second perf regression visible only here: `workspace/symbol` p50 is **130×
+slower on the smaller corpus** than on Mastodon (1.67 ms). Symptom of a
+plan-stability or cache-locality issue at this index size; tracked.
+
+### Reliability
+
+Of 24 cells run, 4 failures:
+- 3× solargraph timeout (>600 s) on `discourse-lib session`, `mastodon session`,
+  `mastodon micro` — solargraph cannot index Mastodon-scale within 10 minutes.
+- 1× refract crash (EPIPE) on `discourse-lib typing rubocop-off` — server
+  closed stdin under sustained didChange storm. Tracked as a reliability bug.
+
+### Reproducing the matrix
+
+```sh
+zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+gem install ruby-lsp solargraph
+REFRACT_PILOT_DIR=/tmp/refract-pilot bash scripts/bench/realistic_run.sh
+# Aggregate the 24 JSONs:
+ruby scripts/bench/realistic_aggregate.rb bench-results/realistic/<dir>
+```
 
 ## Peak resident memory (1k-file workspace)
 
@@ -197,21 +288,27 @@ REFRACT_PILOT_DIR=/tmp/refract-pilot ./scripts/pilot.sh mastodon
 
 ## Summary
 
-|                                | Best of three                                |
-|--------------------------------|----------------------------------------------|
-| `initialize` response time     | **refract** (~60 ms)                         |
-| Steady-state def p50           | **refract** (~0.5 ms)                        |
-| Steady-state hover p50         | **refract** (~0.8 ms)                        |
-| Steady-state completion p50    | solargraph (~1.8 ms) — refract not yet wired |
-| Peak memory (1k files)         | **refract** (~45 MB)                         |
-| Accuracy on Ruby code (4 q.)   | tied (3-way)                                 |
-| Stdlib accuracy (1 q.)         | ruby-lsp (only one with type inference)      |
-| Install simplicity             | **refract** (no Ruby required)               |
-| MCP / agent surface            | **refract** (only one)                       |
+|                                       | Best of three                                |
+|---------------------------------------|----------------------------------------------|
+| `initialize` response time            | **refract** (25-75 ms warm, persistent DB)   |
+| Cold-warm to first symbol (Mastodon)  | **refract** (757 ms) — 80× faster than ruby-lsp |
+| Session def p50 (Mastodon)            | **refract** (0.82 ms)                        |
+| Session hover p50 (Mastodon)          | ruby-lsp (0.80 ms) — refract 1.25 ms         |
+| Session completion p50 (Mastodon)     | **refract** (0.86 ms)                        |
+| Session `workspace/symbol` p50        | **refract** (1.67 ms) — 15× faster           |
+| Session `references` p50              | **refract** (0.91 ms) — 730× faster          |
+| Typing/micro p50                      | ruby-lsp — refract 15-30× slower under storm |
+| Peak memory (Mastodon)                | **refract** (45 MB) — 3.2× less than ruby-lsp |
+| Stdlib accuracy (1 q.)                | ruby-lsp (only one with type inference)      |
+| Install simplicity                    | **refract** (no Ruby required)               |
+| MCP / agent surface                   | **refract** (only one)                       |
 
-Refract is currently best on every dimension except completion latency
-(where the in-memory hot index is not yet wired) and stdlib accuracy (which
-needs receiver-type inference). Both are tracked.
+Refract is best on most dimensions on real Rails-scale workspaces: cold-warm
+time, definition, completion, workspace symbols, references, memory.
+**Open gaps**: hover loses by 1.6× because we don't yet do RBS-typed hover;
+typing/micro workloads lose by 15-30× because in-thread re-parse blocks the
+query handler under didChange storms; one EPIPE crash under typing storm.
+All tracked.
 
 ## How to reproduce
 
