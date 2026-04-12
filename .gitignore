@@ -5,3 +5,4 @@ zig-out/
 *.db-wal
 *.db-shm
 .DS_Store
+bench-results/

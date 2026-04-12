@@ -239,6 +239,10 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     defer mem_db.close();
     mem_db.init_schema() catch return;
     while (wctx.queue.pop()) |work| {
+        // Count every consumed work item, regardless of skip/error/success.
+        // The cold-index poll loop watches this counter; if skips don't count,
+        // it spins until bg_cancelled fires.
+        defer _ = wctx.bg_ctx.progress_done.fetchAdd(1, .monotonic);
         if (wctx.bg_ctx.server_ptr.bg_cancelled.load(.acquire)) return;
         // File stat outside mutex
         const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, work.path, .{}) catch {
@@ -306,7 +310,6 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
         }
         // Clear mem_db for next file (CASCADE handles all child tables)
         mem_db.exec("DELETE FROM files") catch {}; // cleanup
-        _ = wctx.bg_ctx.progress_done.fetchAdd(1, .monotonic);
         _ = arena.reset(.retain_capacity);
     }
 }

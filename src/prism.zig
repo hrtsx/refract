@@ -1,4 +1,5 @@
 const c = @cImport({
+    @cDefine("_FORTIFY_SOURCE", "0");
     @cInclude("prism.h");
 });
 
