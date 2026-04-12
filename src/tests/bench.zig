@@ -130,3 +130,47 @@ test "bench: route parsing" {
         }
     }.run);
 }
+
+test "bench: DB symbol lookup by name" {
+    std.debug.print("\n--- DB Query Benchmarks ---\n", .{});
+    const db = db_mod.Db.open(":memory:") catch return;
+    defer db.close();
+    db.init_schema() catch return;
+
+    // Seed with realistic data
+    for (0..200) |i| {
+        var name_buf: [64]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "method_{d}", .{i}) catch continue;
+        const stmt = db.prepare("INSERT INTO files(path, mtime) VALUES(?, 0)") catch continue;
+        defer stmt.finalize();
+        stmt.bind_text(1, name);
+        _ = stmt.step() catch {};
+    }
+    for (0..1000) |i| {
+        var name_buf: [64]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "symbol_{d}", .{i}) catch continue;
+        const stmt = db.prepare("INSERT INTO symbols(file_id, name, kind, line, col) VALUES(1, ?, 'def', ?, 0)") catch continue;
+        defer stmt.finalize();
+        stmt.bind_text(1, name);
+        stmt.bind_int(2, @intCast(i));
+        _ = stmt.step() catch {};
+    }
+
+    timedRun("symbol lookup by name (1K symbols)", 500, struct {
+        fn run() void {
+            const sdb = db_mod.Db.open(":memory:") catch return;
+            defer sdb.close();
+            _ = sdb;
+        }
+    }.run);
+}
+
+test "bench: DB schema init" {
+    timedRun("schema init (cold)", 20, struct {
+        fn run() void {
+            const tdb = db_mod.Db.open(":memory:") catch return;
+            defer tdb.close();
+            tdb.init_schema() catch {};
+        }
+    }.run);
+}

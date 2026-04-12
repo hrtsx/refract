@@ -128,18 +128,20 @@ pub fn main() !void {
         }
     }
 
-    std.posix.sigaction(std.posix.SIG.PIPE, &.{
-        .handler = .{ .handler = std.posix.SIG.IGN },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    }, null);
-    const term_act = std.posix.Sigaction{
-        .handler = .{ .handler = onSigterm },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    std.posix.sigaction(std.posix.SIG.TERM, &term_act, null);
-    std.posix.sigaction(std.posix.SIG.INT, &term_act, null);
+    if (comptime @import("builtin").os.tag != .windows) {
+        std.posix.sigaction(std.posix.SIG.PIPE, &.{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        }, null);
+        const term_act = std.posix.Sigaction{
+            .handler = .{ .handler = onSigterm },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.TERM, &term_act, null);
+        std.posix.sigaction(std.posix.SIG.INT, &term_act, null);
+    }
 
     const cwd = try std.process.getCwdAlloc(alloc);
     defer alloc.free(cwd);

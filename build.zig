@@ -36,6 +36,10 @@ fn addVendorDeps(b: *std.Build, m: *std.Build.Module) void {
         .file = b.path("vendor/sqlite/sqlite3.c"),
         .flags = &.{ "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-w" },
     });
+    m.addCSourceFile(.{
+        .file = b.path("vendor/sqlite/bind_helpers.c"),
+        .flags = &.{"-w"},
+    });
     m.addIncludePath(b.path("vendor/sqlite"));
 }
 
@@ -65,6 +69,7 @@ pub fn build(b: *std.Build) void {
         .name = "refract",
         .root_module = exe_mod,
     });
+    if (optimize != .Debug) exe_mod.strip = true;
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

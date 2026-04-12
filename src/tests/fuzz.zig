@@ -1,5 +1,8 @@
 const std = @import("std");
 const prism = @import("../prism.zig");
+const db_mod = @import("../db.zig");
+const indexer = @import("../indexer/index.zig");
+const transport = @import("../lsp/transport.zig");
 
 test "fuzz: prism parser handles arbitrary input" {
     const input = std.testing.fuzzInput(.{});
@@ -52,4 +55,27 @@ test "fuzz: prism parser handles class-like structures" {
     prism.parser_init(&arena, &parser, &buf, total_len, null);
     defer prism.parser_free(&parser);
     _ = prism.parse(&parser);
+}
+
+test "fuzz: indexer handles arbitrary Ruby source without crash" {
+    const input = std.testing.fuzzInput(.{});
+    if (input.len == 0) return;
+
+    const db = db_mod.Db.open(":memory:") catch return;
+    defer db.close();
+    db.init_schema() catch return;
+
+    indexer.indexSource(input, "fuzz_test.rb", db, std.testing.allocator) catch {};
+}
+
+test "fuzz: transport rejects malformed headers" {
+    const input = std.testing.fuzzInput(.{});
+    if (input.len == 0) return;
+
+    var stream = std.io.fixedBufferStream(input);
+    const alloc = std.testing.allocator;
+    const result = transport.readMessage(stream.reader(), alloc);
+    if (result) |msg| {
+        alloc.free(msg);
+    } else |_| {}
 }

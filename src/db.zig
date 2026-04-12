@@ -3,6 +3,9 @@ const c = @cImport({
     @cInclude("sqlite3.h");
 });
 
+extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
+extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
+
 pub const DbError = error{
     Open,
     Exec,
@@ -40,7 +43,7 @@ pub const Stmt = struct {
     }
 
     pub fn bind_text(self: Stmt, col: c_int, val: []const u8) void {
-        _ = c.sqlite3_bind_text(self.raw, col, val.ptr, @intCast(val.len), c.SQLITE_TRANSIENT);
+        _ = refract_bind_text(self.raw, col, val.ptr, @intCast(val.len));
     }
 
     pub fn bind_int(self: Stmt, col: c_int, val: i64) void {
@@ -52,7 +55,7 @@ pub const Stmt = struct {
     }
 
     pub fn bind_blob(self: Stmt, col: c_int, data: []const u8) void {
-        _ = c.sqlite3_bind_blob(self.raw, col, data.ptr, @intCast(data.len), c.SQLITE_TRANSIENT);
+        _ = refract_bind_blob(self.raw, col, data.ptr, @intCast(data.len));
     }
 
     pub fn column_blob(self: Stmt, col: c_int) []const u8 {
@@ -94,7 +97,7 @@ pub const CachedStmt = struct {
     }
 
     pub fn bind_text(self: CachedStmt, col: c_int, val: []const u8) void {
-        _ = c.sqlite3_bind_text(self.raw, col, val.ptr, @intCast(val.len), c.SQLITE_TRANSIENT);
+        _ = refract_bind_text(self.raw, col, val.ptr, @intCast(val.len));
     }
 
     pub fn bind_int(self: CachedStmt, col: c_int, val: i64) void {
