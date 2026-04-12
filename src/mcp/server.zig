@@ -3141,7 +3141,9 @@ fn getIntArg(args: ?std.json.ObjectMap, key: []const u8) ?i64 {
 }
 
 fn stepLog(err: anyerror) bool {
-    std.debug.print("[mcp] sql step error: {}\n", .{err});
+    std.fs.File.stderr().writeAll("refract: mcp sql step: ") catch {};
+    std.fs.File.stderr().writeAll(@errorName(err)) catch {};
+    std.fs.File.stderr().writeAll("\n") catch {};
     return false;
 }
 

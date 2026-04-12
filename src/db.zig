@@ -179,10 +179,20 @@ pub const Db = struct {
                 }
             }
             if (needs_reindex) {
-                self.exec("UPDATE files SET mtime=0, content_hash=0") catch {};
+                self.exec("UPDATE files SET mtime=0, content_hash=0") catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reindex: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
             if (needs_reset) {
                 std.fs.File.stderr().writeAll("refract: resetting DB (schema newer than binary)\n") catch {};
+                self.begin() catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reset begin: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
+                errdefer self.rollback() catch {};
                 self.exec("DROP TABLE IF EXISTS sem_tokens") catch {};
                 self.exec("DROP TABLE IF EXISTS diagnostics") catch {};
                 self.exec("DROP TABLE IF EXISTS mixins") catch {};
@@ -195,6 +205,11 @@ pub const Db = struct {
                 self.exec("DROP TABLE IF EXISTS symbols") catch {};
                 self.exec("DROP TABLE IF EXISTS files") catch {};
                 self.exec("DROP TABLE IF EXISTS meta") catch {};
+                self.commit() catch |e| {
+                    std.fs.File.stderr().writeAll("refract: db reset commit: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
         }
         try self.exec(

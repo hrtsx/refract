@@ -507,7 +507,11 @@ fn handleMemberCollection(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn
             .action = action_name,
             .line = lc.line,
             .col = lc.col,
-        }) catch {};
+        }) catch |e| {
+            std.fs.File.stderr().writeAll("refract: route insert: ") catch {};
+            std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+            std.fs.File.stderr().writeAll("\n") catch {};
+        };
     }
 }
 
@@ -921,7 +925,11 @@ fn rodaVisitNode(ctx: *RodaCtx, node: *const prism.Node) void {
                     .action = method,
                     .line = lc.line,
                     .col = lc.col,
-                }) catch {};
+                }) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: route insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
                 ctx.route_count.* += 1;
                 return;
             }

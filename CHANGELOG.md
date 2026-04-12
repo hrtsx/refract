@@ -50,7 +50,7 @@
 ### Features
 - Routes: `as:` option support for custom helper names
 - i18n: YAML anchor markers (`&anchor`) now indexed instead of skipped
-- Schema v24 with composite indexes on symbols(name,file_id), params(symbol_id,position), local_vars(file_id,scope_id)
+- Schema v2 with composite indexes on symbols(name,file_id), params(symbol_id,position), local_vars(file_id,scope_id)
 
 ### MCP
 - `resolve_type` enhanced: returns confidence source, union components
@@ -79,12 +79,12 @@
 - MRO query optimization (recursive CTE replaces iterative queries)
 - Compound indexes on frequently queried columns
 - Partial index on return_type for nil-aware detection
-- Schema v24
+- Schema v2
 
 ### Fixed
 
 - Missing i18n_keys/routes/aliases tables no longer crash on insert
-- Schema version test assertions for v24 migration
+- Schema version test assertions for v2 migration
 
 ### Performance
 

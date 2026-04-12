@@ -584,7 +584,9 @@ pub fn main() !void {
         const method_val = obj.get("method");
         if (method_val == null) {
             if (obj.get("id") != null) {
-                server.handleServerResponse(obj) catch {};
+                server.handleServerResponse(obj) catch |e| {
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                };
             }
             continue;
         }
