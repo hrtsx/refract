@@ -253,7 +253,8 @@ pub fn main() !void {
                 try std.fs.File.stdout().writeAll("\n");
             } else {
                 var out_buf: [1024]u8 = undefined;
-                const out = std.fmt.bufPrint(&out_buf,
+                const out = std.fmt.bufPrint(
+                    &out_buf,
                     "db:      {s}\nschema:  {s}\nfiles:   {d}\ngems:    {d}\nsymbols: {d}\n",
                     .{ db_path, schema_ver, nfiles, ngems, nsyms },
                 ) catch "FAIL: format error\n";
@@ -282,7 +283,10 @@ pub fn main() !void {
             try std.fs.File.stderr().writeAll("refract: --index-only: workspace scan failed\n");
             return error.ScanFailed;
         };
-        defer alloc.free(paths);
+        defer {
+            for (paths) |p| alloc.free(p);
+            alloc.free(paths);
+        }
 
         const const_paths = try alloc.alloc([]const u8, paths.len);
         defer alloc.free(const_paths);
@@ -407,14 +411,15 @@ pub fn main() !void {
         const db_size_bytes = stat.size;
 
         var out_buf: [2048]u8 = undefined;
-        const out = std.fmt.bufPrint(&out_buf,
+        const out = std.fmt.bufPrint(
+            &out_buf,
             "Workspace Info\n" ++
-            "==============\n" ++
-            "Database:     {s}\n" ++
-            "Size:         {d} bytes\n" ++
-            "Schema:       {s}\n" ++
-            "Files:        {d}\n" ++
-            "Gems:         {d}\n",
+                "==============\n" ++
+                "Database:     {s}\n" ++
+                "Size:         {d} bytes\n" ++
+                "Schema:       {s}\n" ++
+                "Files:        {d}\n" ++
+                "Gems:         {d}\n",
             .{ db_path, db_size_bytes, schema_ver, total_files, gem_files },
         ) catch "refract: format error\n";
         try std.fs.File.stdout().writeAll(out);

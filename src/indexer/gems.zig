@@ -109,8 +109,7 @@ fn collectPathsFromOutput(raw: []const u8, alloc: std.mem.Allocator, gem_only: b
 
 pub fn findRbsStdlibPaths(root_path: []const u8, alloc: std.mem.Allocator, timeout_ns: u64) ![][]u8 {
     // Try: ruby -e "require 'rbs'; puts RBS::EnvironmentLoader::DEFAULT_CORE_ROOT"
-    const rbs_argv = &[_][]const u8{ "ruby", "--disable-gems", "-e",
-        "begin; require 'rbs'; puts RBS::EnvironmentLoader::DEFAULT_CORE_ROOT; rescue => e; end" };
+    const rbs_argv = &[_][]const u8{ "ruby", "--disable-gems", "-e", "begin; require 'rbs'; puts RBS::EnvironmentLoader::DEFAULT_CORE_ROOT; rescue => e; end" };
     if (runRubyCmd(root_path, alloc, rbs_argv, timeout_ns)) |raw| {
         defer alloc.free(raw);
         var rbs_paths = std.ArrayList([]u8){};
@@ -128,8 +127,7 @@ pub fn findRbsStdlibPaths(root_path: []const u8, alloc: std.mem.Allocator, timeo
         rbs_paths.deinit(alloc);
     } else |_| {}
     // Fallback: ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['rubylibdir']"
-    const rbcfg_argv = &[_][]const u8{ "ruby", "--disable-gems", "-e",
-        "require 'rbconfig'; puts RbConfig::CONFIG['rubylibdir']" };
+    const rbcfg_argv = &[_][]const u8{ "ruby", "--disable-gems", "-e", "require 'rbconfig'; puts RbConfig::CONFIG['rubylibdir']" };
     if (runRubyCmd(root_path, alloc, rbcfg_argv, timeout_ns)) |raw2| {
         defer alloc.free(raw2);
         var rbs_paths2 = std.ArrayList([]u8){};
@@ -169,10 +167,16 @@ pub fn findRbsCollectionPaths(root_path: []const u8, alloc: std.mem.Allocator) !
             const line = std.mem.trimRight(u8, raw_line, " \t\r");
             if (line.len == 0 or line[0] == '#') continue;
             const content = std.mem.trim(u8, line, " \t");
-            if (std.mem.eql(u8, content, "gems:")) { in_gems = true; continue; }
+            if (std.mem.eql(u8, content, "gems:")) {
+                in_gems = true;
+                continue;
+            }
             if (!in_gems) continue;
             // Detect top-level keys (no indent) to exit gems section
-            if (line.len > 0 and line[0] != ' ' and line[0] != '-') { in_gems = false; continue; }
+            if (line.len > 0 and line[0] != ' ' and line[0] != '-') {
+                in_gems = false;
+                continue;
+            }
             if (std.mem.startsWith(u8, content, "path:")) {
                 const path_val = std.mem.trim(u8, content[5..], " \t\"'");
                 if (path_val.len == 0) continue;

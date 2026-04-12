@@ -127,9 +127,7 @@ fn parseUnionTypes(inner: []const u8, buf: *[512]u8) ?[]const u8 {
     while (it.next()) |part| {
         const t = std.mem.trim(u8, part, " ");
         if (t.len == 0) continue;
-        const normalized: []const u8 = if (std.mem.eql(u8, t, "nil")) "NilClass"
-            else if (std.mem.eql(u8, t, "boolean")) "TrueClass | FalseClass"
-            else t;
+        const normalized: []const u8 = if (std.mem.eql(u8, t, "nil")) "NilClass" else if (std.mem.eql(u8, t, "boolean")) "TrueClass | FalseClass" else t;
         if (!first) {
             if (result_len + 3 > buf.len) break;
             buf[result_len..][0..3].* = " | ".*;
@@ -261,17 +259,17 @@ fn appendYardTags(raw: []u8, alloc: std.mem.Allocator) ?[]u8 {
             deprecated_msg = std.mem.trim(u8, t["@deprecated".len..], " \t");
         } else if (std.mem.startsWith(u8, t, "@raise")) {
             const rest = std.mem.trim(u8, t["@raise".len..], " \t");
-            extras.appendSlice(alloc, "\n\n**Raises:** ") catch {};
-            extras.appendSlice(alloc, rest) catch {};
+            extras.appendSlice(alloc, "\n\n**Raises:** ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
         } else if (std.mem.startsWith(u8, t, "@see")) {
             const rest = std.mem.trim(u8, t["@see".len..], " \t");
-            extras.appendSlice(alloc, "\n\n**See also:** ") catch {};
-            extras.appendSlice(alloc, rest) catch {};
+            extras.appendSlice(alloc, "\n\n**See also:** ") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
         } else if (std.mem.startsWith(u8, t, "@overload")) {
             const rest = std.mem.trim(u8, t["@overload".len..], " \t");
-            extras.appendSlice(alloc, "\n\n**Overload:** `") catch {};
-            extras.appendSlice(alloc, rest) catch {};
-            extras.appendSlice(alloc, "`") catch {};
+            extras.appendSlice(alloc, "\n\n**Overload:** `") catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, rest) catch {}; // OOM: doc formatting
+            extras.appendSlice(alloc, "`") catch {}; // OOM: doc formatting
         }
     }
     const extras_slice = extras.toOwnedSlice(alloc) catch "";
@@ -279,12 +277,23 @@ fn appendYardTags(raw: []u8, alloc: std.mem.Allocator) ?[]u8 {
     if (deprecated_msg == null and extras_slice.len == 0) return raw;
     var out = std.ArrayList(u8){};
     if (deprecated_msg) |msg| {
-        out.appendSlice(alloc, "**Deprecated:**") catch { out.deinit(alloc); alloc.free(raw); return null; };
-        if (msg.len > 0) { out.append(alloc, ' ') catch {}; out.appendSlice(alloc, msg) catch {}; }
-        out.appendSlice(alloc, "\n\n") catch {};
+        out.appendSlice(alloc, "**Deprecated:**") catch {
+            out.deinit(alloc);
+            alloc.free(raw);
+            return null;
+        };
+        if (msg.len > 0) {
+            out.append(alloc, ' ') catch {};
+            out.appendSlice(alloc, msg) catch {};
+        } // OOM: doc formatting
+        out.appendSlice(alloc, "\n\n") catch {}; // OOM: doc formatting
     }
-    out.appendSlice(alloc, raw) catch { out.deinit(alloc); alloc.free(raw); return null; };
-    out.appendSlice(alloc, extras_slice) catch {};
+    out.appendSlice(alloc, raw) catch {
+        out.deinit(alloc);
+        alloc.free(raw);
+        return null;
+    };
+    out.appendSlice(alloc, extras_slice) catch {}; // OOM: doc formatting
     alloc.free(raw);
     return out.toOwnedSlice(alloc) catch null;
 }
@@ -341,7 +350,8 @@ fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u
         try insertSymbol(ctx, "def", attr_name, lc.line, lc.col, null);
         if (std.mem.eql(u8, mname, "attr_writer") or std.mem.eql(u8, mname, "attr_accessor") or
             std.mem.eql(u8, mname, "mattr_writer") or std.mem.eql(u8, mname, "mattr_accessor") or
-            std.mem.eql(u8, mname, "cattr_writer") or std.mem.eql(u8, mname, "cattr_accessor")) {
+            std.mem.eql(u8, mname, "cattr_writer") or std.mem.eql(u8, mname, "cattr_accessor"))
+        {
             const writer_name = try std.fmt.allocPrint(ctx.alloc, "{s}=", .{attr_name});
             defer ctx.alloc.free(writer_name);
             try insertSymbol(ctx, "def", writer_name, lc.line, lc.col, null);
@@ -351,46 +361,54 @@ fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u
 
 fn isRailsDsl(mname: []const u8) bool {
     const dsl = [_][]const u8{
-        "scope",                   "belongs_to",   "has_many",              "has_one",
-        "has_and_belongs_to_many", "validates",    "validates_presence_of", "validates_uniqueness_of",
-        "before_action",           "after_action", "around_action",         "before_create",
-        "after_create",            "before_save",  "after_save",            "before_destroy",
-        "after_destroy",           "delegate",
-        "rescue_from",             "helper_method",
-        "around_create",           "around_save",  "around_destroy",
-        "validates_format_of",     "validates_length_of", "validates_numericality_of",
-        "enum",                    "serialize",    "store",                 "after_initialize",
-        "before_validation",       "after_commit", "prepend_before_action",
-        "validate",                "after_update", "before_update",         "around_update",
-        "after_find",              "validates_inclusion_of", "validates_exclusion_of", "validates_with",
+        "scope",                   "belongs_to",                "has_many",               "has_one",
+        "has_and_belongs_to_many", "validates",                 "validates_presence_of",  "validates_uniqueness_of",
+        "before_action",           "after_action",              "around_action",          "before_create",
+        "after_create",            "before_save",               "after_save",             "before_destroy",
+        "after_destroy",           "delegate",                  "rescue_from",            "helper_method",
+        "around_create",           "around_save",               "around_destroy",         "validates_format_of",
+        "validates_length_of",     "validates_numericality_of", "enum",                   "serialize",
+        "store",                   "after_initialize",          "before_validation",      "after_commit",
+        "prepend_before_action",   "validate",                  "after_update",           "before_update",
+        "around_update",           "after_find",                "validates_inclusion_of", "validates_exclusion_of",
+        "validates_with",
         // RSpec
-        "describe", "context", "it", "let", "let!", "subject",
-        "before", "after", "shared_examples_for", "shared_context",
-        "shared_examples", "around",
+                 "describe",                  "context",                "it",
+        "let",                     "let!",                      "subject",                "before",
+        "after",                   "shared_examples_for",       "shared_context",         "shared_examples",
+        "around",
         // Sinatra
-        "get", "post", "put", "delete", "patch", "head", "options", "route",
+                         "get",                       "post",                   "put",
+        "delete",                  "patch",                     "head",                   "options",
+        "route",
         // Rake
-        "task", "namespace", "file", "directory",
+                          "task",                      "namespace",              "file",
+        "directory",
         // ActiveSupport class-level accessors
-        "mattr_accessor", "mattr_reader", "mattr_writer",
-        "cattr_accessor", "cattr_reader", "cattr_writer",
+                      "mattr_accessor",            "mattr_reader",           "mattr_writer",
+        "cattr_accessor",          "cattr_reader",              "cattr_writer",
         // FactoryBot
-        "factory", "trait", "sequence", "association",
+                  "factory",
+        "trait",                   "sequence",                  "association",
         // ActiveSupport module hooks
-        "included", "extended", "prepended",
+                   "included",
+        "extended",                "prepended",
         // Hanami
-        "expose", "halt", "handle_exception", "formats", "accepts", "mount",
+                        "expose",                 "halt",
+        "handle_exception",        "formats",                   "accepts",                "mount",
         // Grape
-        "desc", "params", "requires", "optional", "group", "resource", "resources", "route_param",
-        "helpers", "version", "default_format", "default_error_status", "content_type", "formatter",
+        "desc",                    "params",                    "requires",               "optional",
+        "group",                   "resource",                  "resources",              "route_param",
+        "helpers",                 "version",                   "default_format",         "default_error_status",
+        "content_type",            "formatter",
         // Roda
-        "plugin", "freeze", "hash_branch", "hash_routes",
+                        "plugin",                 "freeze",
+        "hash_branch",             "hash_routes",
         // Sequel associations
-        "one_to_many", "many_to_one", "many_to_many", "one_to_one",
-        "one_through_one", "many_through_many",
+                      "one_to_many",            "many_to_one",
+        "many_to_many",            "one_to_one",                "one_through_one",        "many_through_many",
         // Sequel validations
-        "validates_presence", "validates_unique", "validates_format",
-        "validates_type",
+        "validates_presence",      "validates_unique",          "validates_format",       "validates_type",
     };
     for (dsl) |d| if (std.mem.eql(u8, mname, d)) return true;
     return false;
@@ -459,14 +477,14 @@ fn isBuiltinMethod(name: []const u8) bool {
 
 fn isIterationMethod(name: []const u8) bool {
     const methods = [_][]const u8{
-        "each", "map", "flat_map", "select", "reject", "find",
-        "each_with_object", "each_with_index", "collect", "detect",
-        "filter", "filter_map", "inject", "reduce", "times", "upto",
-        "downto", "step", "each_slice", "each_cons", "min_by", "max_by",
-        "sort_by", "group_by", "tally", "then", "yield_self", "zip",
-        "take_while", "drop_while", "partition", "count", "sum",
-        "find_all", "lazy", "cycle", "each_entry", "chunk_while",
-        "slice_when", "slice_before", "slice_after", "tap", "chunk",
+        "each",             "map",             "flat_map",   "select",       "reject",      "find",
+        "each_with_object", "each_with_index", "collect",    "detect",       "filter",      "filter_map",
+        "inject",           "reduce",          "times",      "upto",         "downto",      "step",
+        "each_slice",       "each_cons",       "min_by",     "max_by",       "sort_by",     "group_by",
+        "tally",            "then",            "yield_self", "zip",          "take_while",  "drop_while",
+        "partition",        "count",           "sum",        "find_all",     "lazy",        "cycle",
+        "each_entry",       "chunk_while",     "slice_when", "slice_before", "slice_after", "tap",
+        "chunk",
     };
     for (methods) |m| if (std.mem.eql(u8, name, m)) return true;
     return false;
@@ -489,13 +507,13 @@ fn blockElemType(mname: []const u8, receiver_type: ?[]const u8) ?[]const u8 {
     if (std.mem.eql(u8, mname, "each_slice") or
         std.mem.eql(u8, mname, "each_cons")) return receiver_type;
     const elem_methods = [_][]const u8{
-        "each",           "map",            "collect",        "select",
-        "reject",         "filter",         "flat_map",       "filter_map",
-        "take_while",     "drop_while",     "sort_by",        "min_by",
-        "max_by",         "group_by",       "partition",      "count",
-        "sum",            "zip",            "each_with_index", "each_with_object",
-        "find",           "detect",         "inject",         "reduce",
-        "tally",          "chunk",
+        "each",       "map",        "collect",         "select",
+        "reject",     "filter",     "flat_map",        "filter_map",
+        "take_while", "drop_while", "sort_by",         "min_by",
+        "max_by",     "group_by",   "partition",       "count",
+        "sum",        "zip",        "each_with_index", "each_with_object",
+        "find",       "detect",     "inject",          "reduce",
+        "tally",      "chunk",
     };
     for (elem_methods) |m| {
         if (std.mem.eql(u8, mname, m)) return stripArrayBrackets(receiver_type);
@@ -555,26 +573,38 @@ fn insertBlockParams(ctx: *VisitCtx, block: *const prism.BlockNode, receiver_typ
         const pname = resolveConstant(ctx.parser, p.name);
         const lc = locationLineCol(ctx.parser, p.base.location.start);
         if (std.mem.eql(u8, method_name, "inject") or std.mem.eql(u8, method_name, "reduce")) {
-            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             if (params_list.requireds.size > 1) {
                 const p2: *const prism.RequiredParamNode = @ptrCast(@alignCast(params_list.requireds.nodes[1]));
                 const pname2 = resolveConstant(ctx.parser, p2.name);
                 const lc2 = locationLineCol(ctx.parser, p2.base.location.start);
-                insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, elem_type, 60, ctx.scope_id) catch { ctx.error_count += 1; };
+                insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, elem_type, 60, ctx.scope_id) catch {
+                    ctx.error_count += 1;
+                };
             }
         } else if (std.mem.eql(u8, method_name, "each_with_object") and params_list.requireds.size > 1) {
-            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             const p2: *const prism.RequiredParamNode = @ptrCast(@alignCast(params_list.requireds.nodes[1]));
             const pname2 = resolveConstant(ctx.parser, p2.name);
             const lc2 = locationLineCol(ctx.parser, p2.base.location.start);
-            insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, accum_type orelse "Object", 60, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, accum_type orelse "Object", 60, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
         } else {
-            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, pname, lc.line, lc.col, elem_type, 60, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             if (std.mem.eql(u8, method_name, "each_with_index") and params_list.requireds.size > 1) {
                 const p2: *const prism.RequiredParamNode = @ptrCast(@alignCast(params_list.requireds.nodes[1]));
                 const pname2 = resolveConstant(ctx.parser, p2.name);
                 const lc2 = locationLineCol(ctx.parser, p2.base.location.start);
-                insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, "Integer", 60, ctx.scope_id) catch { ctx.error_count += 1; };
+                insertLocalVar(ctx.db, ctx.file_id, pname2, lc2.line, lc2.col, "Integer", 60, ctx.scope_id) catch {
+                    ctx.error_count += 1;
+                };
             }
         }
     }
@@ -582,21 +612,20 @@ fn insertBlockParams(ctx: *VisitCtx, block: *const prism.BlockNode, receiver_typ
 
 fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name: []const u8) ?[]u8 {
     const is_plural = std.mem.eql(u8, mname, "has_many") or
-                      std.mem.eql(u8, mname, "has_and_belongs_to_many") or
-                      std.mem.eql(u8, mname, "one_to_many") or
-                      std.mem.eql(u8, mname, "many_to_many") or
-                      std.mem.eql(u8, mname, "many_through_many");
+        std.mem.eql(u8, mname, "has_and_belongs_to_many") or
+        std.mem.eql(u8, mname, "one_to_many") or
+        std.mem.eql(u8, mname, "many_to_many") or
+        std.mem.eql(u8, mname, "many_through_many");
     const is_singular = std.mem.eql(u8, mname, "belongs_to") or
-                        std.mem.eql(u8, mname, "has_one") or
-                        std.mem.eql(u8, mname, "many_to_one") or
-                        std.mem.eql(u8, mname, "one_to_one") or
-                        std.mem.eql(u8, mname, "one_through_one");
+        std.mem.eql(u8, mname, "has_one") or
+        std.mem.eql(u8, mname, "many_to_one") or
+        std.mem.eql(u8, mname, "one_to_one") or
+        std.mem.eql(u8, mname, "one_through_one");
     if (!is_plural and !is_singular) return null;
     var singular: []const u8 = assoc_name;
     if (std.mem.endsWith(u8, assoc_name, "ies") and assoc_name.len > 3) {
         const base = assoc_name[0 .. assoc_name.len - 3];
-        const class_name = std.fmt.allocPrint(alloc, "{c}{s}y",
-            .{ std.ascii.toUpper(base[0]), base[1..] }) catch return null;
+        const class_name = std.fmt.allocPrint(alloc, "{c}{s}y", .{ std.ascii.toUpper(base[0]), base[1..] }) catch return null;
         defer alloc.free(class_name);
         if (is_plural) return std.fmt.allocPrint(alloc, "[{s}]", .{class_name}) catch null;
         return alloc.dupe(u8, class_name) catch null;
@@ -630,31 +659,25 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         sym_name = sn.unescaped.source[0..sn.unescaped.length];
     } else return;
     const kind: []const u8 =
-        if (std.mem.eql(u8, mname, "scope")) "scope"
-        else if (std.mem.eql(u8, mname, "belongs_to") or
-                 std.mem.eql(u8, mname, "has_many") or
-                 std.mem.eql(u8, mname, "has_one") or
-                 std.mem.eql(u8, mname, "has_and_belongs_to_many") or
-                 std.mem.eql(u8, mname, "one_to_many") or
-                 std.mem.eql(u8, mname, "many_to_one") or
-                 std.mem.eql(u8, mname, "many_to_many") or
-                 std.mem.eql(u8, mname, "one_to_one") or
-                 std.mem.eql(u8, mname, "one_through_one") or
-                 std.mem.eql(u8, mname, "many_through_many")) "association"
-        else if (std.mem.eql(u8, mname, "shared_examples_for") or
-                 std.mem.eql(u8, mname, "shared_context") or
-                 std.mem.eql(u8, mname, "shared_examples")) "module"
-        else if (std.mem.eql(u8, mname, "describe") or
-                 std.mem.eql(u8, mname, "context") or
-                 std.mem.eql(u8, mname, "it") or
-                 std.mem.eql(u8, mname, "specify")) "test"
-        else if (std.mem.eql(u8, mname, "let") or
-                 std.mem.eql(u8, mname, "let!") or
-                 std.mem.eql(u8, mname, "subject") or
-                 std.mem.eql(u8, mname, "association")) "variable"
-        else if (std.mem.eql(u8, mname, "factory") or
-                 std.mem.eql(u8, mname, "trait")) "class"
-        else "def";
+        if (std.mem.eql(u8, mname, "scope")) "scope" else if (std.mem.eql(u8, mname, "belongs_to") or
+        std.mem.eql(u8, mname, "has_many") or
+        std.mem.eql(u8, mname, "has_one") or
+        std.mem.eql(u8, mname, "has_and_belongs_to_many") or
+        std.mem.eql(u8, mname, "one_to_many") or
+        std.mem.eql(u8, mname, "many_to_one") or
+        std.mem.eql(u8, mname, "many_to_many") or
+        std.mem.eql(u8, mname, "one_to_one") or
+        std.mem.eql(u8, mname, "one_through_one") or
+        std.mem.eql(u8, mname, "many_through_many")) "association" else if (std.mem.eql(u8, mname, "shared_examples_for") or
+        std.mem.eql(u8, mname, "shared_context") or
+        std.mem.eql(u8, mname, "shared_examples")) "module" else if (std.mem.eql(u8, mname, "describe") or
+        std.mem.eql(u8, mname, "context") or
+        std.mem.eql(u8, mname, "it") or
+        std.mem.eql(u8, mname, "specify")) "test" else if (std.mem.eql(u8, mname, "let") or
+        std.mem.eql(u8, mname, "let!") or
+        std.mem.eql(u8, mname, "subject") or
+        std.mem.eql(u8, mname, "association")) "variable" else if (std.mem.eql(u8, mname, "factory") or
+        std.mem.eql(u8, mname, "trait")) "class" else "def";
     var ns_buf: [256]u8 = undefined;
     const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
     const assoc_return_type = inferAssocReturnType(ctx.alloc, mname, sym_name);
@@ -743,7 +766,9 @@ fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
             const lc = locationLineCol(ctx.parser, assoc.key.*.location.start);
             try insertSymbol(ctx, "def", ksym.unescaped.source[0..ksym.unescaped.length], lc.line, lc.col, null);
             // Index values from this key's array/hash
-            insertEnumValues(ctx, assoc.value) catch { ctx.error_count += 1; };
+            insertEnumValues(ctx, assoc.value) catch {
+                ctx.error_count += 1;
+            };
         }
         return; // values already handled per-key above
     }
@@ -852,8 +877,8 @@ fn detectTypeGuard(parser: *prism.Parser, cond: *const prism.Node) ?struct { nam
     const method_name = resolveConstant(parser, call.name);
 
     const is_type_guard = std.mem.eql(u8, method_name, "is_a?") or
-                          std.mem.eql(u8, method_name, "kind_of?") or
-                          std.mem.eql(u8, method_name, "instance_of?");
+        std.mem.eql(u8, method_name, "kind_of?") or
+        std.mem.eql(u8, method_name, "instance_of?");
     if (!is_type_guard) return null;
 
     // Receiver must be a simple local variable
@@ -901,7 +926,7 @@ fn editDistance(a: []const u8, b: []const u8) u32 {
             const cost: u32 = if (ca == cb) 0 else 1;
             curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
         }
-        @memcpy(prev[0..b.len + 1], curr[0..b.len + 1]);
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
     }
     return prev[b.len];
 }
@@ -911,7 +936,7 @@ fn extractSorbetSig(source: []const u8, def_start: u32) ?[]const u8 {
     const scan_slice = source[scan_start..def_start];
     if (std.mem.lastIndexOf(u8, scan_slice, "returns(")) |ret_pos| {
         if (std.mem.lastIndexOf(u8, scan_slice[0..ret_pos], "sig")) |_| {
-            const after_returns = scan_slice[ret_pos + 8..];
+            const after_returns = scan_slice[ret_pos + 8 ..];
             if (std.mem.indexOf(u8, after_returns, ")")) |end| {
                 const type_str = std.mem.trim(u8, after_returns[0..end], " \t\n");
                 if (type_str.len > 0 and type_str.len < 64) {
@@ -944,8 +969,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 var parts = std.ArrayList(u8){};
                 defer parts.deinit(ctx.alloc);
                 for (ctx.namespace_stack[0..ctx.namespace_stack_len]) |ns_part| {
-                    if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {};
-                    parts.appendSlice(ctx.alloc, ns_part) catch {};
+                    if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {}; // OOM: namespace building
+                    parts.appendSlice(ctx.alloc, ns_part) catch {}; // OOM: namespace building
                 }
                 ns_parent = parts.toOwnedSlice(ctx.alloc) catch null;
                 if (ns_parent) |np| {
@@ -982,7 +1007,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             ctx.current_visibility = "public";
             ctx.module_function_mode = false;
             const ns_pushed_class = ctx.namespace_stack_len < 64;
-            if (ns_pushed_class) { ctx.namespace_stack[ctx.namespace_stack_len] = short_name; ctx.namespace_stack_len += 1; }
+            if (ns_pushed_class) {
+                ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
+                ctx.namespace_stack_len += 1;
+            }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             if (ns_pushed_class and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
@@ -1007,8 +1035,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 var parts = std.ArrayList(u8){};
                 defer parts.deinit(ctx.alloc);
                 for (ctx.namespace_stack[0..ctx.namespace_stack_len]) |ns_part| {
-                    if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {};
-                    parts.appendSlice(ctx.alloc, ns_part) catch {};
+                    if (parts.items.len > 0) parts.appendSlice(ctx.alloc, "::") catch {}; // OOM: namespace building
+                    parts.appendSlice(ctx.alloc, ns_part) catch {}; // OOM: namespace building
                 }
                 ns_parent = parts.toOwnedSlice(ctx.alloc) catch null;
                 if (ns_parent) |np| {
@@ -1030,7 +1058,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             ctx.current_visibility = "public";
             ctx.module_function_mode = false;
             const ns_pushed_mod = ctx.namespace_stack_len < 64;
-            if (ns_pushed_mod) { ctx.namespace_stack[ctx.namespace_stack_len] = short_name; ctx.namespace_stack_len += 1; }
+            if (ns_pushed_mod) {
+                ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
+                ctx.namespace_stack_len += 1;
+            }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             if (ns_pushed_mod and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
@@ -1060,7 +1091,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             }
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 2);
             if (sym_id > 0 and dn.parameters != null) {
-                extractParams(ctx, sym_id, dn.parameters.?) catch { ctx.error_count += 1; };
+                extractParams(ctx, sym_id, dn.parameters.?) catch {
+                    ctx.error_count += 1;
+                };
                 // YARD @param annotations
                 if (doc) |d| {
                     const params_node: *const prism.ParametersNode = @ptrCast(@alignCast(dn.parameters.?));
@@ -1077,7 +1110,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                     u.bind_text(1, yard_type);
                                     u.bind_int(2, sym_id);
                                     u.bind_int(3, @intCast(position));
-                                    _ = u.step() catch { ctx.error_count += 1; };
+                                    _ = u.step() catch {
+                                        ctx.error_count += 1;
+                                    };
                                 } else |_| {}
                             }
                         }
@@ -1095,7 +1130,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                     u.bind_text(1, yard_type);
                                     u.bind_int(2, sym_id);
                                     u.bind_int(3, @intCast(position));
-                                    _ = u.step() catch { ctx.error_count += 1; };
+                                    _ = u.step() catch {
+                                        ctx.error_count += 1;
+                                    };
                                 } else |_| {}
                             }
                         }
@@ -1112,7 +1149,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             defer u.finalize();
                             u.bind_text(1, yard_ret);
                             u.bind_int(2, sym_id);
-                            _ = u.step() catch { ctx.error_count += 1; };
+                            _ = u.step() catch {
+                                ctx.error_count += 1;
+                            };
                         } else |_| {}
                     }
                 }
@@ -1132,7 +1171,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                     defer u.finalize();
                                     u.bind_text(1, type_str);
                                     u.bind_int(2, sym_id);
-                                    _ = u.step() catch { ctx.error_count += 1; };
+                                    _ = u.step() catch {
+                                        ctx.error_count += 1;
+                                    };
                                 } else |_| {}
                             }
                         }
@@ -1146,16 +1187,22 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     if (stmts.body.size > 0) {
                         const last_node = stmts.body.nodes[stmts.body.size - 1];
                         if (inferLiteralType(last_node)) |rt| {
-                            updateSymbolReturnType(ctx.db, sym_id, rt) catch { ctx.error_count += 1; };
+                            updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                ctx.error_count += 1;
+                            };
                         } else if (extractNewCallType(ctx.parser, last_node)) |rt| {
-                            updateSymbolReturnType(ctx.db, sym_id, rt) catch { ctx.error_count += 1; };
+                            updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                ctx.error_count += 1;
+                            };
                         } else if (last_node.*.type == prism.NODE_RETURN) {
                             const rn: *const prism.ReturnNode = @ptrCast(@alignCast(last_node));
                             if (rn.arguments != null) {
                                 const rargs = rn.arguments.?[0].arguments;
                                 if (rargs.size > 0) {
                                     if (extractNewCallType(ctx.parser, rargs.nodes[0])) |rt| {
-                                        updateSymbolReturnType(ctx.db, sym_id, rt) catch { ctx.error_count += 1; };
+                                        updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                            ctx.error_count += 1;
+                                        };
                                     }
                                 }
                             }
@@ -1164,9 +1211,13 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 } else {
                     // Endless method: def foo = expr — body is the expression directly
                     if (inferLiteralType(body)) |rt| {
-                        updateSymbolReturnType(ctx.db, sym_id, rt) catch { ctx.error_count += 1; };
+                        updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                            ctx.error_count += 1;
+                        };
                     } else if (extractNewCallType(ctx.parser, body)) |rt| {
-                        updateSymbolReturnType(ctx.db, sym_id, rt) catch { ctx.error_count += 1; };
+                        updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                            ctx.error_count += 1;
+                        };
                     }
                 }
             }
@@ -1189,21 +1240,21 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (sym_id > 0) {
                 const val = cn.value;
                 const is_literal = switch (val.*.type) {
-                    prism.NODE_INTEGER, prism.NODE_FLOAT,
-                    prism.NODE_STRING, prism.NODE_SYMBOL,
-                    prism.NODE_TRUE, prism.NODE_FALSE, prism.NODE_NIL => true,
+                    prism.NODE_INTEGER, prism.NODE_FLOAT, prism.NODE_STRING, prism.NODE_SYMBOL, prism.NODE_TRUE, prism.NODE_FALSE, prism.NODE_NIL => true,
                     else => false,
                 };
                 if (is_literal) {
                     const vstart = val.*.location.start;
                     const vlen = @min(val.*.location.length, 120);
                     if (@as(usize, vstart) + vlen <= ctx.source.len) {
-                        const snippet = ctx.source[@as(usize, vstart)..@as(usize, vstart) + vlen];
+                        const snippet = ctx.source[@as(usize, vstart) .. @as(usize, vstart) + vlen];
                         if (ctx.db.prepare("UPDATE symbols SET value_snippet=? WHERE id=?")) |upd| {
                             defer upd.finalize();
                             upd.bind_text(1, snippet);
                             upd.bind_int(2, sym_id);
-                            _ = upd.step() catch { ctx.error_count += 1; };
+                            _ = upd.step() catch {
+                                ctx.error_count += 1;
+                            };
                         } else |_| {}
                     }
                 }
@@ -1212,24 +1263,27 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const call: *const prism.CallNode = @ptrCast(@alignCast(cn.value));
                 const mname = resolveConstant(ctx.parser, call.name);
                 const is_struct_new = (call.receiver != null and
-                                      call.receiver.?.*.type == prism.NODE_CONSTANT and
-                                      std.mem.eql(u8, mname, "new"));
+                    call.receiver.?.*.type == prism.NODE_CONSTANT and
+                    std.mem.eql(u8, mname, "new"));
                 const is_data_define = (call.receiver != null and
-                                       call.receiver.?.*.type == prism.NODE_CONSTANT and
-                                       std.mem.eql(u8, mname, "define"));
+                    call.receiver.?.*.type == prism.NODE_CONSTANT and
+                    std.mem.eql(u8, mname, "define"));
                 var receiver_name: []const u8 = "";
                 if (is_struct_new or is_data_define) {
                     const recv_const: *const prism.ConstReadNode = @ptrCast(@alignCast(call.receiver.?));
                     receiver_name = resolveConstant(ctx.parser, recv_const.name);
                 }
                 if ((is_struct_new and std.mem.eql(u8, receiver_name, "Struct")) or
-                    (is_data_define and std.mem.eql(u8, receiver_name, "Data"))) {
+                    (is_data_define and std.mem.eql(u8, receiver_name, "Data")))
+                {
                     // Upgrade kind to 'class' so dot-completion query finds members
                     if (sym_id > 0) {
                         if (ctx.db.prepare("UPDATE symbols SET kind='class' WHERE id=?")) |upd| {
                             defer upd.finalize();
                             upd.bind_int(1, sym_id);
-                            _ = upd.step() catch { ctx.error_count += 1; };
+                            _ = upd.step() catch {
+                                ctx.error_count += 1;
+                            };
                         } else |_| {}
                     }
                     if (call.arguments != null) {
@@ -1241,13 +1295,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 if (sym.unescaped.source) |src| {
                                     const sym_name = src[0..sym.unescaped.length];
                                     const alc = locationLineCol(ctx.parser, arg.*.location.start);
-                                    insertSymbol(ctx, "def", sym_name, alc.line, alc.col, null) catch { ctx.error_count += 1; };
+                                    insertSymbol(ctx, "def", sym_name, alc.line, alc.col, null) catch {
+                                        ctx.error_count += 1;
+                                    };
                                     if (is_struct_new) {
                                         const writer_name = ctx.alloc.alloc(u8, sym_name.len + 1) catch continue;
                                         defer ctx.alloc.free(writer_name);
                                         @memcpy(writer_name[0..sym_name.len], sym_name);
                                         writer_name[sym_name.len] = '=';
-                                        insertSymbol(ctx, "def", writer_name, alc.line, alc.col, null) catch { ctx.error_count += 1; };
+                                        insertSymbol(ctx, "def", writer_name, alc.line, alc.col, null) catch {
+                                            ctx.error_count += 1;
+                                        };
                                     }
                                 }
                             }
@@ -1256,8 +1314,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
             }
         },
-        prism.NODE_CONSTANT_OR_WRITE,
-        prism.NODE_CONSTANT_AND_WRITE => {
+        prism.NODE_CONSTANT_OR_WRITE, prism.NODE_CONSTANT_AND_WRITE => {
             const cow: *const prism.ConstantOrWriteNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, cow.name_loc.start);
             const name = resolveConstant(ctx.parser, cow.name);
@@ -1272,22 +1329,32 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, rn.base.location.start);
             const name = resolveConstant(ctx.parser, rn.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch { ctx.error_count += 1; };
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
         },
         prism.NODE_CALL => {
             const cn: *const prism.CallNode = @ptrCast(@alignCast(n));
             const mname = resolveConstant(ctx.parser, cn.name);
             if (cn.receiver == null and std.mem.eql(u8, mname, "rescue_from")) {
-                insertRescueFromHandler(ctx, cn) catch { ctx.error_count += 1; };
+                insertRescueFromHandler(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
             }
             if (cn.receiver == null and isAttrMethod(mname)) {
-                insertAttrSymbols(ctx, cn, mname) catch { ctx.error_count += 1; };
+                insertAttrSymbols(ctx, cn, mname) catch {
+                    ctx.error_count += 1;
+                };
             }
             if (cn.receiver == null and std.mem.eql(u8, mname, "enum")) {
-                insertEnumSymbols(ctx, cn) catch { ctx.error_count += 1; };
+                insertEnumSymbols(ctx, cn) catch {
+                    ctx.error_count += 1;
+                };
             } else if (cn.receiver == null and isRailsDsl(mname)) {
-                insertRailsDslSymbols(ctx, cn, mname) catch { ctx.error_count += 1; };
+                insertRailsDslSymbols(ctx, cn, mname) catch {
+                    ctx.error_count += 1;
+                };
             }
             if (cn.receiver == null and std.mem.eql(u8, mname, "alias_method")) {
                 if (cn.arguments != null) {
@@ -1298,7 +1365,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sym: *const prism.SymbolNode = @ptrCast(@alignCast(first));
                             if (sym.unescaped.source) |src| {
                                 const lc = locationLineCol(ctx.parser, first.*.location.start);
-                                insertSymbol(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                                insertSymbol(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null) catch {
+                                    ctx.error_count += 1;
+                                };
                             }
                         }
                     }
@@ -1308,13 +1377,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sym2: *const prism.SymbolNode = @ptrCast(@alignCast(second));
                             if (sym2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null) catch { ctx.error_count += 1; };
+                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null) catch {
+                                    ctx.error_count += 1;
+                                };
                             }
                         } else if (second.*.type == prism.NODE_STRING) {
                             const sn2: *const prism.StringNode = @ptrCast(@alignCast(second));
                             if (sn2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null) catch { ctx.error_count += 1; };
+                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null) catch {
+                                    ctx.error_count += 1;
+                                };
                             }
                         }
                     }
@@ -1327,13 +1400,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[0]));
                         if (sym.unescaped.source) |src| {
                             const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-                            insertSymbol(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                            insertSymbol(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     } else if (args.size > 0 and args.nodes[0].*.type == prism.NODE_STRING) {
                         const sn: *const prism.StringNode = @ptrCast(@alignCast(args.nodes[0]));
                         if (sn.unescaped.source) |src| {
                             const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-                            insertSymbol(ctx, "def", src[0..sn.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                            insertSymbol(ctx, "def", src[0..sn.unescaped.length], lc.line, lc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     }
                 }
@@ -1345,13 +1422,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[0]));
                         if (sym.unescaped.source) |src| {
                             const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-                            insertSymbol(ctx, "classdef", src[0..sym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                            insertSymbol(ctx, "classdef", src[0..sym.unescaped.length], lc.line, lc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     } else if (args.size > 0 and args.nodes[0].*.type == prism.NODE_STRING) {
                         const sn: *const prism.StringNode = @ptrCast(@alignCast(args.nodes[0]));
                         if (sn.unescaped.source) |src| {
                             const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-                            insertSymbol(ctx, "classdef", src[0..sn.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                            insertSymbol(ctx, "classdef", src[0..sn.unescaped.length], lc.line, lc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     }
                 }
@@ -1365,13 +1446,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
                             if (sym.unescaped.source) |src| {
                                 const lc = locationLineCol(ctx.parser, arg.*.location.start);
-                                insertSymbol(ctx, "classdef", src[0..sym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                                insertSymbol(ctx, "classdef", src[0..sym.unescaped.length], lc.line, lc.col, null) catch {
+                                    ctx.error_count += 1;
+                                };
                                 // Also mark the existing instance def as private
                                 if (ctx.db.prepare("UPDATE symbols SET visibility='private' WHERE file_id=? AND name=? AND kind='def'")) |u| {
                                     defer u.finalize();
                                     u.bind_int(1, ctx.file_id);
                                     u.bind_text(2, src[0..sym.unescaped.length]);
-                                    _ = u.step() catch { ctx.error_count += 1; };
+                                    _ = u.step() catch {
+                                        ctx.error_count += 1;
+                                    };
                                 } else |_| {}
                             }
                         }
@@ -1384,7 +1469,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             // private_class_method / public_class_method visibility (Phase 29)
             if (cn.receiver == null and
                 (std.mem.eql(u8, mname, "private_class_method") or
-                 std.mem.eql(u8, mname, "public_class_method")))
+                    std.mem.eql(u8, mname, "public_class_method")))
             {
                 const new_vis: []const u8 = if (mname[1] == 'r') "private" else "public";
                 if (cn.arguments != null) {
@@ -1395,14 +1480,14 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         const pcm_sym: *const prism.SymbolNode = @ptrCast(@alignCast(pcm_arg));
                         if (pcm_sym.unescaped.source) |src| {
                             const method_name = src[0..pcm_sym.unescaped.length];
-                            if (ctx.db.prepare(
-                                "UPDATE symbols SET visibility=? WHERE file_id=? AND name=? AND kind IN ('def','classdef')"
-                            )) |upd| {
+                            if (ctx.db.prepare("UPDATE symbols SET visibility=? WHERE file_id=? AND name=? AND kind IN ('def','classdef')")) |upd| {
                                 defer upd.finalize();
                                 upd.bind_text(1, new_vis);
                                 upd.bind_int(2, ctx.file_id);
                                 upd.bind_text(3, method_name);
-                                _ = upd.step() catch { ctx.error_count += 1; };
+                                _ = upd.step() catch {
+                                    ctx.error_count += 1;
+                                };
                             } else |_| {}
                         }
                     }
@@ -1419,7 +1504,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (arg.*.type == prism.NODE_CONSTANT) {
                             const mod_node: *const prism.ConstReadNode = @ptrCast(@alignCast(arg));
                             const mod_name = resolveConstant(ctx.parser, mod_node.name);
-                            insertMixin(ctx.db, ctx.current_class_id.?, mod_name, mname) catch { ctx.error_count += 1; };
+                            insertMixin(ctx.db, ctx.current_class_id.?, mod_name, mname) catch {
+                                ctx.error_count += 1;
+                            };
                         } else if (arg.*.type == prism.NODE_CONSTANT_PATH) {
                             const mod_owned = buildQualifiedName(ctx.parser, arg, ctx.alloc) catch null;
                             defer if (mod_owned) |m| ctx.alloc.free(m);
@@ -1427,7 +1514,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const cp: *const prism.ConstantPathNode = @ptrCast(@alignCast(arg));
                                 break :blk if (cp.name != 0) resolveConstant(ctx.parser, cp.name) else "";
                             };
-                            if (mod_name.len > 0) insertMixin(ctx.db, ctx.current_class_id.?, mod_name, mname) catch { ctx.error_count += 1; };
+                            if (mod_name.len > 0) insertMixin(ctx.db, ctx.current_class_id.?, mod_name, mname) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     }
                 }
@@ -1436,7 +1525,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (cn.receiver == null) {
                 const is_priv = std.mem.eql(u8, mname, "private");
                 const is_prot = std.mem.eql(u8, mname, "protected");
-                const is_pub  = std.mem.eql(u8, mname, "public");
+                const is_pub = std.mem.eql(u8, mname, "public");
                 if (is_priv or is_prot or is_pub) {
                     const new_vis: []const u8 = if (is_priv) "private" else if (is_prot) "protected" else "public";
                     // Inline form: `private def foo` — argument is a single def node
@@ -1476,14 +1565,16 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (sn.unescaped.source == null) continue;
                         const dname = sn.unescaped.source[0..sn.unescaped.length];
                         const dlc = locationLineCol(ctx.parser, arg.*.location.start);
-                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch { ctx.error_count += 1; };
+                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                            ctx.error_count += 1;
+                        };
                     }
                 }
             }
             // Forwardable def_delegator / def_delegators synthesis
             if (cn.receiver == null and
                 (std.mem.eql(u8, mname, "def_delegator") or
-                 std.mem.eql(u8, mname, "def_delegators")))
+                    std.mem.eql(u8, mname, "def_delegators")))
             {
                 if (cn.arguments) |args_node| {
                     const fwd_args = args_node.*.arguments;
@@ -1495,7 +1586,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (sn.unescaped.source == null) continue;
                         const dname = sn.unescaped.source[0..sn.unescaped.length];
                         const dlc = locationLineCol(ctx.parser, arg.*.location.start);
-                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch { ctx.error_count += 1; };
+                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                            ctx.error_count += 1;
+                        };
                     }
                 }
             }
@@ -1511,9 +1604,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         const rv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv));
                         const rv_name = resolveConstant(ctx.parser, rv.name);
                         var db_hit = false;
-                        if (ctx.db.prepare(
-                            "SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1"
-                        )) |lv_stmt| {
+                        if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv_stmt| {
                             defer lv_stmt.finalize();
                             lv_stmt.bind_int(1, ctx.file_id);
                             lv_stmt.bind_text(2, rv_name);
@@ -1525,14 +1616,16 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                     if (elem) |e| {
                                         if (cn.block.?.*.type == prism.NODE_BLOCK) {
                                             const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
-                                            insertBlockParams(ctx, block_node, e, mname, accum_t) catch { ctx.error_count += 1; };
+                                            insertBlockParams(ctx, block_node, e, mname, accum_t) catch {
+                                                ctx.error_count += 1;
+                                            };
                                         }
                                     }
                                 }
                             }
                         } else |_| {}
                         if (!db_hit and rv_name.len > 3 and rv_name[rv_name.len - 1] == 's') {
-                            const base = rv_name[0..rv_name.len - 1];
+                            const base = rv_name[0 .. rv_name.len - 1];
                             const buf = ctx.alloc.alloc(u8, base.len) catch null;
                             if (buf) |b| {
                                 defer ctx.alloc.free(b);
@@ -1541,16 +1634,16 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const block_generic = cn.block.?;
                                 if (block_generic.*.type == prism.NODE_BLOCK) {
                                     const block_node: *const prism.BlockNode = @ptrCast(@alignCast(block_generic));
-                                    insertBlockParams(ctx, block_node, b, mname, accum_t) catch { ctx.error_count += 1; };
+                                    insertBlockParams(ctx, block_node, b, mname, accum_t) catch {
+                                        ctx.error_count += 1;
+                                    };
                                 }
                             }
                         }
                     } else if (recv.*.type == prism.NODE_INSTANCE_VAR_READ) {
                         const rv: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(recv));
                         const rv_name = resolveConstant(ctx.parser, rv.name);
-                        if (ctx.db.prepare(
-                            "SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1"
-                        )) |lv| {
+                        if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv| {
                             defer lv.finalize();
                             lv.bind_int(1, ctx.file_id);
                             lv.bind_text(2, rv_name);
@@ -1558,7 +1651,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const ivar_type = lv.column_text(0);
                                 if (ivar_type.len > 0 and cn.block.?.*.type == prism.NODE_BLOCK) {
                                     const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
-                                    insertBlockParams(ctx, block_node, ivar_type, mname, accum_t) catch { ctx.error_count += 1; };
+                                    insertBlockParams(ctx, block_node, ivar_type, mname, accum_t) catch {
+                                        ctx.error_count += 1;
+                                    };
                                 }
                             }
                         } else |_| {}
@@ -1570,14 +1665,18 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const class_name = resolveConstant(ctx.parser, rc.name);
                                 if (cn.block.?.*.type == prism.NODE_BLOCK) {
                                     const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
-                                    insertBlockParams(ctx, block_node, class_name, mname, accum_t) catch { ctx.error_count += 1; };
+                                    insertBlockParams(ctx, block_node, class_name, mname, accum_t) catch {
+                                        ctx.error_count += 1;
+                                    };
                                 }
                             }
                         }
                     } else if (inferLiteralType(recv)) |lit_type| {
                         if (cn.block.?.*.type == prism.NODE_BLOCK) {
                             const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
-                            insertBlockParams(ctx, block_node, lit_type, mname, accum_t) catch { ctx.error_count += 1; };
+                            insertBlockParams(ctx, block_node, lit_type, mname, accum_t) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     }
                 }
@@ -1593,9 +1692,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (recv_np.*.type == prism.NODE_LOCAL_VAR_READ) {
                             const rv_np: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv_np));
                             const rv_name_np = resolveConstant(ctx.parser, rv_np.name);
-                            if (ctx.db.prepare(
-                                "SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1"
-                            )) |np_stmt| {
+                            if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |np_stmt| {
                                 defer np_stmt.finalize();
                                 np_stmt.bind_int(1, ctx.file_id);
                                 np_stmt.bind_text(2, rv_name_np);
@@ -1619,13 +1716,17 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             var nbuf: [4]u8 = undefined;
                             const nname = std.fmt.bufPrint(&nbuf, "_{d}", .{ni}) catch break;
                             const np_type: ?[]const u8 = if (ni == 1) elem_type_np else null;
-                            insertLocalVar(ctx.db, ctx.file_id, nname, nb_lc.line, nb_lc.col, np_type, 50, ctx.scope_id) catch { ctx.error_count += 1; };
+                            insertLocalVar(ctx.db, ctx.file_id, nname, nb_lc.line, nb_lc.col, np_type, 50, ctx.scope_id) catch {
+                                ctx.error_count += 1;
+                            };
                         }
                     }
                 }
             }
             const lc = locationLineCol(ctx.parser, cn.message_loc.start);
-            insertRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, null) catch { ctx.error_count += 1; };
+            insertRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, null) catch {
+                ctx.error_count += 1;
+            };
         },
         prism.NODE_ALIAS_METHOD => {
             const an: *const prism.AliasMethodNode = @ptrCast(@alignCast(n));
@@ -1633,14 +1734,18 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const nsym: *const prism.SymbolNode = @ptrCast(@alignCast(an.new_name));
                 if (nsym.unescaped.source) |src| {
                     const lc = locationLineCol(ctx.parser, an.new_name.*.location.start);
-                    insertSymbol(ctx, "def", src[0..nsym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                    insertSymbol(ctx, "def", src[0..nsym.unescaped.length], lc.line, lc.col, null) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
             if (an.old_name.*.type == prism.NODE_SYMBOL) {
                 const osym: *const prism.SymbolNode = @ptrCast(@alignCast(an.old_name));
                 if (osym.unescaped.source) |src| {
                     const lc = locationLineCol(ctx.parser, an.old_name.*.location.start);
-                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
         },
@@ -1656,7 +1761,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const lv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, lv.base.location.start);
             const name = resolveConstant(ctx.parser, lv.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
         },
         prism.NODE_CONSTANT_PATH => {
             const pn: *const prism.ConstantPathNode = @ptrCast(@alignCast(n));
@@ -1668,7 +1775,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             };
             if (ref_name.len > 0) {
                 const lc = locationLineCol(ctx.parser, pn.base.location.start);
-                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null) catch { ctx.error_count += 1; };
+                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null) catch {
+                    ctx.error_count += 1;
+                };
             }
         },
         prism.NODE_CONSTANT_PATH_WRITE => {
@@ -1722,7 +1831,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 if (rs.step() catch false) {
                                     const rt = rs.column_text(0);
                                     if (rt.len > 0) {
-                                        insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.current_class_id) catch { ctx.error_count += 1; };
+                                        insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.current_class_id) catch {
+                                            ctx.error_count += 1;
+                                        };
                                         iv_inserted = true;
                                     }
                                 }
@@ -1731,31 +1842,38 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                 }
             }
-            if (!iv_inserted) insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.current_class_id) catch { ctx.error_count += 1; };
+            if (!iv_inserted) insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.current_class_id) catch {
+                ctx.error_count += 1;
+            };
         },
-        prism.NODE_INSTANCE_VAR_OR_WRITE,
-        prism.NODE_INSTANCE_VAR_AND_WRITE => {
+        prism.NODE_INSTANCE_VAR_OR_WRITE, prism.NODE_INSTANCE_VAR_AND_WRITE => {
             const iv: *const prism.InstanceVarOrWriteNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, iv.name_loc.start);
             const name = resolveConstant(ctx.parser, iv.name);
             const rtype = if (iv.value != null)
                 inferLiteralType(iv.value.?) orelse extractNewCallType(ctx.parser, iv.value.?)
-            else null;
-            insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, rtype, 0, ctx.current_class_id) catch { ctx.error_count += 1; };
+            else
+                null;
+            insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, rtype, 0, ctx.current_class_id) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_CLASS_VAR_WRITE => {
             const cvw: *const prism.ClassVarWriteNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, cvw.name_loc.start);
             const name = resolveConstant(ctx.parser, cvw.name);
-            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 0, null) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 0, null) catch {
+                ctx.error_count += 1;
+            };
         },
-        prism.NODE_CLASS_VAR_OR_WRITE,
-        prism.NODE_CLASS_VAR_AND_WRITE => {
+        prism.NODE_CLASS_VAR_OR_WRITE, prism.NODE_CLASS_VAR_AND_WRITE => {
             const cvw: *const prism.ClassVarOrWriteNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, cvw.name_loc.start);
             const name = resolveConstant(ctx.parser, cvw.name);
-            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 0, null) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 0, null) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_LOCAL_VAR_WRITE => {
@@ -1846,16 +1964,15 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(call.receiver.?));
                             const class_name = resolveConstant(ctx.parser, rc.name);
                             const ar_singular = [_][]const u8{
-                                "find", "first", "last", "create", "create!", "build",
-                                "find_by", "find_by!", "take", "new",
-                                "[]", "with_pk", "with_pk!",
-                                "now", "today", "parse", "open", "read",
+                                "find",     "first",    "last",  "create", "create!", "build",
+                                "find_by",  "find_by!", "take",  "new",    "[]",      "with_pk",
+                                "with_pk!", "now",      "today", "parse",  "open",    "read",
                             };
                             const ar_plural = [_][]const u8{
-                                "where", "all", "order", "limit", "includes", "joins",
-                                "preload", "eager_load", "select", "group", "having",
-                                "left_joins", "left_outer_joins", "distinct",
-                                "exclude", "filter", "dataset", "grep", "eager", "graph",
+                                "where",            "all",        "order",   "limit",  "includes", "joins",
+                                "preload",          "eager_load", "select",  "group",  "having",   "left_joins",
+                                "left_outer_joins", "distinct",   "exclude", "filter", "dataset",  "grep",
+                                "eager",            "graph",
                             };
                             for (ar_singular) |m| {
                                 if (std.mem.eql(u8, mname, m)) {
@@ -1887,10 +2004,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             if (mid_ar.*.type == prism.NODE_CALL) {
                                 const inner_ar: *const prism.CallNode = @ptrCast(@alignCast(mid_ar));
                                 const inner_ar_mname = resolveConstant(ctx.parser, inner_ar.name);
-                                const ar_plural_set = [_][]const u8{ "where", "all", "order", "limit",
-                                    "includes", "joins", "preload", "eager_load", "select", "group",
-                                    "having", "left_joins", "left_outer_joins", "distinct", "scoped", "unscoped",
-                                    "exclude", "filter", "dataset", "grep", "eager", "graph" };
+                                const ar_plural_set = [_][]const u8{ "where", "all", "order", "limit", "includes", "joins", "preload", "eager_load", "select", "group", "having", "left_joins", "left_outer_joins", "distinct", "scoped", "unscoped", "exclude", "filter", "dataset", "grep", "eager", "graph" };
                                 const inner_is_pl = for (ar_plural_set) |m| {
                                     if (std.mem.eql(u8, inner_ar_mname, m)) break true;
                                 } else false;
@@ -1899,8 +2013,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                         if (class_ar.*.type == prism.NODE_CONSTANT) {
                                             const rc3: *const prism.ConstReadNode = @ptrCast(@alignCast(class_ar));
                                             const cname3 = resolveConstant(ctx.parser, rc3.name);
-                                            const ar_sing_set = [_][]const u8{ "first", "last", "find",
-                                                "find_by", "find_by!", "take", "create", "create!", "build" };
+                                            const ar_sing_set = [_][]const u8{ "first", "last", "find", "find_by", "find_by!", "take", "create", "create!", "build" };
                                             const outer_is_sing = for (ar_sing_set) |m| {
                                                 if (std.mem.eql(u8, outer_ar_mname, m)) break true;
                                             } else false;
@@ -1934,19 +2047,20 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             if (recv2.*.type == prism.NODE_SELF) {
                                 if (ctx.current_class_id) |cid| {
                                     const called = resolveConstant(ctx.parser, cn2.name);
-                                    if (ctx.db.prepare(
-                                        "SELECT s.return_type FROM symbols s " ++
+                                    if (ctx.db.prepare("SELECT s.return_type FROM symbols s " ++
                                         "WHERE s.name=? AND s.kind IN ('def','classdef') " ++
                                         "AND s.file_id=(SELECT file_id FROM symbols WHERE id=?) " ++
-                                        "AND s.return_type IS NOT NULL LIMIT 1"
-                                    )) |ss| {
+                                        "AND s.return_type IS NOT NULL LIMIT 1")) |ss|
+                                    {
                                         defer ss.finalize();
                                         ss.bind_text(1, called);
                                         ss.bind_int(2, cid);
                                         if (ss.step() catch false) {
                                             const rt = ss.column_text(0);
                                             if (rt.len > 0) {
-                                                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 75, ctx.scope_id) catch { ctx.error_count += 1; };
+                                                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 75, ctx.scope_id) catch {
+                                                    ctx.error_count += 1;
+                                                };
                                                 inserted = true;
                                             }
                                         }
@@ -1968,37 +2082,39 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 const lvr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv3));
                                 const recv_name = resolveConstant(ctx.parser, lvr.name);
                                 const called = resolveConstant(ctx.parser, cn3.name);
-                                if (ctx.db.prepare(
-                                    "SELECT type_hint FROM local_vars " ++
+                                if (ctx.db.prepare("SELECT type_hint FROM local_vars " ++
                                     "WHERE name=? AND type_hint IS NOT NULL " ++
-                                    "ORDER BY CASE WHEN file_id=? THEN 0 ELSE 1 END, confidence DESC, line DESC LIMIT 1"
-                                )) |rs2| {
+                                    "ORDER BY CASE WHEN file_id=? THEN 0 ELSE 1 END, confidence DESC, line DESC LIMIT 1")) |rs2|
+                                {
                                     defer rs2.finalize();
                                     rs2.bind_text(1, recv_name);
                                     rs2.bind_int(2, ctx.file_id);
                                     if (rs2.step() catch false) {
                                         const recv_type = rs2.column_text(0);
                                         if (recv_type.len > 0) {
-                                            if (ctx.db.prepare(
-                                                "SELECT return_type FROM symbols " ++
+                                            if (ctx.db.prepare("SELECT return_type FROM symbols " ++
                                                 "WHERE name=? AND kind='def' AND file_id IN " ++
                                                 "(SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                                                "AND return_type IS NOT NULL LIMIT 1"
-                                            )) |cs| {
+                                                "AND return_type IS NOT NULL LIMIT 1")) |cs|
+                                            {
                                                 defer cs.finalize();
                                                 cs.bind_text(1, called);
                                                 cs.bind_text(2, recv_type);
                                                 if (cs.step() catch false) {
                                                     const rt = cs.column_text(0);
                                                     if (rt.len > 0) {
-                                                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 55, ctx.scope_id) catch { ctx.error_count += 1; };
+                                                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 55, ctx.scope_id) catch {
+                                                            ctx.error_count += 1;
+                                                        };
                                                         inserted = true;
                                                     }
                                                 }
                                             } else |_| {}
                                             if (!inserted) {
                                                 if (lookupStdlibReturn(recv_type, called)) |stdlib_rt| {
-                                                    insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, stdlib_rt, 55, ctx.scope_id) catch { ctx.error_count += 1; };
+                                                    insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, stdlib_rt, 55, ctx.scope_id) catch {
+                                                        ctx.error_count += 1;
+                                                    };
                                                     inserted = true;
                                                 }
                                             }
@@ -2034,10 +2150,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 if (cur_node.*.type == prism.NODE_LOCAL_VAR_READ) {
                     const lvr2: *const prism.LocalVarReadNode = @ptrCast(@alignCast(cur_node));
                     const root_name = resolveConstant(ctx.parser, lvr2.name);
-                    const r1 = ctx.db.prepare(
-                        "SELECT type_hint FROM local_vars WHERE name=? " ++
-                        "AND type_hint IS NOT NULL ORDER BY confidence DESC LIMIT 1"
-                    ) catch break :blk2;
+                    const r1 = ctx.db.prepare("SELECT type_hint FROM local_vars WHERE name=? " ++
+                        "AND type_hint IS NOT NULL ORDER BY confidence DESC LIMIT 1") catch break :blk2;
                     defer r1.finalize();
                     r1.bind_text(1, root_name);
                     if (!(r1.step() catch false)) break :blk2;
@@ -2070,11 +2184,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     else
                         current_type;
                     var found = false;
-                    if (ctx.db.prepare(
-                        "SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
                         "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                        "AND return_type IS NOT NULL LIMIT 1"
-                    )) |rs| {
+                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                    {
                         defer rs.finalize();
                         rs.bind_text(1, method_name);
                         rs.bind_text(2, base_type);
@@ -2092,17 +2205,16 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     } else |_| {}
                     if (!found) {
                         if (lookupStdlibReturn(base_type, method_name)) |stdlib_rt| {
-                            const ft_len = @min(stdlib_rt.len, root_type_storage.len);
-                            @memcpy(root_type_storage[0..ft_len], stdlib_rt[0..ft_len]);
-                            current_type = root_type_storage[0..ft_len];
+                            const ft_len = @min(stdlib_rt.len, step_buf.len);
+                            @memcpy(step_buf[0..ft_len], stdlib_rt[0..ft_len]);
+                            const cpy_len = @min(ft_len, root_type_storage.len);
+                            @memcpy(root_type_storage[0..cpy_len], step_buf[0..cpy_len]);
+                            current_type = root_type_storage[0..cpy_len];
                             found = true;
                         }
                     }
                     if (!found) {
-                        const is_ar_plural = for ([_][]const u8{ "where", "all", "order", "limit",
-                            "includes", "joins", "scoped", "preload", "eager_load", "distinct",
-                            "group", "having", "reorder", "rewhere" }) |m|
-                        {
+                        const is_ar_plural = for ([_][]const u8{ "where", "all", "order", "limit", "includes", "joins", "scoped", "preload", "eager_load", "distinct", "group", "having", "reorder", "rewhere" }) |m| {
                             if (std.mem.eql(u8, method_name, m)) break true;
                         } else false;
                         if (is_ar_plural) {
@@ -2123,11 +2235,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     current_type;
                 var leaf_type_buf: [128]u8 = undefined;
                 var leaf_type: ?[]const u8 = null;
-                if (ctx.db.prepare(
-                    "SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
                     "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                    "AND return_type IS NOT NULL LIMIT 1"
-                )) |rs| {
+                    "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                {
                     defer rs.finalize();
                     rs.bind_text(1, leaf_method);
                     rs.bind_text(2, leaf_base);
@@ -2154,7 +2265,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         4 => 25,
                         else => 20,
                     };
-                    insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, lt, confidence, ctx.scope_id) catch { ctx.error_count += 1; };
+                    insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, lt, confidence, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
                     inserted = true;
                 }
             }
@@ -2191,7 +2304,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 if (recv_type) |rt| {
                     const result_type = inferBlockReturnType(mname_br, rt);
                     if (result_type) |brt| {
-                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, brt, 50, ctx.scope_id) catch { ctx.error_count += 1; };
+                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, brt, 50, ctx.scope_id) catch {
+                            ctx.error_count += 1;
+                        };
                         inserted = true;
                     }
                 }
@@ -2212,7 +2327,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 if (rs.step() catch false) {
                                     const rt = rs.column_text(0);
                                     if (rt.len > 0) {
-                                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.scope_id) catch { ctx.error_count += 1; };
+                                        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.scope_id) catch {
+                                            ctx.error_count += 1;
+                                        };
                                         inserted = true;
                                     }
                                 }
@@ -2222,7 +2339,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
             }
 
-            if (!inserted) insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.scope_id) catch { ctx.error_count += 1; };
+            if (!inserted) insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             if (lv.value) |val| {
                 if (val.*.type == prism.NODE_LAMBDA) {
                     const lam: *const prism.LambdaNode = @ptrCast(@alignCast(val));
@@ -2243,7 +2362,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (param_node.*.type == prism.NODE_BLOCK_PARAMETERS) {
                             const bp: *const prism.BlockParametersNode = @ptrCast(@alignCast(lam.parameters.?));
                             if (bp.parameters != null) {
-                                extractParams(ctx, sym_id, bp.parameters.?) catch { ctx.error_count += 1; };
+                                extractParams(ctx, sym_id, bp.parameters.?) catch {
+                                    ctx.error_count += 1;
+                                };
                             }
                         }
                     }
@@ -2263,7 +2384,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     if (std.mem.eql(u8, lname, "_")) continue;
                     const llc = locationLineCol(ctx.parser, left.*.location.start);
                     const rtype = extractNewCallType(ctx.parser, arr.elements.nodes[i]);
-                    insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 0, ctx.scope_id) catch { ctx.error_count += 1; };
+                    insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 0, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             } else if (mw.lefts.size == 1 and mw.value != null) {
                 const left = mw.lefts.nodes[0];
@@ -2272,7 +2395,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     const lname = resolveConstant(ctx.parser, lt.name);
                     const llc = locationLineCol(ctx.parser, left.*.location.start);
                     const rtype = extractNewCallType(ctx.parser, mw.value.?);
-                    insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 0, ctx.scope_id) catch { ctx.error_count += 1; };
+                    insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 0, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
@@ -2285,7 +2410,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const llc = locationLineCol(ctx.parser, fn_node.index.*.location.start);
                 const coll_type = extractNewCallType(ctx.parser, fn_node.collection);
                 const elem_type = stripArrayBrackets(coll_type);
-                insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, elem_type, 50, ctx.scope_id) catch { ctx.error_count += 1; };
+                insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, elem_type, 50, ctx.scope_id) catch {
+                    ctx.error_count += 1;
+                };
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
@@ -2303,7 +2430,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         exc_type = resolveConstant(ctx.parser, cn.name);
                     }
                 }
-                insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, exc_type, 80, ctx.scope_id) catch { ctx.error_count += 1; };
+                insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, exc_type, 80, ctx.scope_id) catch {
+                    ctx.error_count += 1;
+                };
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
@@ -2315,7 +2444,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const lname = resolveConstant(ctx.parser, lw.name);
             const llc = locationLineCol(ctx.parser, lw.name_loc.start);
             const rtype = if (lw.value) |val| inferLiteralType(val) orelse extractNewCallType(ctx.parser, val) else null;
-            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 20, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 20, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_LOCAL_VAR_AND_WRITE => {
@@ -2323,14 +2454,18 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const lname = resolveConstant(ctx.parser, lw.name);
             const llc = locationLineCol(ctx.parser, lw.name_loc.start);
             const rtype = if (lw.value) |val| inferLiteralType(val) orelse extractNewCallType(ctx.parser, val) else null;
-            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 15, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, rtype, 15, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_LOCAL_VAR_OP_WRITE => {
             const lw: *const prism.LocalVarOpWriteNode = @ptrCast(@alignCast(n));
             const lname = resolveConstant(ctx.parser, lw.name);
             const llc = locationLineCol(ctx.parser, lw.name_loc.start);
-            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, null, 20, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, null, 20, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_CASE_MATCH => {
@@ -2350,7 +2485,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const cpv: *const prism.ConstantPathNode = @ptrCast(@alignCast(cp.value));
                 if (cpv.name != 0) pat_type = resolveConstant(ctx.parser, cpv.name);
             }
-            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, pat_type, 85, ctx.scope_id) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, pat_type, 85, ctx.scope_id) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
@@ -2360,23 +2497,19 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (unless_node.predicate) |cond| {
                 if (detectNilGuard(ctx.parser, cond)) |var_name| {
                     const guard_lc = locationLineCol(ctx.parser, cond.*.location.start);
-                    insertLocalVar(ctx.db, ctx.file_id, var_name, guard_lc.line, guard_lc.col, "Object", 80, ctx.scope_id) catch { ctx.error_count += 1; };
+                    insertLocalVar(ctx.db, ctx.file_id, var_name, guard_lc.line, guard_lc.col, "Object", 80, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
-        prism.NODE_WHILE,
-        prism.NODE_UNTIL => {
+        prism.NODE_WHILE, prism.NODE_UNTIL => {
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
-        prism.NODE_ENSURE,
-        prism.NODE_YIELD,
-        prism.NODE_SUPER,
-        prism.NODE_FORWARDING_SUPER,
-        prism.NODE_CALL_AND_WRITE,
-        prism.NODE_CALL_OR_WRITE => {
+        prism.NODE_ENSURE, prism.NODE_YIELD, prism.NODE_SUPER, prism.NODE_FORWARDING_SUPER, prism.NODE_CALL_AND_WRITE, prism.NODE_CALL_OR_WRITE => {
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
@@ -2386,19 +2519,21 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const gname = resolveConstant(ctx.parser, gv.name);
             const glc = locationLineCol(ctx.parser, n.*.location.start);
             const gval_type: ?[]const u8 = if (gv.value != null) blk: {
-                break :blk inferLiteralType(gv.value.?)
-                    orelse extractNewCallType(ctx.parser, gv.value.?);
+                break :blk inferLiteralType(gv.value.?) orelse extractNewCallType(ctx.parser, gv.value.?);
             } else null;
-            insertLocalVar(ctx.db, ctx.file_id, gname, glc.line, glc.col, gval_type, 70, null) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, gname, glc.line, glc.col, gval_type, 70, null) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
-        prism.NODE_GLOBAL_VAR_OR_WRITE,
-        prism.NODE_GLOBAL_VAR_AND_WRITE => {
+        prism.NODE_GLOBAL_VAR_OR_WRITE, prism.NODE_GLOBAL_VAR_AND_WRITE => {
             const gv: *const prism.GlobalVarOrWriteNode = @ptrCast(@alignCast(n));
             const gname = resolveConstant(ctx.parser, gv.name);
             const glc = locationLineCol(ctx.parser, gv.name_loc.start);
-            insertLocalVar(ctx.db, ctx.file_id, gname, glc.line, glc.col, null, 70, null) catch { ctx.error_count += 1; };
+            insertLocalVar(ctx.db, ctx.file_id, gname, glc.line, glc.col, null, 70, null) catch {
+                ctx.error_count += 1;
+            };
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
         },
         prism.NODE_IF => {
@@ -2406,7 +2541,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (if_node.predicate) |cond| {
                 if (detectTypeGuard(ctx.parser, cond)) |guard| {
                     const guard_lc = locationLineCol(ctx.parser, cond.*.location.start);
-                    insertLocalVar(ctx.db, ctx.file_id, guard.name, guard_lc.line, guard_lc.col, guard.narrowed_type, 85, ctx.scope_id) catch { ctx.error_count += 1; };
+                    insertLocalVar(ctx.db, ctx.file_id, guard.name, guard_lc.line, guard_lc.col, guard.narrowed_type, 85, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
@@ -2531,7 +2668,6 @@ fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32,
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
     _ = try stmt.step();
 }
-
 
 fn insertSymbol(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, _: ?[]const u8) !void {
     const stmt = try ctx.db.prepare(
@@ -2739,7 +2875,11 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const name = line[kw_len .. kw_len + name_end];
             if (name.len == 0) continue;
             const kind: []const u8 = if (line[0] == 'c') "class" else "module";
-            insertRbsSymbol(db, file_id, kind, name, line_num, 0) catch {};
+            insertRbsSymbol(db, file_id, kind, name, line_num, 0) catch |e| {
+                std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                std.fs.File.stderr().writeAll("\n") catch {};
+            };
             continue;
         }
 
@@ -2748,14 +2888,26 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const colon_pos = std.mem.indexOfScalar(u8, rest, ':') orelse continue;
             const name = std.mem.trim(u8, rest[0..colon_pos], " ");
             const arrow_pos = std.mem.lastIndexOf(u8, rest, "->") orelse {
-                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch {};
+                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
                 continue;
             };
             const rt = std.mem.trim(u8, rest[arrow_pos + 2 ..], " ");
             if (rt.len > 0 and !std.mem.eql(u8, rt, "void")) {
-                insertRbsSymbolWithReturn(db, file_id, "def", name, line_num, 0, rt) catch {};
+                insertRbsSymbolWithReturn(db, file_id, "def", name, line_num, 0, rt) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             } else {
-                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch {};
+                insertRbsSymbol(db, file_id, "def", name, line_num, 0) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
             continue;
         }
@@ -2765,7 +2917,11 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const end = std.mem.indexOfAny(u8, rest, " \t\r\n{") orelse rest.len;
             const name = std.mem.trim(u8, rest[0..end], " \t");
             if (name.len > 0)
-                insertRbsSymbol(db, file_id, "module", name, line_num, 0) catch {};
+                insertRbsSymbol(db, file_id, "module", name, line_num, 0) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             continue;
         }
 
@@ -2774,7 +2930,11 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             const end = std.mem.indexOfAny(u8, rest, " \t\r\n=") orelse rest.len;
             const name = std.mem.trim(u8, rest[0..end], " \t");
             if (name.len > 0)
-                insertRbsSymbol(db, file_id, "constant", name, line_num, 0) catch {};
+                insertRbsSymbol(db, file_id, "constant", name, line_num, 0) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             continue;
         }
 
@@ -2789,14 +2949,22 @@ fn indexRbs(db: db_mod.Db, file_id: i64, source: []const u8) !void {
             if (attr_name.len == 0) continue;
             const rt = std.mem.trim(u8, rest[colon + 1 ..], " ");
             if (!std.mem.startsWith(u8, line, "attr_writer ")) {
-                insertRbsSymbolWithReturn(db, file_id, "def", attr_name, line_num, 0, rt) catch {};
+                insertRbsSymbolWithReturn(db, file_id, "def", attr_name, line_num, 0, rt) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
             if (std.mem.startsWith(u8, line, "attr_writer ") or
                 std.mem.startsWith(u8, line, "attr_accessor "))
             {
                 var writer_buf: [256]u8 = undefined;
                 const writer_name = std.fmt.bufPrint(&writer_buf, "{s}=", .{attr_name}) catch continue;
-                insertRbsSymbol(db, file_id, "def", writer_name, line_num, 0) catch {};
+                insertRbsSymbol(db, file_id, "def", writer_name, line_num, 0) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: RBS insert: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
             continue;
         }
@@ -3711,7 +3879,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
     try db.begin();
     var committed = false;
     defer if (!committed) {
-        db.rollback() catch {};
+        db.rollback() catch {}; // rollback best-effort
     };
 
     for (paths) |path| {
@@ -3745,7 +3913,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
                     std.fmt.bufPrint(&buf, "refract: skipping {s} (>8MB)\n", .{path}) catch "refract: skipping file (too large)\n"
                 else
                     std.fmt.bufPrint(&buf, "refract: skipping {s} (file too large)\n", .{path}) catch "refract: skipping file (too large)\n";
-                std.fs.File.stderr().writeAll(msg) catch {};
+                std.fs.File.stderr().writeAll(msg) catch {}; // stderr
             }
             continue;
         };
@@ -3775,17 +3943,17 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         if (db.prepare("DELETE FROM i18n_keys WHERE file_id = ?")) |s| {
             defer s.finalize();
             s.bind_int(1, file_id);
-            _ = s.step() catch {};
+            _ = s.step() catch {}; // cleanup
         } else |_| {}
         if (db.prepare("DELETE FROM routes WHERE file_id = ?")) |s| {
             defer s.finalize();
             s.bind_int(1, file_id);
-            _ = s.step() catch {};
+            _ = s.step() catch {}; // cleanup
         } else |_| {}
         if (db.prepare("DELETE FROM aliases WHERE file_id = ?")) |s| {
             defer s.finalize();
             s.bind_int(1, file_id);
-            _ = s.step() catch {};
+            _ = s.step() catch {}; // cleanup
         } else |_| {}
 
         // Routes: index config/routes*.rb, routes/*.rb, and common Sinatra entry points
@@ -3852,13 +4020,11 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
 
         if (ctx.error_count > 0) {
             var ebuf: [256]u8 = undefined;
-            const emsg = std.fmt.bufPrint(&ebuf,
-                "refract: {d} index error(s) in {s} (DB full or schema mismatch?)\n",
-                .{ ctx.error_count, path }) catch "refract: index errors occurred\n";
-            std.fs.File.stderr().writeAll(emsg) catch {};
+            const emsg = std.fmt.bufPrint(&ebuf, "refract: {d} index error(s) in {s} (DB full or schema mismatch?)\n", .{ ctx.error_count, path }) catch "refract: index errors occurred\n";
+            std.fs.File.stderr().writeAll(emsg) catch {}; // stderr
         }
 
-        storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {};
+        storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
     }
 
     try db.commit();
@@ -3914,7 +4080,9 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
 
     try real_db.begin();
     var committed = false;
-    defer if (!committed) { real_db.rollback() catch {}; };
+    defer if (!committed) {
+        real_db.rollback() catch {};
+    }; // rollback best-effort
 
     // Upsert file record in real_db
     const upsert = try real_db.prepare(
@@ -3971,12 +4139,16 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         ins_sym.bind_text(3, sel_sym.column_text(2));
         ins_sym.bind_int(4, sel_sym.column_int(3));
         ins_sym.bind_int(5, sel_sym.column_int(4));
-        const rt = sel_sym.column_text(5); if (rt.len > 0) ins_sym.bind_text(6, rt) else ins_sym.bind_null(6);
-        const doc = sel_sym.column_text(6); if (doc.len > 0) ins_sym.bind_text(7, doc) else ins_sym.bind_null(7);
+        const rt = sel_sym.column_text(5);
+        if (rt.len > 0) ins_sym.bind_text(6, rt) else ins_sym.bind_null(6);
+        const doc = sel_sym.column_text(6);
+        if (doc.len > 0) ins_sym.bind_text(7, doc) else ins_sym.bind_null(7);
         if (sel_sym.column_type(7) != 5) ins_sym.bind_int(8, sel_sym.column_int(7)) else ins_sym.bind_null(8);
         ins_sym.bind_text(9, sel_sym.column_text(8));
-        const pn = sel_sym.column_text(9); if (pn.len > 0) ins_sym.bind_text(10, pn) else ins_sym.bind_null(10);
-        const vs = sel_sym.column_text(10); if (vs.len > 0) ins_sym.bind_text(11, vs) else ins_sym.bind_null(11);
+        const pn = sel_sym.column_text(9);
+        if (pn.len > 0) ins_sym.bind_text(10, pn) else ins_sym.bind_null(10);
+        const vs = sel_sym.column_text(10);
+        if (vs.len > 0) ins_sym.bind_text(11, vs) else ins_sym.bind_null(11);
         const got_row = try ins_sym.step();
         const real_sym_id: i64 = if (got_row) ins_sym.column_int(0) else real_db.last_insert_rowid();
         ins_sym.reset();
@@ -4004,7 +4176,8 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         ins_p.bind_int(2, sel_p.column_int(1));
         ins_p.bind_text(3, sel_p.column_text(2));
         ins_p.bind_text(4, sel_p.column_text(3));
-        const th = sel_p.column_text(4); if (th.len > 0) ins_p.bind_text(5, th) else ins_p.bind_null(5);
+        const th = sel_p.column_text(4);
+        if (th.len > 0) ins_p.bind_text(5, th) else ins_p.bind_null(5);
         ins_p.bind_int(6, sel_p.column_int(5));
         _ = try ins_p.step();
     }
@@ -4053,7 +4226,8 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         ins_lv.bind_text(2, sel_lv.column_text(0));
         ins_lv.bind_int(3, sel_lv.column_int(1));
         ins_lv.bind_int(4, sel_lv.column_int(2));
-        const th = sel_lv.column_text(3); if (th.len > 0) ins_lv.bind_text(5, th) else ins_lv.bind_null(5);
+        const th = sel_lv.column_text(3);
+        if (th.len > 0) ins_lv.bind_text(5, th) else ins_lv.bind_null(5);
         ins_lv.bind_int(6, sel_lv.column_int(4));
         if (sel_lv.column_type(5) != 5) {
             const real_scope = id_map.get(sel_lv.column_int(5)) orelse 0;
@@ -4181,7 +4355,7 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
 
     prism.visit_node(root, visitor, &ctx);
 
-    storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {};
+    storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
 }
 
 pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []const u8, alloc: std.mem.Allocator) !void {
@@ -4210,7 +4384,7 @@ pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []con
     try db.begin();
     var committed = false;
     defer if (!committed) {
-        db.rollback() catch {};
+        db.rollback() catch {}; // rollback best-effort
     };
     const del = try db.prepare("DELETE FROM files WHERE path = ?");
     defer del.finalize();

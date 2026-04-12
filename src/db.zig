@@ -303,7 +303,7 @@ pub const Db = struct {
             \\  code     TEXT
             \\)
         );
-        self.exec("CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file_id)") catch {}; // migration
         // i18n keys table (populated by i18n.zig locale file indexer)
         try self.exec(
             \\CREATE TABLE IF NOT EXISTS i18n_keys (
@@ -314,7 +314,7 @@ pub const Db = struct {
             \\  locale  TEXT
             \\)
         );
-        self.exec("CREATE INDEX IF NOT EXISTS idx_i18n_key ON i18n_keys(key)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_i18n_key ON i18n_keys(key)") catch {}; // migration
         // Routes table (populated by routes.zig route parser)
         try self.exec(
             \\CREATE TABLE IF NOT EXISTS routes (
@@ -329,13 +329,14 @@ pub const Db = struct {
             \\  col            INTEGER NOT NULL
             \\)
         );
-        self.exec("CREATE INDEX IF NOT EXISTS idx_routes_file ON routes(file_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_routes_file ON routes(file_id)") catch {}; // migration
+        self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_unique ON routes(file_id, http_method, path_pattern, line)") catch {}; // migration
         // Migration guards for gem indexing (Phase 8)
         self.execMigration("ALTER TABLE files ADD COLUMN is_gem INTEGER NOT NULL DEFAULT 0");
-        self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {}; // migration
         // Mixin indexes (Phase 8)
-        self.exec("CREATE INDEX IF NOT EXISTS idx_mixins_class ON mixins(class_id)") catch {};
-        self.exec("CREATE INDEX IF NOT EXISTS idx_mixins_module ON mixins(module_name)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_mixins_class ON mixins(class_id)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_mixins_module ON mixins(module_name)") catch {}; // migration
         self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_local_vars_unique ON local_vars(file_id, name, line, col)") catch {}; // migration guard: col column may be absent on older schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind)") catch {}; // migration guard: index already exists on migrated schemas
         self.execMigration("ALTER TABLE symbols ADD COLUMN parent_name TEXT"); // migration guard: column already exists on migrated schemas
@@ -358,16 +359,15 @@ pub const Db = struct {
         self.execMigration("ALTER TABLE local_vars ADD COLUMN class_id INTEGER DEFAULT NULL"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_class ON local_vars(class_id)") catch {}; // migration guard: class_id column may be absent on older schemas
         self.execMigration("ALTER TABLE sem_tokens ADD COLUMN prev_blob BLOB"); // migration guard: column already exists on migrated schemas
-        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_return_type ON symbols(return_type) WHERE return_type IS NOT NULL") catch {}; // migration
         // Phase 2: block param marker, composite indexes for query optimization
         self.execMigration("ALTER TABLE local_vars ADD COLUMN is_block_param INTEGER DEFAULT 0");
-        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {};
-        self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {};
-        self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_params_symbol_pos ON params(symbol_id, position)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_localvars_file_scope ON local_vars(file_id, scope_id)") catch {}; // migration
         // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
-        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind)") catch {};
-        self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {};
-        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {}; // migration
         try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','5')");
         const final_ver = self.getSchemaVersion() orelse 0;
         if (final_ver != 5) {
@@ -385,7 +385,11 @@ pub const Db = struct {
     }
 
     pub fn runOptimize(self: Db) void {
-        _ = self.exec("PRAGMA optimize;") catch {};
+        _ = self.exec("PRAGMA optimize;") catch {}; // maintenance
+    }
+
+    pub fn runVacuum(self: Db) void {
+        _ = self.exec("PRAGMA incremental_vacuum(64)") catch {}; // maintenance
     }
 
     fn execMigration(self: Db, sql: [*:0]const u8) void {
@@ -397,6 +401,10 @@ pub const Db = struct {
             const msg = std.fmt.bufPrint(&buf, "refract: DB migration warning: {s}\n", .{errmsg}) catch "refract: DB migration warning\n";
             std.fs.File.stderr().writeAll(msg) catch {};
         };
+    }
+
+    pub fn checkpoint(self: Db) void {
+        self.exec("PRAGMA wal_checkpoint(TRUNCATE)") catch {}; // maintenance
     }
 
     pub fn check_integrity(self: Db) DbError!void {
@@ -412,6 +420,80 @@ test "schema creation" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
-    // Running twice must not error (IF NOT EXISTS)
     try db.init_schema();
+}
+
+test "transaction commit and rollback" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.begin();
+    try db.exec("INSERT INTO meta(key,value) VALUES('test_key','test_val')");
+    try db.commit();
+    const s1 = try db.prepare("SELECT value FROM meta WHERE key='test_key'");
+    defer s1.finalize();
+    try std.testing.expect(try s1.step());
+    try std.testing.expectEqualStrings("test_val", s1.column_text(0));
+    try db.begin();
+    try db.exec("DELETE FROM meta WHERE key='test_key'");
+    try db.rollback();
+    const s2 = try db.prepare("SELECT value FROM meta WHERE key='test_key'");
+    defer s2.finalize();
+    try std.testing.expect(try s2.step());
+}
+
+test "check_integrity on valid db" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.check_integrity();
+}
+
+test "getSchemaVersion returns current version" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    const ver = db.getSchemaVersion() orelse 0;
+    try std.testing.expectEqual(@as(i64, 5), ver);
+}
+
+test "runOptimize and runVacuum do not crash" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    db.runOptimize();
+    db.runVacuum();
+}
+
+test "stmt bind and column operations" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path, mtime) VALUES('test.rb', 1000)");
+    const fid = db.last_insert_rowid();
+    try std.testing.expect(fid > 0);
+    const s = try db.prepare("SELECT path, mtime FROM files WHERE id=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    try std.testing.expect(try s.step());
+    try std.testing.expectEqualStrings("test.rb", s.column_text(0));
+    try std.testing.expectEqual(@as(i64, 1000), s.column_int(1));
+    try std.testing.expect(!(try s.step()));
+}
+
+test "CachedStmt bind and reset" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path, mtime) VALUES('a.rb', 1)");
+    try db.exec("INSERT INTO files(path, mtime) VALUES('b.rb', 2)");
+    const cs = try db.prepareRaw("SELECT path FROM files WHERE mtime=?");
+    defer cs.finalize();
+    cs.bind_int(1, 1);
+    try std.testing.expect(try cs.step());
+    try std.testing.expectEqualStrings("a.rb", cs.column_text(0));
+    cs.reset();
+    cs.bind_int(1, 2);
+    try std.testing.expect(try cs.step());
+    try std.testing.expectEqualStrings("b.rb", cs.column_text(0));
 }

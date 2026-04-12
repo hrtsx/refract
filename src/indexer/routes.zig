@@ -444,21 +444,41 @@ fn visitBlockStatements(db: db_mod.Db, file_id: i64, parser: *prism.Parser, body
 
         if (std.mem.eql(u8, mname, "resources")) {
             if (extractSymbolName(parser, first_arg)) |name| {
-                handleResourcesCall(db, file_id, parser, cn, name, false, alloc, ns_ctx) catch {};
+                handleResourcesCall(db, file_id, parser, cn, name, false, alloc, ns_ctx) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: route indexing error: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
         } else if (std.mem.eql(u8, mname, "resource")) {
             if (extractSymbolName(parser, first_arg)) |name| {
-                handleResourcesCall(db, file_id, parser, cn, name, true, alloc, ns_ctx) catch {};
+                handleResourcesCall(db, file_id, parser, cn, name, true, alloc, ns_ctx) catch |e| {
+                    std.fs.File.stderr().writeAll("refract: route indexing error: ") catch {};
+                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                    std.fs.File.stderr().writeAll("\n") catch {};
+                };
             }
         } else if (std.mem.eql(u8, mname, "member")) {
-            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, true) catch {};
+            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, true) catch |e| {
+                std.fs.File.stderr().writeAll("refract: route member error: ") catch {};
+                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                std.fs.File.stderr().writeAll("\n") catch {};
+            };
         } else if (std.mem.eql(u8, mname, "collection")) {
-            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, false) catch {};
+            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, false) catch |e| {
+                std.fs.File.stderr().writeAll("refract: route collection error: ") catch {};
+                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                std.fs.File.stderr().writeAll("\n") catch {};
+            };
         } else if (std.mem.eql(u8, mname, "get") or std.mem.eql(u8, mname, "post") or
             std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
             std.mem.eql(u8, mname, "delete"))
         {
-            handleSimpleRoute(db, file_id, parser, cn, mname, ns_ctx, alloc) catch {};
+            handleSimpleRoute(db, file_id, parser, cn, mname, ns_ctx, alloc) catch |e| {
+                std.fs.File.stderr().writeAll("refract: route error: ") catch {};
+                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+                std.fs.File.stderr().writeAll("\n") catch {};
+            };
         }
     }
 }
@@ -667,32 +687,53 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (extractSymbolName(ctx.parser, first_arg)) |ns_name| {
                 const path_prefix = (std.fmt.allocPrint(ctx.alloc, "/{s}", .{ns_name}) catch return true);
                 const controller_prefix = (std.fmt.allocPrint(ctx.alloc, "{s}::", .{ns_name}) catch return true);
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {};
-                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch {};
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {}; // OOM: prefix stack
+                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch {}; // OOM: prefix stack
             }
         } else if (std.mem.eql(u8, mname, "scope")) {
             if (extractSymbolName(ctx.parser, first_arg)) |scope_path| {
                 const path_prefix = ctx.alloc.dupe(u8, scope_path) catch return true;
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {};
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch {}; // OOM: prefix stack
             }
         } else if (std.mem.eql(u8, mname, "resources")) {
             if (extractSymbolName(ctx.parser, first_arg)) |name| {
-                handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, false, ctx.alloc, &ctx.ns_ctx) catch {};
+                handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, false, ctx.alloc, &ctx.ns_ctx) catch |e| {
+                    var ebuf: [256]u8 = undefined;
+                    const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "resources", @errorName(e) }) catch "refract: route parse error\n";
+                    std.fs.File.stderr().writeAll(emsg) catch {};
+                };
                 if (cn.block != null) return false;
             }
         } else if (std.mem.eql(u8, mname, "resource")) {
             if (extractSymbolName(ctx.parser, first_arg)) |name| {
-                handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, true, ctx.alloc, &ctx.ns_ctx) catch {};
+                handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, true, ctx.alloc, &ctx.ns_ctx) catch |e| {
+                    var ebuf: [256]u8 = undefined;
+                    const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "resource", @errorName(e) }) catch "refract: route parse error\n";
+                    std.fs.File.stderr().writeAll(emsg) catch {};
+                };
                 if (cn.block != null) return false;
             }
         } else if (std.mem.eql(u8, mname, "root")) {
-            handleRootRoute(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch {};
+            handleRootRoute(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch |e| {
+                var ebuf: [256]u8 = undefined;
+                const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "root", @errorName(e) }) catch "refract: route parse error\n";
+                std.fs.File.stderr().writeAll(emsg) catch {};
+            };
         } else if (std.mem.eql(u8, mname, "mount")) {
-            handleMountCall(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch {};
+            handleMountCall(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch |e| {
+                var ebuf: [256]u8 = undefined;
+                const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "mount", @errorName(e) }) catch "refract: route parse error\n";
+                std.fs.File.stderr().writeAll(emsg) catch {};
+            };
         } else if (std.mem.eql(u8, mname, "get") or std.mem.eql(u8, mname, "post") or
-                   std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
-                   std.mem.eql(u8, mname, "delete")) {
-            handleSimpleRoute(ctx.db, ctx.file_id, ctx.parser, cn, mname, &ctx.ns_ctx, ctx.alloc) catch {};
+            std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
+            std.mem.eql(u8, mname, "delete"))
+        {
+            handleSimpleRoute(ctx.db, ctx.file_id, ctx.parser, cn, mname, &ctx.ns_ctx, ctx.alloc) catch |e| {
+                var ebuf: [256]u8 = undefined;
+                const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ mname, @errorName(e) }) catch "refract: route parse error\n";
+                std.fs.File.stderr().writeAll(emsg) catch {};
+            };
         }
     }
 
@@ -1019,4 +1060,57 @@ pub fn indexRoutesWithPath(db: db_mod.Db, file_id: i64, source: []const u8, back
         };
         rodaVisitNode(&roda_ctx, @ptrCast(@alignCast(root)));
     }
+}
+
+test "indexRoutes parses basic get route" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path, mtime) VALUES('config/routes.rb', 0)");
+    const fid = db.last_insert_rowid();
+    try indexRoutes(db, fid,
+        \\Rails.application.routes.draw do
+        \\  get '/health', to: 'health#index'
+        \\end
+    , std.testing.allocator);
+    const s = try db.prepare("SELECT http_method, path_pattern FROM routes WHERE file_id=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    try std.testing.expect(try s.step());
+    try std.testing.expectEqualStrings("GET", s.column_text(0));
+    try std.testing.expectEqualStrings("/health", s.column_text(1));
+}
+
+test "indexRoutes handles nested resources" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path, mtime) VALUES('config/routes.rb', 0)");
+    const fid = db.last_insert_rowid();
+    try indexRoutes(db, fid,
+        \\Rails.application.routes.draw do
+        \\  resources :posts do
+        \\    resources :comments
+        \\  end
+        \\end
+    , std.testing.allocator);
+    const s = try db.prepare("SELECT COUNT(*) FROM routes WHERE file_id=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    try std.testing.expect(try s.step());
+    try std.testing.expect(s.column_int(0) > 0);
+}
+
+test "indexRoutes handles empty source" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path, mtime) VALUES('config/routes.rb', 0)");
+    const fid = db.last_insert_rowid();
+    try indexRoutes(db, fid, "", std.testing.allocator);
+    const s = try db.prepare("SELECT COUNT(*) FROM routes WHERE file_id=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    try std.testing.expect(try s.step());
+    try std.testing.expectEqual(@as(i64, 0), s.column_int(0));
 }

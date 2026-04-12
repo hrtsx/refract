@@ -1197,10 +1197,10 @@ pub const Server = struct {
         while (remaining.len > 0) {
             if (std.mem.indexOf(u8, remaining, "{{")) |open| {
                 try tw.writeAll(remaining[0..open]);
-                remaining = remaining[open + 2..];
+                remaining = remaining[open + 2 ..];
                 if (std.mem.indexOf(u8, remaining, "}}")) |close| {
                     const key = remaining[0..close];
-                    remaining = remaining[close + 2..];
+                    remaining = remaining[close + 2 ..];
                     if (arguments) |amap| {
                         if (amap.get(key)) |av| {
                             switch (av) {
@@ -1253,7 +1253,10 @@ pub const Server = struct {
 
     fn buildPromptContext(self: *Server, name: []const u8, arguments: ?std.json.ObjectMap, w: *std.Io.Writer) !void {
         if (std.mem.eql(u8, name, "class-overview")) {
-            const class_name = if (arguments) |a| if (a.get("class_name")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const class_name = if (arguments) |a| if (a.get("class_name")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             try w.print("Class: {s}\n\n", .{class_name});
 
@@ -1351,7 +1354,10 @@ pub const Server = struct {
             try w.writeAll("\n---\n");
         } else if (std.mem.eql(u8, name, "trace-callers")) {
             _ = if (arguments) |a| a.get("class_name") else null; // class_name filtering planned (needs refs.scope_receiver)
-            const method_name = if (arguments) |a| if (a.get("method_name")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const method_name = if (arguments) |a| if (a.get("method_name")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             const cal_stmt = self.db.prepare(
                 \\SELECT f.path, r.line, r.col
@@ -1377,7 +1383,10 @@ pub const Server = struct {
             }
             if (cal_count > 0) try w.writeAll("\n---\n");
         } else if (std.mem.eql(u8, name, "find-bugs")) {
-            const file = if (arguments) |a| if (a.get("file")) |v| switch (v) { .string => |s| s, else => return } else return else return;
+            const file = if (arguments) |a| if (a.get("file")) |v| switch (v) {
+                .string => |s| s,
+                else => return,
+            } else return else return;
 
             const diag_stmt = self.db.prepare(
                 \\SELECT d.line, d.col, d.message, d.severity
@@ -1493,7 +1502,10 @@ pub const Server = struct {
         if (query.len == 0) return self.buildToolError(id, "'query' must be non-empty");
         const file_pattern = getStrArg(args, "file_pattern");
         const ctx_n: usize = @intCast(@min(getIntArg(args, "context_lines") orelse 1, 5));
-        const use_regex = if (args) |a| if (a.get("use_regex")) |v| switch (v) { .bool => |b| b, else => false } else false else false;
+        const use_regex = if (args) |a| if (a.get("use_regex")) |v| switch (v) {
+            .bool => |b| b,
+            else => false,
+        } else false else false;
         const offset_raw = getIntArg(args, "offset") orelse 0;
         const offset: usize = if (offset_raw > 0) @intCast(offset_raw) else 0;
 
@@ -1525,7 +1537,7 @@ pub const Server = struct {
                     if (std.mem.indexOf(u8, fp, "*")) |star_idx| {
                         // Simple glob: split on * and require all parts present in path in order
                         const prefix = fp[0..star_idx];
-                        const suffix = fp[star_idx + 1..];
+                        const suffix = fp[star_idx + 1 ..];
                         if (prefix.len > 0 and !std.mem.containsAtLeast(u8, fpath, 1, prefix)) break :blk false;
                         if (suffix.len > 0 and !std.mem.endsWith(u8, fpath, suffix)) break :blk false;
                         break :blk true;
@@ -1559,7 +1571,10 @@ pub const Server = struct {
                 else
                     std.mem.indexOf(u8, line_lower, query_lower) != null;
                 if (!matched) continue;
-                if (skipped < offset) { skipped += 1; continue; }
+                if (skipped < offset) {
+                    skipped += 1;
+                    continue;
+                }
 
                 total += 1;
                 if (!results_first) try rw.writeByte(',');
@@ -2475,17 +2490,24 @@ pub const Server = struct {
             const file = switch (pos.get("file") orelse {
                 try w.writeAll("{\"error\":\"missing file\"}");
                 continue;
-            }) { .string => |s| s, else => {
-                try w.writeAll("{\"error\":\"file must be string\"}");
-                continue;
-            }};
+            }) {
+                .string => |s| s,
+                else => {
+                    try w.writeAll("{\"error\":\"file must be string\"}");
+                    continue;
+                },
+            };
             const line = switch (pos.get("line") orelse {
                 try w.writeAll("{\"error\":\"missing line\"}");
                 continue;
-            }) { .integer => |i| i, .float => |f| @as(i64, @intFromFloat(f)), else => {
-                try w.writeAll("{\"error\":\"line must be integer\"}");
-                continue;
-            }};
+            }) {
+                .integer => |i| i,
+                .float => |f| @as(i64, @intFromFloat(f)),
+                else => {
+                    try w.writeAll("{\"error\":\"line must be integer\"}");
+                    continue;
+                },
+            };
             const col: i64 = if (pos.get("col")) |cv| switch (cv) {
                 .integer => |i| i,
                 .float => |f| @as(i64, @intFromFloat(f)),
@@ -2948,9 +2970,7 @@ pub const Server = struct {
             // Try to infer from return statements or callers
             var suggested_buf: ?[]u8 = null;
             defer if (suggested_buf) |b| self.alloc.free(b);
-            const ret_stmt = self.db.prepare(
-                "SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1"
-            ) catch null;
+            const ret_stmt = self.db.prepare("SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1") catch null;
             if (ret_stmt) |rs| {
                 defer rs.finalize();
                 rs.bind_text(1, method_name);
@@ -3045,9 +3065,7 @@ pub const Server = struct {
         try w.writeAll(",\"similar\":[");
 
         // Use LIKE for prefix filtering, then edit distance for ranking
-        const stmt = self.db.prepare(
-            "SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000"
-        ) catch return self.buildError(id, -32603, "DB error");
+        const stmt = self.db.prepare("SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000") catch return self.buildError(id, -32603, "DB error");
         defer stmt.finalize();
         stmt.bind_text(1, method_name);
 
@@ -3060,7 +3078,7 @@ pub const Server = struct {
             const dist = editDistance(method_name, cand);
             const is_substring = method_name.len >= 3 and cand.len >= 3 and
                 (std.mem.indexOf(u8, cand, method_name) != null or
-                 std.mem.indexOf(u8, method_name, cand) != null);
+                    std.mem.indexOf(u8, method_name, cand) != null);
             if (dist <= max_dist or is_substring) {
                 if (!first) try w.writeAll(",");
                 first = false;
@@ -3098,7 +3116,7 @@ fn editDistance(a: []const u8, b: []const u8) u32 {
             const cost: u32 = if (ca == cb) 0 else 1;
             curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
         }
-        @memcpy(prev[0..b.len + 1], curr[0..b.len + 1]);
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
     }
     return prev[b.len];
 }

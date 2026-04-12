@@ -6,11 +6,13 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
     const del = db.prepare("DELETE FROM i18n_keys WHERE file_id=?") catch return;
     defer del.finalize();
     del.bind_int(1, file_id);
-    _ = del.step() catch {};
+    _ = del.step() catch |e| {
+        std.fs.File.stderr().writeAll("refract: i18n delete: ") catch {};
+        std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+        std.fs.File.stderr().writeAll("\n") catch {};
+    };
 
-    const ins = db.prepare(
-        "INSERT INTO i18n_keys (key, value, locale, file_id) VALUES (?, ?, ?, ?)"
-    ) catch return;
+    const ins = db.prepare("INSERT INTO i18n_keys (key, value, locale, file_id) VALUES (?, ?, ?, ?)") catch return;
     defer ins.finalize();
 
     // YAML line-by-line parser using indent tracking
@@ -117,6 +119,10 @@ pub fn indexLocaleFile(db: db_mod.Db, file_id: i64, source: []const u8) void {
         if (value_str.len > 0) ins.bind_text(2, value_str) else ins.bind_null(2);
         ins.bind_text(3, locale_buf[0..locale_len]);
         ins.bind_int(4, file_id);
-        _ = ins.step() catch {};
+        _ = ins.step() catch |e| {
+            std.fs.File.stderr().writeAll("refract: i18n insert: ") catch {};
+            std.fs.File.stderr().writeAll(@errorName(e)) catch {};
+            std.fs.File.stderr().writeAll("\n") catch {};
+        };
     }
 }
