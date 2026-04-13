@@ -31,6 +31,16 @@ const utf8ColToUtf16 = S.utf8ColToUtf16;
 pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.flushDirtyUrisDebounced();
+    // Bounded wait so hover on bundled-stdlib symbols (e.g. Time) doesn't
+    // race past the bg indexer and fall back to the bare stdlibClassDoc
+    // entry, which lacks the **Class methods:** section the SQL path renders.
+    {
+        var waited_ms: u32 = 0;
+        while (waited_ms < 200 and !self.bg_indexing_done.load(.acquire)) : (waited_ms += 10) {
+            var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
+            _ = std.c.nanosleep(&_sleep_ts, null);
+        }
+    }
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const indexing_in_progress = !self.bg_started_event.load(.acquire);
@@ -347,6 +357,53 @@ fn resolveHoverReceiverType(self: *Server, path: []const u8, recv_name: []const 
 }
 
 fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []const u8, class_name: []const u8, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
+    if (self.hot_index_enabled.load(.monotonic)) {
+        if (self.hot) |hot| {
+            if (hot.lookupMethodOnClass(class_name, method_name)) |hs| {
+                if (hot.pathFor(hs.file_id)) |sym_path| {
+                    const kind_str: []const u8 = if (hs.kind == .classdef) "classdef" else "def";
+                    const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
+                    var aw = std.Io.Writer.Allocating.init(self.alloc);
+                    const w = &aw.writer;
+                    try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"*(");
+                    try writeEscapedJsonContent(w, kind_label);
+                    try w.writeAll(")* `");
+                    if (hs.parent_name) |pn| {
+                        try writeEscapedJsonContent(w, pn);
+                        if (std.mem.eql(u8, kind_str, "classdef")) try w.writeAll(".") else try w.writeAll("#");
+                    }
+                    try writeEscapedJsonContent(w, method_name);
+                    if (hs.params_sig) |sig| {
+                        if (sig.len > 0) {
+                            try w.writeAll("(");
+                            try writeEscapedJsonContent(w, sig);
+                            try w.writeAll(")");
+                        }
+                    }
+                    try w.writeByte('`');
+                    if (hs.return_type) |rt| {
+                        if (rt.len > 0) {
+                            try w.writeAll(" \\u2192 ");
+                            try writeEscapedJsonContent(w, rt);
+                        }
+                    }
+                    try w.writeAll("\\n\\n\\u2192 ");
+                    try writeEscapedJsonContent(w, relPathFor(sym_path, self.root_path));
+                    try w.print(":{d}", .{@as(i64, @intCast(hs.line))});
+                    if (hs.doc) |d| {
+                        if (d.len > 0) {
+                            try w.writeAll("\\n\\n");
+                            try writeEscapedJsonContent(w, d);
+                        }
+                    }
+                    try w.writeAll("\"}");
+                    try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
+                    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+                }
+            }
+        }
+    }
+
     const stmt = try self.db.prepare(
         \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.parent_name
         \\FROM symbols s JOIN files f ON s.file_id = f.id
@@ -483,6 +540,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
     var hot_line: i64 = 0;
     var hot_name: []const u8 = "";
     var hot_hit = false;
+    var hot_best: ?hot_index_mod.HotSymbol = null;
     if (self.hot_index_enabled.load(.monotonic)) {
         if (self.hot) |hot| {
             var best: ?hot_index_mod.HotSymbol = null;
@@ -507,6 +565,54 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
                 hot_line = @intCast(w.line);
                 hot_name = w.name;
                 hot_hit = true;
+                hot_best = w;
+            }
+        }
+    }
+
+    // Pure-hot-index fast path: for def/classdef hits, render the response
+    // directly from HotSymbol without any SQL round-trips. Skips the rich
+    // **Parameters:** section (param descriptions/type hints) and the class
+    // method list — those still go through the SQL path on demand. Trades a
+    // small amount of detail for an order-of-magnitude latency win on the
+    // common case (method hover).
+    if (hot_best) |hs| {
+        if ((hs.kind == .def or hs.kind == .classdef) and self.hot != null) {
+            if (self.hot.?.pathFor(hs.file_id)) |sym_path| {
+                const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
+                var aw = std.Io.Writer.Allocating.init(self.alloc);
+                const w = &aw.writer;
+                try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"*(");
+                try writeEscapedJsonContent(w, kind_label);
+                try w.writeAll(")* `");
+                try writeEscapedJsonContent(w, name);
+                if (hs.params_sig) |sig| {
+                    if (sig.len > 0) {
+                        try w.writeAll("(");
+                        try writeEscapedJsonContent(w, sig);
+                        try w.writeAll(")");
+                    }
+                }
+                try w.writeByte('`');
+                if (hs.return_type) |rt| {
+                    if (rt.len > 0) {
+                        try w.writeAll(" \\u2192 ");
+                        try writeEscapedJsonContent(w, rt);
+                        if (self.isNilableMethod(name)) try w.writeAll(" | nil");
+                    }
+                }
+                try w.writeAll("\\n\\n\\u2192 ");
+                try writeEscapedJsonContent(w, relPathFor(sym_path, self.root_path));
+                try w.print(":{d}", .{@as(i64, @intCast(hs.line))});
+                if (hs.doc) |d| {
+                    if (d.len > 0) {
+                        try w.writeAll("\\n\\n");
+                        try writeEscapedJsonContent(w, d);
+                    }
+                }
+                try w.writeAll("\"}");
+                try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
+                return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
             }
         }
     }
