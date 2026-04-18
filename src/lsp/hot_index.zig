@@ -63,6 +63,10 @@ pub const HotIndex = struct {
     /// file_id → workspace path. Mirrors `JOIN files f ON s.file_id = f.id`.
     file_paths: std.AutoHashMapUnmanaged(u32, []const u8),
     classes_by_file: std.AutoHashMapUnmanaged(u32, []const []const u8),
+    /// Keyed by parent_name (class/module name); values are def/classdef
+    /// HotSymbols belonging to that parent. Powers receiver-style hover and
+    /// definition without an SQL round-trip.
+    methods_by_parent: std.StringHashMapUnmanaged([]HotSymbol),
     /// All symbols sorted ascending by name for prefix scans.
     /// Equivalent to `WHERE s.name LIKE ? ESCAPE '\'` with a leading-anchor pattern.
     sorted_by_name: []HotSymbol,
@@ -75,6 +79,7 @@ pub const HotIndex = struct {
         self.tail_map.deinit(child);
         self.file_paths.deinit(child);
         self.classes_by_file.deinit(child);
+        self.methods_by_parent.deinit(child);
         self.arena.deinit();
     }
 
@@ -92,6 +97,31 @@ pub const HotIndex = struct {
 
     pub fn classesIn(self: *const HotIndex, file_id: u32) []const []const u8 {
         return if (self.classes_by_file.get(file_id)) |s| s else &.{};
+    }
+
+    /// Returns def/classdef HotSymbols whose `parent_name` matches `class_name`.
+    /// Used by hover/definition for `receiver.method` lookups.
+    pub fn lookupMethodsOnClass(self: *const HotIndex, class_name: []const u8) []const HotSymbol {
+        return if (self.methods_by_parent.get(class_name)) |s| s else &.{};
+    }
+
+    /// Returns the best-ranked HotSymbol for a method on a class, or null if
+    /// no such method is recorded. Mirrors the SQL ORDER BY in
+    /// `hoverLookupOnClass` (parent match first, then doc presence).
+    pub fn lookupMethodOnClass(self: *const HotIndex, class_name: []const u8, method_name: []const u8) ?HotSymbol {
+        const candidates = self.lookupMethodsOnClass(class_name);
+        var best: ?HotSymbol = null;
+        var best_has_doc = false;
+        for (candidates) |s| {
+            if (!std.mem.eql(u8, s.name, method_name)) continue;
+            if (s.kind != .def and s.kind != .classdef) continue;
+            const has_doc = s.doc != null;
+            if (best == null or (has_doc and !best_has_doc)) {
+                best = s;
+                best_has_doc = has_doc;
+            }
+        }
+        return best;
     }
 
     /// Append every symbol whose `name` contains `needle` (excluding leading-anchor
@@ -145,6 +175,7 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
         .tail_map = .empty,
         .file_paths = .empty,
         .classes_by_file = .empty,
+        .methods_by_parent = .empty,
         .sorted_by_name = &.{},
         .symbol_count = 0,
         .file_count = 0,
@@ -167,6 +198,7 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
     var name_lists: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(HotSymbol)) = .empty;
     var tail_lists: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(HotSymbol)) = .empty;
     var classes_lists: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged([]const u8)) = .empty;
+    var methods_lists: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(HotSymbol)) = .empty;
     defer {
         var ni = name_lists.iterator();
         while (ni.next()) |e| e.value_ptr.deinit(parent);
@@ -177,6 +209,9 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
         var ci = classes_lists.iterator();
         while (ci.next()) |e| e.value_ptr.deinit(parent);
         classes_lists.deinit(parent);
+        var mi = methods_lists.iterator();
+        while (mi.next()) |e| e.value_ptr.deinit(parent);
+        methods_lists.deinit(parent);
     }
 
     {
@@ -254,6 +289,12 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
                 if (!seen) try cgop.value_ptr.append(parent, owned_name);
             }
 
+            if ((kind == .def or kind == .classdef) and owned_parent != null) {
+                const mgop = try methods_lists.getOrPut(parent, owned_parent.?);
+                if (!mgop.found_existing) mgop.value_ptr.* = .empty;
+                try mgop.value_ptr.append(parent, sym);
+            }
+
             idx.symbol_count += 1;
         }
         if (profiling) {
@@ -284,6 +325,13 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
     while (ci.next()) |entry| {
         const slice = try arena_alloc.dupe([]const u8, entry.value_ptr.items);
         try idx.classes_by_file.put(parent, entry.key_ptr.*, slice);
+    }
+
+    var mi = methods_lists.iterator();
+    while (mi.next()) |entry| {
+        std.mem.sort(HotSymbol, entry.value_ptr.items, {}, lessByBundled);
+        const slice = try arena_alloc.dupe(HotSymbol, entry.value_ptr.items);
+        try idx.methods_by_parent.put(parent, entry.key_ptr.*, slice);
     }
 
     var sorted = try arena_alloc.alloc(HotSymbol, idx.symbol_count);
@@ -393,6 +441,118 @@ test "lookupPrefix returns matching symbols sorted by name" {
     try std.testing.expectEqualStrings("AccountManager", matches[2].name);
     try std.testing.expectEqual(@as(usize, 0), idx.lookupPrefix("").len);
     try std.testing.expectEqual(@as(usize, 0), idx.lookupPrefix("Z").len);
+}
+
+test "lookupMethodOnClass returns def for matching parent and method" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/account.rb',1)");
+    const fid = db.last_insert_rowid();
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col,parent_name) VALUES(?,?,?,?,?,?)");
+    defer ins.finalize();
+    ins.bind_int(1, fid);
+    ins.bind_text(2, "deposit");
+    ins.bind_text(3, "def");
+    ins.bind_int(4, 12);
+    ins.bind_int(5, 2);
+    ins.bind_text(6, "Account");
+    _ = try ins.step();
+
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+
+    const hit = idx.lookupMethodOnClass("Account", "deposit").?;
+    try std.testing.expectEqualStrings("deposit", hit.name);
+    try std.testing.expectEqual(@as(u32, 12), hit.line);
+    try std.testing.expectEqual(SymbolKind.def, hit.kind);
+    try std.testing.expectEqualStrings("Account", hit.parent_name.?);
+
+    try std.testing.expect(idx.lookupMethodOnClass("Account", "withdraw") == null);
+    try std.testing.expect(idx.lookupMethodOnClass("Other", "deposit") == null);
+}
+
+test "lookupMethodOnClass prefers candidate with doc" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/a.rb',1)");
+    const fid_a = db.last_insert_rowid();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/b.rb',1)");
+    const fid_b = db.last_insert_rowid();
+
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col,parent_name,doc) VALUES(?,?,?,?,?,?,?)");
+    defer ins.finalize();
+    // Undocumented variant first
+    ins.bind_int(1, fid_a);
+    ins.bind_text(2, "save");
+    ins.bind_text(3, "def");
+    ins.bind_int(4, 5);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "Record");
+    ins.bind_null(7);
+    _ = try ins.step();
+    ins.reset();
+    // Documented variant second
+    ins.bind_int(1, fid_b);
+    ins.bind_text(2, "save");
+    ins.bind_text(3, "def");
+    ins.bind_int(4, 9);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "Record");
+    ins.bind_text(7, "Persists the record.");
+    _ = try ins.step();
+
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+
+    const hit = idx.lookupMethodOnClass("Record", "save").?;
+    try std.testing.expect(hit.doc != null);
+    try std.testing.expectEqualStrings("Persists the record.", hit.doc.?);
+}
+
+test "lookupMethodOnClass accepts classdef and rejects non-method kinds" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/u.rb',1)");
+    const fid = db.last_insert_rowid();
+
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col,parent_name) VALUES(?,?,?,?,?,?)");
+    defer ins.finalize();
+    // classdef should match
+    ins.bind_int(1, fid);
+    ins.bind_text(2, "find");
+    ins.bind_text(3, "classdef");
+    ins.bind_int(4, 3);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "User");
+    _ = try ins.step();
+    ins.reset();
+    // scope must NOT be returned by lookupMethodOnClass
+    ins.bind_int(1, fid);
+    ins.bind_text(2, "active");
+    ins.bind_text(3, "scope");
+    ins.bind_int(4, 7);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "User");
+    _ = try ins.step();
+
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+
+    const hit = idx.lookupMethodOnClass("User", "find").?;
+    try std.testing.expectEqual(SymbolKind.classdef, hit.kind);
+    try std.testing.expect(idx.lookupMethodOnClass("User", "active") == null);
 }
 
 test "build with one symbol" {

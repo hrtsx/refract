@@ -6250,6 +6250,22 @@ pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []con
     committed = true;
 }
 
+test "indexSource strips UTF-8 BOM and indexes class symbol" {
+    const alloc = std.testing.allocator;
+
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+
+    const bom_source = "\xEF\xBB\xBFclass BomTest\nend\n";
+    try indexSource(bom_source, "/tmp/bom_unit.rb", db, alloc);
+
+    const stmt = try db.prepare("SELECT COUNT(*) FROM symbols WHERE name = 'BomTest' AND kind = 'class'");
+    defer stmt.finalize();
+    try std.testing.expect(try stmt.step());
+    try std.testing.expectEqual(@as(i64, 1), stmt.column_int(0));
+}
+
 test "cleanupStale preserves gem entries" {
     const alloc = std.testing.allocator;
 
