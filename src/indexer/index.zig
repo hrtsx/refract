@@ -2617,7 +2617,40 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             var rcv_buf: [128]u8 = undefined;
             const call_recv_type: ?[]const u8 = blk: {
                 if (cn.receiver) |rcv| {
-                    if (rcv.*.type == prism.NODE_LOCAL_VAR_READ) {
+                    const type_val = rcv.*.type;
+                    if (type_val == prism.NODE_STRING or type_val == prism.NODE_INTERPOLATED_STR) {
+                        const s = "String";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_INTEGER) {
+                        const s = "Integer";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_FLOAT) {
+                        const s = "Float";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_ARRAY) {
+                        const s = "Array";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_HASH) {
+                        const s = "Hash";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_SYMBOL) {
+                        const s = "Symbol";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_NIL) {
+                        const s = "NilClass";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (type_val == prism.NODE_RANGE) {
+                        const s = "Range";
+                        @memcpy(rcv_buf[0..s.len], s);
+                        break :blk rcv_buf[0..s.len];
+                    } else if (rcv.*.type == prism.NODE_LOCAL_VAR_READ) {
                         const lvr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(rcv));
                         const rname = resolveConstant(ctx.parser, lvr.name);
                         // Pull the most-recent typed binding. Accept confidence >= 70 (RBS/sigs/narrowing)
