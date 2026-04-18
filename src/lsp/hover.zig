@@ -31,16 +31,6 @@ const utf8ColToUtf16 = S.utf8ColToUtf16;
 pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.flushDirtyUrisDebounced();
-    // Bounded wait so hover on bundled-stdlib symbols (e.g. Time) doesn't
-    // race past the bg indexer and fall back to the bare stdlibClassDoc
-    // entry, which lacks the **Class methods:** section the SQL path renders.
-    {
-        var waited_ms: u32 = 0;
-        while (waited_ms < 200 and !self.bg_indexing_done.load(.acquire)) : (waited_ms += 10) {
-            var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
-            _ = std.c.nanosleep(&_sleep_ts, null);
-        }
-    }
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const indexing_in_progress = !self.bg_started_event.load(.acquire);
@@ -214,6 +204,14 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
                 const base_type = if (rt.len > 2 and rt[0] == '[' and rt[rt.len - 1] == ']') rt[1 .. rt.len - 1] else rt;
                 if (try hoverLookupOnClass(self, msg, word, base_type, line, hover_wc16, hover_we16)) |r| return r;
             }
+        }
+    }
+
+    if (self.hot == null and !self.bg_indexing_done.load(.acquire)) {
+        var waited_ms: u32 = 0;
+        while (waited_ms < 200) : (waited_ms += 10) {
+            var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
+            _ = std.c.nanosleep(&_sleep_ts, null);
         }
     }
 

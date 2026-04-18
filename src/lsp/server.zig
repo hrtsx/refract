@@ -425,6 +425,15 @@ fn ensureRefractDir(root_path: []const u8, alloc: std.mem.Allocator) !void {
     };
 }
 
+const WarmupCtx = struct {
+    server_ptr: *Server,
+
+    pub fn run(self: *WarmupCtx) void {
+        defer std.heap.c_allocator.destroy(self);
+        rebuildHotIndex(self.server_ptr);
+    }
+};
+
 const BgCtx = struct {
     root_path: []u8,
     server_ptr: *Server,
@@ -1009,6 +1018,7 @@ pub const Server = struct {
     hot_mu: std.Io.Mutex = std.Io.Mutex.init,
     hot: ?*hot_index_mod.HotIndex = null,
     hot_index_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    warmup_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     stdout_writer: ?*std.Io.Writer,
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1103,6 +1113,14 @@ pub const Server = struct {
         const tmp_dir = std.fmt.allocPrint(alloc, "{s}/refract-{d}-{x}", .{ tmp_base, pid, std.mem.readInt(u32, &rand_bytes, .little) }) catch null;
         s.tmp_dir = tmp_dir;
         return s;
+    }
+
+    pub fn requestShutdown(self: *Server) void {
+        self.bg_cancelled.store(true, .seq_cst);
+        self.rubocop_thread_done.store(true, .seq_cst);
+        self.rubocop_queue_cond.signal(std.Options.debug_io);
+        self.flush_thread_done.store(true, .seq_cst);
+        self.db.close();
     }
 
     pub fn deinit(self: *Server) void {
@@ -1206,6 +1224,17 @@ pub const Server = struct {
         self.bg_thread = std.Thread.spawn(.{}, BgCtx.run, .{ctx}) catch blk: {
             ctx.run();
             break :blk null;
+        };
+    }
+
+    pub fn startWarmupIndexer(self: *Server) void {
+        if (!self.warmup_enabled.load(.monotonic)) return;
+        if (self.hot != null) return;
+
+        const ctx = std.heap.c_allocator.create(WarmupCtx) catch return;
+        ctx.server_ptr = self;
+        _ = std.Thread.spawn(.{}, WarmupCtx.run, .{ctx}) catch {
+            std.heap.c_allocator.destroy(ctx);
         };
     }
 
@@ -2151,6 +2180,8 @@ pub const Server = struct {
             const msg_final = std.fmt.bufPrint(&buf, "refract_profile: handleInitialize total={d}ms\n", .{init_ms}) catch "refract_profile: handleInitialize\n";
             std.debug.print("{s}", .{msg_final});
         }
+
+        self.startWarmupIndexer();
 
         return types.ResponseMessage{
             .id = msg.id,
