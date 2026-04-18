@@ -55,7 +55,7 @@ const NamespaceContext = struct {
         if (self.path_prefix_depth == 0) {
             return try alloc.dupe(u8, base_path);
         }
-        var parts: std.ArrayList([]const u8) = .{};
+        var parts: std.ArrayList([]const u8) = .empty;
         defer parts.deinit(alloc);
         for (0..self.path_prefix_depth) |i| {
             try parts.append(alloc, self.path_prefix_stack[i]);
@@ -68,7 +68,7 @@ const NamespaceContext = struct {
         if (self.controller_prefix_depth == 0) {
             return try alloc.dupe(u8, base_controller);
         }
-        var parts: std.ArrayList([]const u8) = .{};
+        var parts: std.ArrayList([]const u8) = .empty;
         defer parts.deinit(alloc);
         for (0..self.controller_prefix_depth) |i| {
             try parts.append(alloc, self.controller_prefix_stack[i]);
@@ -445,39 +445,39 @@ fn visitBlockStatements(db: db_mod.Db, file_id: i64, parser: *prism.Parser, body
         if (std.mem.eql(u8, mname, "resources")) {
             if (extractSymbolName(parser, first_arg)) |name| {
                 handleResourcesCall(db, file_id, parser, cn, name, false, alloc, ns_ctx) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: route indexing error: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                    std.debug.print("{s}", .{"refract: route indexing error: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
         } else if (std.mem.eql(u8, mname, "resource")) {
             if (extractSymbolName(parser, first_arg)) |name| {
                 handleResourcesCall(db, file_id, parser, cn, name, true, alloc, ns_ctx) catch |e| {
-                    std.fs.File.stderr().writeAll("refract: route indexing error: ") catch {};
-                    std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                    std.fs.File.stderr().writeAll("\n") catch {};
+                    std.debug.print("{s}", .{"refract: route indexing error: "});
+                    std.debug.print("{s}", .{@errorName(e)});
+                    std.debug.print("{s}", .{"\n"});
                 };
             }
         } else if (std.mem.eql(u8, mname, "member")) {
             handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, true) catch |e| {
-                std.fs.File.stderr().writeAll("refract: route member error: ") catch {};
-                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                std.fs.File.stderr().writeAll("\n") catch {};
+                std.debug.print("{s}", .{"refract: route member error: "});
+                std.debug.print("{s}", .{@errorName(e)});
+                std.debug.print("{s}", .{"\n"});
             };
         } else if (std.mem.eql(u8, mname, "collection")) {
             handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, false) catch |e| {
-                std.fs.File.stderr().writeAll("refract: route collection error: ") catch {};
-                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                std.fs.File.stderr().writeAll("\n") catch {};
+                std.debug.print("{s}", .{"refract: route collection error: "});
+                std.debug.print("{s}", .{@errorName(e)});
+                std.debug.print("{s}", .{"\n"});
             };
         } else if (std.mem.eql(u8, mname, "get") or std.mem.eql(u8, mname, "post") or
             std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
             std.mem.eql(u8, mname, "delete"))
         {
             handleSimpleRoute(db, file_id, parser, cn, mname, ns_ctx, alloc) catch |e| {
-                std.fs.File.stderr().writeAll("refract: route error: ") catch {};
-                std.fs.File.stderr().writeAll(@errorName(e)) catch {};
-                std.fs.File.stderr().writeAll("\n") catch {};
+                std.debug.print("{s}", .{"refract: route error: "});
+                std.debug.print("{s}", .{@errorName(e)});
+                std.debug.print("{s}", .{"\n"});
             };
         }
     }
@@ -696,7 +696,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, false, ctx.alloc, &ctx.ns_ctx) catch |e| {
                     var ebuf: [256]u8 = undefined;
                     const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "resources", @errorName(e) }) catch "refract: route parse error\n";
-                    std.fs.File.stderr().writeAll(emsg) catch {};
+                    std.debug.print("{s}", .{emsg});
                 };
                 if (cn.block != null) return false;
             }
@@ -705,7 +705,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, true, ctx.alloc, &ctx.ns_ctx) catch |e| {
                     var ebuf: [256]u8 = undefined;
                     const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "resource", @errorName(e) }) catch "refract: route parse error\n";
-                    std.fs.File.stderr().writeAll(emsg) catch {};
+                    std.debug.print("{s}", .{emsg});
                 };
                 if (cn.block != null) return false;
             }
@@ -713,13 +713,13 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             handleRootRoute(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch |e| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "root", @errorName(e) }) catch "refract: route parse error\n";
-                std.fs.File.stderr().writeAll(emsg) catch {};
+                std.debug.print("{s}", .{emsg});
             };
         } else if (std.mem.eql(u8, mname, "mount")) {
             handleMountCall(ctx.db, ctx.file_id, ctx.parser, cn, ctx.alloc, &ctx.ns_ctx) catch |e| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ "mount", @errorName(e) }) catch "refract: route parse error\n";
-                std.fs.File.stderr().writeAll(emsg) catch {};
+                std.debug.print("{s}", .{emsg});
             };
         } else if (std.mem.eql(u8, mname, "get") or std.mem.eql(u8, mname, "post") or
             std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
@@ -728,7 +728,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             handleSimpleRoute(ctx.db, ctx.file_id, ctx.parser, cn, mname, &ctx.ns_ctx, ctx.alloc) catch |e| {
                 var ebuf: [256]u8 = undefined;
                 const emsg = std.fmt.bufPrint(&ebuf, "refract: route parse error ({s}): {s}\n", .{ mname, @errorName(e) }) catch "refract: route parse error\n";
-                std.fs.File.stderr().writeAll(emsg) catch {};
+                std.debug.print("{s}", .{emsg});
             };
         }
     }

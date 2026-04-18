@@ -1,0 +1,316 @@
+class Time
+  # Returns `Time.zone.now` if a zone is set, otherwise `Time.now`.
+  # Prefer this over `Time.now` in Rails apps for zone-aware timestamps.
+  def self.current: () -> Time
+  # Returns the current `ActiveSupport::TimeZone` (from `Time.zone=`).
+  def self.zone: () -> untyped
+  def self.zone=: (untyped zone) -> untyped
+  # Temporarily sets `Time.zone` for the duration of the block.
+  def self.use_zone: (untyped zone) { () -> untyped } -> untyped
+  def self.days_in_month: (Integer month, ?Integer year) -> Integer
+  def self.days_in_year: (?Integer year) -> Integer
+
+  def ago: (untyped duration) -> Time
+  def at_beginning_of_day: () -> Time
+  def at_beginning_of_hour: () -> Time
+  def at_beginning_of_minute: () -> Time
+  def at_beginning_of_month: () -> Time
+  def at_beginning_of_quarter: () -> Time
+  def at_beginning_of_week: () -> Time
+  def at_beginning_of_year: () -> Time
+  def at_end_of_day: () -> Time
+  def at_end_of_hour: () -> Time
+  def at_end_of_minute: () -> Time
+  def at_end_of_month: () -> Time
+  def at_end_of_quarter: () -> Time
+  def at_end_of_week: () -> Time
+  def at_end_of_year: () -> Time
+  def at_midday: () -> Time
+  def at_middle_of_day: () -> Time
+  def at_midnight: () -> Time
+  def beginning_of_day: () -> Time
+  def beginning_of_hour: () -> Time
+  def beginning_of_minute: () -> Time
+  def beginning_of_month: () -> Time
+  def beginning_of_quarter: () -> Time
+  def beginning_of_week: () -> Time
+  def beginning_of_year: () -> Time
+  def change: (**untyped options) -> Time
+  def compare_with_coercion: (untyped other) -> Integer?
+  def end_of_day: () -> Time
+  def end_of_hour: () -> Time
+  def end_of_minute: () -> Time
+  def end_of_month: () -> Time
+  def end_of_quarter: () -> Time
+  def end_of_week: () -> Time
+  def end_of_year: () -> Time
+  def future?: () -> bool
+  def in: (untyped duration) -> Time
+  def in_time_zone: (?untyped zone) -> untyped
+  def midday: () -> Time
+  def middle_of_day: () -> Time
+  def midnight: () -> Time
+  def monday: () -> Time
+  def next_day: (?Integer days) -> Time
+  def next_month: (?Integer months) -> Time
+  def next_occurring: (Symbol day) -> Time
+  def next_quarter: () -> Time
+  def next_week: (?Symbol start_day) -> Time
+  def next_weekday: () -> Time
+  def next_year: (?Integer years) -> Time
+  def on_weekday?: () -> bool
+  def on_weekend?: () -> bool
+  def past?: () -> bool
+  def prev_day: (?Integer days) -> Time
+  def prev_month: (?Integer months) -> Time
+  def prev_occurring: (Symbol day) -> Time
+  def prev_quarter: () -> Time
+  def prev_week: (?Symbol start_day) -> Time
+  def prev_weekday: () -> Time
+  def prev_year: (?Integer years) -> Time
+  def seconds_since_midnight: () -> Float
+  def seconds_until_end_of_day: () -> Integer
+  def since: (untyped duration) -> Time
+  def sunday: () -> Time
+  def today?: () -> bool
+  def tomorrow?: () -> bool
+  def yesterday?: () -> bool
+end
+
+class Date
+  def self.current: () -> Date
+  def self.tomorrow: () -> Date
+  def self.yesterday: () -> Date
+
+  def ago: (untyped duration) -> Time
+  def at_beginning_of_day: () -> Time
+  def at_end_of_day: () -> Time
+  def beginning_of_day: () -> Time
+  def beginning_of_month: () -> Date
+  def beginning_of_quarter: () -> Date
+  def beginning_of_week: () -> Date
+  def beginning_of_year: () -> Date
+  def change: (**untyped options) -> Date
+  def end_of_day: () -> Time
+  def end_of_month: () -> Date
+  def end_of_quarter: () -> Date
+  def end_of_week: () -> Date
+  def end_of_year: () -> Date
+  def future?: () -> bool
+  def in: (untyped duration) -> Time
+  def midnight: () -> Time
+  def monday: () -> Date
+  def next_quarter: () -> Date
+  def next_week: (?Symbol start_day) -> Date
+  def on_weekday?: () -> bool
+  def on_weekend?: () -> bool
+  def past?: () -> bool
+  def prev_quarter: () -> Date
+  def prev_week: (?Symbol start_day) -> Date
+  def since: (untyped duration) -> Time
+  def sunday: () -> Date
+  def today?: () -> bool
+  def tomorrow?: () -> bool
+  def yesterday?: () -> bool
+end
+
+class String
+  def acts_like_string?: () -> bool
+  def at: (Integer position) -> String?
+  # True if the string is empty or contains only whitespace.
+  def blank?: () -> bool
+  def camelcase: (?Symbol first_letter) -> String
+  def camelize: (?Symbol first_letter) -> String
+  def classify: () -> String
+  def constantize: () -> untyped
+  def dasherize: () -> String
+  def deconstantize: () -> String
+  def demodulize: () -> String
+  def ends_with?: (*String suffixes) -> bool
+  def exclude?: (String other) -> bool
+  def first: (?Integer limit) -> String
+  def foreign_key: (?bool separate_class_name_and_id_with_underscore) -> String
+  def from: (Integer position) -> String?
+  def html_safe: () -> untyped
+  def humanize: (?capitalize: bool) -> String
+  def indent: (Integer amount, ?String indent_string) -> String?
+  def indent!: (Integer amount, ?String indent_string) -> String?
+  def is_utf8?: () -> bool
+  def last: (?Integer limit) -> String
+  def mb_chars: () -> untyped
+  def parameterize: (?separator: String) -> String
+  def pluralize: (?Integer count) -> String
+  # True if the string is not blank. Equivalent to `!blank?`.
+  def present?: () -> bool
+  # Returns self if `present?`, otherwise nil. Useful with `||`.
+  def presence: () -> String?
+  def presence_in: (untyped other) -> String?
+  def remove: (*untyped patterns) -> String
+  def remove!: (*untyped patterns) -> String
+  def safe_constantize: () -> untyped
+  def singularize: () -> String
+  def squish: () -> String
+  def squish!: () -> String
+  def starts_with?: (*String prefixes) -> bool
+  def strip_heredoc: () -> String
+  def tableize: () -> String
+  def titlecase: () -> String
+  def titleize: () -> String
+  def to: (Integer position) -> String
+  def to_date: () -> Date
+  def to_datetime: () -> DateTime
+  def to_time: (?Symbol form) -> Time?
+  def truncate: (Integer truncate_at, ?omission: String, ?separator: untyped) -> String
+  def truncate_bytes: (Integer truncate_at, ?omission: String) -> String
+  def truncate_words: (Integer words_count, ?omission: String, ?separator: untyped) -> String
+  def underscore: () -> String
+  def upcase_first: () -> String
+end
+
+class Array
+  def acts_like_array?: () -> bool
+  def blank?: () -> bool
+  def compact_blank: () -> Array
+  def compact_blank!: () -> Array
+  def excluding: (*untyped elements) -> Array
+  def extract!: () { (untyped) -> boolish } -> Array
+  def extract_options!: () -> Hash
+  def fifth: () -> untyped
+  def forty_two: () -> untyped
+  def fourth: () -> untyped
+  def from: (Integer position) -> Array
+  def in_groups: (Integer number, ?untyped fill_with) { (Array) -> void } -> Array
+  def in_groups_of: (Integer number, ?untyped fill_with) { (Array) -> void } -> Array
+  def including: (*untyped elements) -> Array
+  def present?: () -> bool
+  def second: () -> untyped
+  def second_to_last: () -> untyped
+  def split: (?untyped value) { (untyped) -> boolish } -> Array
+  def sum: (?untyped init) { (untyped) -> untyped } -> untyped
+  def third: () -> untyped
+  def third_to_last: () -> untyped
+  def to: (Integer position) -> Array
+  def to_default_s: () -> String
+  def to_fs: (?Symbol format) -> String
+  def to_sentence: (**untyped options) -> String
+  def to_xml: (**untyped options) -> String
+  def without: (*untyped elements) -> Array
+end
+
+class Hash
+  def acts_like_hash?: () -> bool
+  def assert_valid_keys: (*untyped valid_keys) -> Hash
+  def blank?: () -> bool
+  def compact_blank: () -> Hash
+  def compact_blank!: () -> Hash
+  def deep_dup: () -> Hash
+  def deep_merge: (Hash other) { (untyped, untyped, untyped) -> untyped } -> Hash
+  def deep_merge!: (Hash other) { (untyped, untyped, untyped) -> untyped } -> Hash
+  def deep_stringify_keys: () -> Hash
+  def deep_stringify_keys!: () -> Hash
+  def deep_symbolize_keys: () -> Hash
+  def deep_symbolize_keys!: () -> Hash
+  def deep_transform_keys: () { (untyped) -> untyped } -> Hash
+  def deep_transform_keys!: () { (untyped) -> untyped } -> Hash
+  def deep_transform_values: () { (untyped) -> untyped } -> Hash
+  def deep_transform_values!: () { (untyped) -> untyped } -> Hash
+  def except!: (*untyped keys) -> Hash
+  def extract!: (*untyped keys) -> Hash
+  def extractable_options?: () -> bool
+  def including: (*untyped keys) -> Hash
+  def present?: () -> bool
+  def reverse_merge: (Hash other) -> Hash
+  def reverse_merge!: (Hash other) -> Hash
+  def slice!: (*untyped keys) -> Hash
+  def stringify_keys: () -> Hash
+  def stringify_keys!: () -> Hash
+  def symbolize_keys: () -> Hash
+  def symbolize_keys!: () -> Hash
+  def to_options: () -> Hash
+  def to_options!: () -> Hash
+  def to_param: (?String namespace) -> String
+  def to_query: (?String namespace) -> String
+  def with_defaults: (Hash other) -> Hash
+  def with_defaults!: (Hash other) -> Hash
+  def with_indifferent_access: () -> untyped
+  def without: (*untyped keys) -> Hash
+end
+
+class NilClass
+  def blank?: () -> bool
+  def present?: () -> bool
+  def to_param: () -> nil
+  def to_query: (untyped key) -> String
+  def try: (?Symbol method, *untyped args) -> nil
+  def try!: (?Symbol method, *untyped args) -> nil
+end
+
+class TrueClass
+  def blank?: () -> bool
+  def present?: () -> bool
+  def to_param: () -> bool
+end
+
+class FalseClass
+  def blank?: () -> bool
+  def present?: () -> bool
+  def to_param: () -> bool
+end
+
+class Object
+  def acts_like?: (Symbol duck) -> bool
+  def blank?: () -> bool
+  def deep_dup: () -> untyped
+  def duplicable?: () -> bool
+  def in?: (untyped other) -> bool
+  def instance_values: () -> Hash
+  def instance_variable_names: () -> Array
+  def present?: () -> bool
+  def presence: () -> untyped
+  def presence_in: (untyped other) -> untyped
+  def to_param: () -> untyped
+  def to_query: (untyped key) -> String
+  def try: (?Symbol method, *untyped args) -> untyped
+  def try!: (?Symbol method, *untyped args) -> untyped
+  def with: (**untyped attributes) { () -> untyped } -> untyped
+  def with_options: (**untyped options) { (untyped) -> void } -> untyped
+end
+
+class Integer
+  def days: () -> untyped
+  def fortnights: () -> untyped
+  def hours: () -> untyped
+  def minutes: () -> untyped
+  def months: () -> untyped
+  def multiple_of?: (Integer number) -> bool
+  def ordinal: () -> String
+  def ordinalize: () -> String
+  def seconds: () -> untyped
+  def weeks: () -> untyped
+  def years: () -> untyped
+end
+
+class Numeric
+  def blank?: () -> bool
+  def bytes: () -> Integer
+  def exabytes: () -> Integer
+  def gigabytes: () -> Integer
+  def kilobytes: () -> Integer
+  def megabytes: () -> Integer
+  def petabytes: () -> Integer
+  def present?: () -> bool
+  def terabytes: () -> Integer
+  def to_fs: (?Symbol format, **untyped options) -> String
+  def zettabytes: () -> Integer
+end
+
+class Symbol
+  def blank?: () -> bool
+  def present?: () -> bool
+  def starts_with?: (*String prefixes) -> bool
+  def ends_with?: (*String suffixes) -> bool
+end
+
+class Range
+  def overlaps?: (Range other) -> bool
+end

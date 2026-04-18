@@ -3,6 +3,31 @@ const build_opts = @import("build_opts");
 
 pub const refract_bin = build_opts.refract_bin;
 
+var session_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+const template_path = "/tmp/refract_test_stdlib_template.db";
+
+fn templateAvailable() bool {
+    const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, template_path, .{}) catch return false;
+    // Sanity: a real warmed DB is multi-MB. Anything tiny is a stale leftover
+    // or a failed warmup.
+    return stat.size > 100 * 1024;
+}
+
+fn cleanupDbFiles(db_path: []const u8) void {
+    std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, db_path) catch {};
+    var buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(&buf, "{s}-wal", .{db_path})) |wal| {
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, wal) catch {};
+    } else |_| {}
+    if (std.fmt.bufPrint(&buf, "{s}-shm", .{db_path})) |shm| {
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, shm) catch {};
+    } else |_| {}
+    if (std.fmt.bufPrint(&buf, "{s}.lock", .{db_path})) |lck| {
+        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, lck) catch {};
+    } else |_| {}
+}
+
 pub fn frame(alloc: std.mem.Allocator, json: []const u8) ![]u8 {
     return std.fmt.allocPrint(alloc, "Content-Length: {d}\r\n\r\n{s}", .{ json.len, json });
 }
@@ -13,24 +38,22 @@ pub const Session = struct {
     db_path: []u8,
 
     pub fn init(alloc: std.mem.Allocator) !Session {
-        const rand_id = std.crypto.random.int(u64);
-        const db_path = try std.fmt.allocPrint(alloc, "/tmp/refract_test_{x}.db", .{rand_id});
-        return .{ .alloc = alloc, .input = std.ArrayList(u8){}, .db_path = db_path };
+        const ts = std.Io.Timestamp.now(std.Options.debug_io, .real).toMicroseconds();
+        const n = session_counter.fetchAdd(1, .monotonic);
+        var _rnd_bytes: [8]u8 = undefined;
+        std.Options.debug_io.random(&_rnd_bytes);
+        const rand_id = std.mem.readInt(u64, &_rnd_bytes, .little);
+        const db_path = try std.fmt.allocPrint(alloc, "/tmp/refract_test_t{d}_n{d}_{x}.db", .{ ts, n, rand_id });
+        cleanupDbFiles(db_path);
+        if (templateAvailable()) {
+            std.Io.Dir.copyFileAbsolute(template_path, db_path, std.Options.debug_io, .{}) catch {};
+        }
+        return .{ .alloc = alloc, .input = std.ArrayList(u8).empty, .db_path = db_path };
     }
 
     pub fn deinit(self: *Session) void {
         self.input.deinit(self.alloc);
-        std.fs.deleteFileAbsolute(self.db_path) catch {};
-        var wal_buf: [256]u8 = undefined;
-        if (std.fmt.bufPrint(&wal_buf, "{s}-wal", .{self.db_path})) |wal| {
-            std.fs.deleteFileAbsolute(wal) catch {};
-        } else |_| {}
-        if (std.fmt.bufPrint(&wal_buf, "{s}-shm", .{self.db_path})) |shm| {
-            std.fs.deleteFileAbsolute(shm) catch {};
-        } else |_| {}
-        if (std.fmt.bufPrint(&wal_buf, "{s}.lock", .{self.db_path})) |lck| {
-            std.fs.deleteFileAbsolute(lck) catch {};
-        } else |_| {}
+        cleanupDbFiles(self.db_path);
         self.alloc.free(self.db_path);
     }
 
@@ -50,26 +73,30 @@ pub const Session = struct {
     }
 
     pub fn runWithArgs(self: *Session, extra_args: []const []const u8) ![]u8 {
-        var argv = std.ArrayList([]const u8){};
+        var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(self.alloc);
         try argv.append(self.alloc, refract_bin);
         try argv.append(self.alloc, "--db-path");
         try argv.append(self.alloc, self.db_path);
         for (extra_args) |a| try argv.append(self.alloc, a);
-        var child = std.process.Child.init(argv.items, self.alloc);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        try child.spawn();
+        var child = try std.process.spawn(std.testing.io, .{
+            .argv = argv.items,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        });
 
         var timeout_done = std.atomic.Value(bool).init(false);
-        const child_pid = child.id;
+        const child_pid = child.id.?;
         var thr = std.Thread.spawn(.{}, struct {
             fn run(pid: std.process.Child.Id, done: *std.atomic.Value(bool)) void {
                 var elapsed: u32 = 0;
                 while (elapsed < 15_000) : (elapsed += 100) {
                     if (done.load(.acquire)) return;
-                    std.Thread.sleep(100 * std.time.ns_per_ms);
+                    {
+                        var _sleep_ts: std.c.timespec = .{ .sec = @intCast((100 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((100 * std.time.ns_per_ms) % std.time.ns_per_s) };
+                        _ = std.c.nanosleep(&_sleep_ts, null);
+                    }
                 }
                 if (!done.load(.acquire)) {
                     std.posix.kill(pid, std.posix.SIG.KILL) catch {};
@@ -81,21 +108,28 @@ pub const Session = struct {
             if (thr) |t| t.join();
         }
 
-        try child.stdin.?.writeAll(self.input.items);
-        child.stdin.?.close();
+        try child.stdin.?.writeStreamingAll(std.Options.debug_io, self.input.items);
+        child.stdin.?.close(std.Options.debug_io);
         child.stdin = null;
 
-        var output = std.ArrayList(u8){};
+        var output = std.ArrayList(u8).empty;
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = child.stdout.?.read(&buf) catch break;
+            const n = child.stdout.?.readStreaming(std.Options.debug_io, &.{buf[0..]}) catch break;
             if (n == 0) break;
             try output.appendSlice(self.alloc, buf[0..n]);
         }
 
         var stderr_content: []u8 = &.{};
         if (child.stderr) |stderr_pipe| {
-            stderr_content = stderr_pipe.readToEndAlloc(self.alloc, 1024 * 1024) catch &.{};
+            var sbuf: [4096]u8 = undefined;
+            var sbytes = std.ArrayList(u8).empty;
+            while (true) {
+                const sn = stderr_pipe.readStreaming(std.Options.debug_io, &.{sbuf[0..]}) catch break;
+                if (sn == 0) break;
+                sbytes.appendSlice(self.alloc, sbuf[0..sn]) catch break;
+            }
+            stderr_content = sbytes.toOwnedSlice(self.alloc) catch &.{};
         }
         defer if (stderr_content.len > 0) self.alloc.free(stderr_content);
 
@@ -104,10 +138,7 @@ pub const Session = struct {
             t.join();
             thr = null;
         }
-        if (comptime @import("builtin").os.tag == .linux) {
-            var wstatus: u32 = 0;
-            _ = std.os.linux.waitpid(child.id, &wstatus, 0);
-        }
+        _ = child.wait(std.Options.debug_io) catch {};
         if (stderr_content.len > 0) {
             std.debug.print("refract stderr:\n{s}\n", .{stderr_content});
         }
@@ -116,7 +147,7 @@ pub const Session = struct {
 };
 
 pub fn extractResponses(alloc: std.mem.Allocator, raw: []const u8) ![]std.json.Parsed(std.json.Value) {
-    var results = std.ArrayList(std.json.Parsed(std.json.Value)){};
+    var results = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
     var i: usize = 0;
     while (i < raw.len) {
         if (!std.mem.startsWith(u8, raw[i..], "Content-Length: ")) break;

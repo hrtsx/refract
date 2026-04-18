@@ -1,0 +1,105 @@
+class Symbol
+  def self.all_symbols: () -> Array
+
+  def <=>: (Symbol other) -> Integer?
+  def ==: (untyped other) -> bool
+  def =~: (Regexp pattern) -> Integer?
+  def []: (*untyped args) -> String?
+  def capitalize: () -> Symbol
+  def casecmp: (Symbol other) -> Integer?
+  def casecmp?: (Symbol other) -> bool?
+  def downcase: () -> Symbol
+  def empty?: () -> bool
+  def encoding: () -> Encoding
+  def end_with?: (*String suffixes) -> bool
+  def id2name: () -> String
+  def inspect: () -> String
+  def intern: () -> Symbol
+  def length: () -> Integer
+  def match: (Regexp pattern) -> MatchData?
+  def match?: (Regexp pattern) -> bool
+  def name: () -> String
+  def next: () -> Symbol
+  def size: () -> Integer
+  def slice: (*untyped args) -> String?
+  def start_with?: (*String prefixes) -> bool
+  def succ: () -> Symbol
+  def swapcase: () -> Symbol
+  def to_proc: () -> Proc
+  def to_s: () -> String
+  def to_sym: () -> Symbol
+  def upcase: () -> Symbol
+end
+
+class Regexp
+  def self.compile: (String | Regexp pattern, ?Integer options) -> Regexp
+  def self.escape: (String str) -> String
+  def self.last_match: (?Integer | String n) -> untyped
+  def self.quote: (String str) -> String
+  def self.try_convert: (untyped obj) -> Regexp?
+  def self.union: (*untyped patterns) -> Regexp
+
+  def ==: (untyped other) -> bool
+  def ===: (untyped obj) -> bool
+  def =~: (String str) -> Integer?
+  def casefold?: () -> bool
+  def encoding: () -> Encoding
+  def eql?: (untyped other) -> bool
+  def fixed_encoding?: () -> bool
+  def hash: () -> Integer
+  def inspect: () -> String
+  def match: (String str, ?Integer pos) -> MatchData?
+  def match?: (String str, ?Integer pos) -> bool
+  def named_captures: () -> Hash
+  def names: () -> Array
+  def options: () -> Integer
+  def source: () -> String
+  def to_s: () -> String
+end
+
+class Range
+  def self.new: (untyped first, untyped last, ?bool exclude_end) -> Range
+
+  def ==: (untyped other) -> bool
+  def ===: (untyped obj) -> bool
+  def begin: () -> untyped
+  def bsearch: () { (untyped) -> boolish } -> untyped
+  def count: (?untyped item) -> Integer
+  def cover?: (untyped obj) -> bool
+  def each: () { (untyped) -> void } -> Range
+  def end: () -> untyped
+  def entries: () -> Array
+  def exclude_end?: () -> bool
+  def first: (?Integer n) -> untyped
+  def hash: () -> Integer
+  def include?: (untyped obj) -> bool
+  def inspect: () -> String
+  def last: (?Integer n) -> untyped
+  def max: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def member?: (untyped obj) -> bool
+  def min: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def minmax: () -> Array
+  def size: () -> Integer
+  def step: (?Numeric n) { (untyped) -> void } -> Range
+  def to_a: () -> Array
+  def to_s: () -> String
+end
+
+class MatchData
+  def ==: (untyped other) -> bool
+  def []: (*untyped args) -> untyped
+  def begin: (Integer | String n) -> Integer?
+  def captures: () -> Array
+  def end: (Integer | String n) -> Integer?
+  def named_captures: () -> Hash
+  def names: () -> Array
+  def offset: (Integer | String n) -> Array
+  def post_match: () -> String
+  def pre_match: () -> String
+  def regexp: () -> Regexp
+  def size: () -> Integer
+  def string: () -> String
+  def to_a: () -> Array
+  def to_s: () -> String
+  def values_at: (*Integer indices) -> Array
+end

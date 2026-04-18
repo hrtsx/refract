@@ -77,12 +77,12 @@ fn shouldSkipDir(root: []const u8, parent: []const u8, name: []const u8, extra_e
 
 fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), alloc: std.mem.Allocator, extra_excludes: []const []const u8, negations: []const []const u8, depth: u32) !void {
     if (depth > 64) return;
-    var dir = std.fs.cwd().openDir(abs_path, .{ .iterate = true, .no_follow = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, abs_path, .{ .iterate = true, .follow_symlinks = false }) catch return;
+    defer dir.close(std.Options.debug_io);
 
     // Parse a local .gitignore in this directory (only for depth > 0;
     // the root .gitignore is already parsed by the caller via parseGitignoreExcludes).
-    var local_patterns = std.ArrayList([]const u8){};
+    var local_patterns = std.ArrayList([]const u8).empty;
     defer {
         for (local_patterns.items) |e| alloc.free(e);
         local_patterns.deinit(alloc);
@@ -91,7 +91,7 @@ fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), 
         var gi_buf: [4096]u8 = undefined;
         const gi_path = std.fmt.bufPrint(&gi_buf, "{s}/.gitignore", .{abs_path}) catch "";
         if (gi_path.len > 0) {
-            if (std.fs.cwd().readFileAlloc(alloc, gi_path, 64 * 1024)) |content| {
+            if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, gi_path, alloc, std.Io.Limit.limited(64 * 1024))) |content| {
                 defer alloc.free(content);
                 var lines = std.mem.splitScalar(u8, content, '\n');
                 while (lines.next()) |raw| {
@@ -118,7 +118,7 @@ fn scanDir(root: []const u8, abs_path: []const u8, paths: *std.ArrayList([]u8), 
     defer if (effective_excludes.ptr != extra_excludes.ptr) alloc.free(effective_excludes);
 
     var it = dir.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(std.Options.debug_io) catch null) |entry| {
         if (entry.kind == .directory) {
             if (shouldSkipDir(root, abs_path, entry.name, effective_excludes, negations)) continue;
             const sub = std.fs.path.join(alloc, &.{ abs_path, entry.name }) catch continue;
@@ -151,8 +151,8 @@ fn parsePattern(raw: []const u8) ?[]const u8 {
     const line = std.mem.trim(u8, raw, " \r\t");
     if (line.len == 0 or line[0] == '#') return null;
     // Strip trailing slashes (dir-only marker) and leading slash (rooted marker)
-    const stripped = std.mem.trimRight(u8, line, "/");
-    const name = std.mem.trimLeft(u8, stripped, "/");
+    const stripped = std.mem.trimEnd(u8, line, "/");
+    const name = std.mem.trimStart(u8, stripped, "/");
     if (name.len == 0 or name.len > 512) return null;
     if (std.mem.indexOfAny(u8, name, "?[") != null) return null;
     // Allow: trailing * (prefix match), leading * (suffix match), interior / (path-relative)
@@ -175,10 +175,10 @@ fn parsePattern(raw: []const u8) ?[]const u8 {
 }
 
 pub fn parseGitignoreExcludes(root: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
-    var results = std.ArrayList([]const u8){};
+    var results = std.ArrayList([]const u8).empty;
     const gi_path = try std.fs.path.join(alloc, &.{ root, ".gitignore" });
     defer alloc.free(gi_path);
-    const content = std.fs.cwd().readFileAlloc(alloc, gi_path, 64 * 1024) catch return results.toOwnedSlice(alloc);
+    const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, gi_path, alloc, std.Io.Limit.limited(64 * 1024)) catch return results.toOwnedSlice(alloc);
     defer alloc.free(content);
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
@@ -195,10 +195,10 @@ pub fn parseGitignoreExcludes(root: []const u8, alloc: std.mem.Allocator) ![][]c
 }
 
 pub fn parseGitignoreNegations(root: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
-    var results = std.ArrayList([]const u8){};
+    var results = std.ArrayList([]const u8).empty;
     const gi_path = try std.fs.path.join(alloc, &.{ root, ".gitignore" });
     defer alloc.free(gi_path);
-    const content = std.fs.cwd().readFileAlloc(alloc, gi_path, 64 * 1024) catch return results.toOwnedSlice(alloc);
+    const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, gi_path, alloc, std.Io.Limit.limited(64 * 1024)) catch return results.toOwnedSlice(alloc);
     defer alloc.free(content);
     var saw_exclude = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -221,7 +221,7 @@ pub fn parseGitignoreNegations(root: []const u8, alloc: std.mem.Allocator) ![][]
 }
 
 pub fn scan(root: []const u8, alloc: std.mem.Allocator, extra_excludes: []const []const u8) ![][]u8 {
-    var paths = std.ArrayList([]u8){};
+    var paths = std.ArrayList([]u8).empty;
     errdefer {
         for (paths.items) |p| alloc.free(p);
         paths.deinit(alloc);
@@ -231,7 +231,7 @@ pub fn scan(root: []const u8, alloc: std.mem.Allocator, extra_excludes: []const 
 }
 
 pub fn scanWithNegations(root: []const u8, alloc: std.mem.Allocator, extra_excludes: []const []const u8, negations: []const []const u8) ![][]u8 {
-    var paths = std.ArrayList([]u8){};
+    var paths = std.ArrayList([]u8).empty;
     errdefer {
         for (paths.items) |p| alloc.free(p);
         paths.deinit(alloc);

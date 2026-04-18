@@ -1,0 +1,110 @@
+# Represents a point in time, expressed with nanosecond precision.
+# Created with `Time.now`, `Time.new`, `Time.at`, or parsed from a string.
+class Time
+  # Returns a `Time` for the current system time.
+  def self.now: () -> Time
+  # Creates a new `Time`. With no args, returns the current time.
+  # With args (year, month, day, hour, min, sec, zone), constructs that time.
+  def self.new: (*untyped args) -> Time
+  # Converts a POSIX epoch (seconds since 1970-01-01 UTC) to `Time`.
+  def self.at: (Integer | Float epoch, ?Integer subsec, ?Symbol unit) -> Time
+  # Parses a human-readable time string into `Time`. Falls back to `now` for missing fields.
+  def self.parse: (String str, ?Time now) -> Time
+  # Creates a `Time` in UTC. Same as `Time.gm`.
+  def self.utc: (*untyped args) -> Time
+  # Creates a `Time` in the local timezone.
+  def self.local: (*untyped args) -> Time
+  # Alias of `Time.utc`.
+  def self.gm: (*untyped args) -> Time
+  # Alias of `Time.local`.
+  def self.mktime: (*untyped args) -> Time
+  # Parses `str` using the given `strftime`-style `fmt`.
+  def self.strptime: (String str, String fmt) -> Time
+  # Parses an ISO 8601 string (e.g. "2026-04-22T15:00:00Z").
+  def self.iso8601: (String str) -> Time
+  # Parses an HTTP-date (RFC 2616) string.
+  def self.httpdate: (String str) -> Time
+  # Parses an RFC 2822 date string.
+  def self.rfc2822: (String str) -> Time
+  # Alias of `iso8601`.
+  def self.xmlschema: (String str) -> Time
+  def self.json_create: (Hash obj) -> Time
+
+  # Formats time using the given `strftime` directives (e.g. "%Y-%m-%d %H:%M").
+  def strftime: (String format) -> String
+  # Returns the POSIX epoch seconds as an Integer (truncated).
+  def to_i: () -> Integer
+  # Returns the POSIX epoch seconds as a Float, with fractional seconds.
+  def to_f: () -> Float
+  # Returns a human-readable string ("2026-04-22 15:00:00 +0300").
+  def to_s: () -> String
+  def to_a: () -> Array
+  def to_r: () -> Rational
+  # Returns a detailed string representation.
+  def inspect: () -> String
+  def year: () -> Integer
+  def month: () -> Integer
+  # Alias of `month`.
+  def mon: () -> Integer
+  def day: () -> Integer
+  # Alias of `day`.
+  def mday: () -> Integer
+  def hour: () -> Integer
+  def min: () -> Integer
+  def sec: () -> Integer
+  # Microseconds within the second (0..999_999).
+  def usec: () -> Integer
+  # Nanoseconds within the second (0..999_999_999).
+  def nsec: () -> Integer
+  def subsec: () -> Rational
+  # Day of week (0=Sunday .. 6=Saturday).
+  def wday: () -> Integer
+  # Day of year (1..366).
+  def yday: () -> Integer
+  # Timezone name (e.g. "UTC", "EEST").
+  def zone: () -> String
+  # Offset from UTC in seconds.
+  def utc_offset: () -> Integer
+  def gmtoff: () -> Integer
+  def gmt_offset: () -> Integer
+  # True if this time is in UTC.
+  def utc?: () -> bool
+  def gmt?: () -> bool
+  # True if daylight-saving time is in effect.
+  def dst?: () -> bool
+  def isdst: () -> bool
+  def monday?: () -> bool
+  def tuesday?: () -> bool
+  def wednesday?: () -> bool
+  def thursday?: () -> bool
+  def friday?: () -> bool
+  def saturday?: () -> bool
+  def sunday?: () -> bool
+  def eql?: (untyped other) -> bool
+  def hash: () -> Integer
+  # Returns a copy of self converted to UTC.
+  def utc: () -> Time
+  def gmtime: () -> Time
+  def localtime: (?String zone) -> Time
+  def getutc: () -> Time
+  def getgm: () -> Time
+  def getlocal: (?String zone) -> Time
+  # Rounds subsecond to `digits` decimal places.
+  def round: (?Integer digits) -> Time
+  def floor: (?Integer digits) -> Time
+  def ceil: (?Integer digits) -> Time
+  # Returns `self + 1` second.
+  def succ: () -> Time
+  # POSIX-style timestamp string (e.g. "Wed Apr 22 15:00:00 2026").
+  def asctime: () -> String
+  # Alias of `asctime`.
+  def ctime: () -> String
+  # ISO 8601 formatted string.
+  def iso8601: (?Integer digits) -> String
+  def rfc2822: () -> String
+  def rfc822: () -> String
+  # HTTP-date formatted (RFC 2616) string.
+  def httpdate: () -> String
+  # Alias of `iso8601`.
+  def xmlschema: (?Integer digits) -> String
+end

@@ -1,0 +1,142 @@
+class Numeric
+  def %: (Numeric other) -> Numeric
+  def +@: () -> Numeric
+  def -@: () -> Numeric
+  def <=>: (Numeric other) -> Integer?
+  def abs: () -> Numeric
+  def abs2: () -> Numeric
+  def angle: () -> Numeric
+  def arg: () -> Numeric
+  def ceil: (?Integer digits) -> Numeric
+  def coerce: (Numeric other) -> Array
+  def conj: () -> Numeric
+  def conjugate: () -> Numeric
+  def denominator: () -> Integer
+  def div: (Numeric other) -> Integer
+  def divmod: (Numeric other) -> Array
+  def eql?: (untyped other) -> bool
+  def fdiv: (Numeric other) -> Float
+  def finite?: () -> bool
+  def floor: (?Integer digits) -> Numeric
+  def i: () -> Complex
+  def imag: () -> Numeric
+  def imaginary: () -> Numeric
+  def infinite?: () -> Integer?
+  def integer?: () -> bool
+  def magnitude: () -> Numeric
+  def modulo: (Numeric other) -> Numeric
+  def negative?: () -> bool
+  def nonzero?: () -> Numeric?
+  def numerator: () -> Integer
+  def phase: () -> Numeric
+  def polar: () -> Array
+  def positive?: () -> bool
+  def quo: (Numeric other) -> Numeric
+  def real: () -> Numeric
+  def real?: () -> bool
+  def rect: () -> Array
+  def rectangular: () -> Array
+  def remainder: (Numeric other) -> Numeric
+  def round: (?Integer digits) -> Numeric
+  def step: (?Numeric limit, ?Numeric step) { (Numeric) -> void } -> Numeric
+  def to_c: () -> Complex
+  def to_f: () -> Float
+  def to_int: () -> Integer
+  def truncate: (?Integer digits) -> Numeric
+  def zero?: () -> bool
+end
+
+class Integer < Numeric
+  def self.sqrt: (Integer n) -> Integer
+
+  def &: (Integer other) -> Integer
+  def *: (Numeric other) -> Numeric
+  def **: (Numeric exp) -> Numeric
+  def +: (Numeric other) -> Numeric
+  def -: (Numeric other) -> Numeric
+  def /: (Numeric other) -> Numeric
+  def <<: (Integer n) -> Integer
+  def >>: (Integer n) -> Integer
+  def []: (Integer bit) -> Integer
+  def ^: (Integer other) -> Integer
+  def |: (Integer other) -> Integer
+  def ~: () -> Integer
+  def abs: () -> Integer
+  def bit_length: () -> Integer
+  def ceil: (?Integer ndigits) -> Integer
+  def chr: (?Encoding enc) -> String
+  def coerce: (Numeric other) -> Array
+  def digits: (?Integer base) -> Array
+  def div: (Numeric other) -> Integer
+  def divmod: (Numeric other) -> Array
+  def downto: (Integer limit) { (Integer) -> void } -> Integer
+  def even?: () -> bool
+  def fdiv: (Numeric other) -> Float
+  def floor: (?Integer ndigits) -> Integer
+  def gcd: (Integer other) -> Integer
+  def gcdlcm: (Integer other) -> Array
+  def inspect: () -> String
+  def lcm: (Integer other) -> Integer
+  def next: () -> Integer
+  def odd?: () -> bool
+  def ord: () -> Integer
+  def pow: (Integer exp, ?Integer mod) -> Integer
+  def pred: () -> Integer
+  def round: (?Integer ndigits) -> Integer
+  def size: () -> Integer
+  def succ: () -> Integer
+  def times: () { (Integer) -> void } -> Integer
+  def to_f: () -> Float
+  def to_i: () -> Integer
+  def to_int: () -> Integer
+  def to_r: () -> Rational
+  def to_s: (?Integer base) -> String
+  def truncate: (?Integer ndigits) -> Integer
+  def upto: (Integer limit) { (Integer) -> void } -> Integer
+  def zero?: () -> bool
+end
+
+class Float < Numeric
+  def *: (Numeric other) -> Float
+  def **: (Numeric exp) -> Float
+  def +: (Numeric other) -> Float
+  def -: (Numeric other) -> Float
+  def /: (Numeric other) -> Float
+  def abs: () -> Float
+  def ceil: (?Integer digits) -> Numeric
+  def coerce: (Numeric other) -> Array
+  def divmod: (Numeric other) -> Array
+  def fdiv: (Numeric other) -> Float
+  def finite?: () -> bool
+  def floor: (?Integer digits) -> Numeric
+  def infinite?: () -> Integer?
+  def inspect: () -> String
+  def modulo: (Numeric other) -> Float
+  def nan?: () -> bool
+  def next_float: () -> Float
+  def prev_float: () -> Float
+  def round: (?Integer digits) -> Numeric
+  def to_f: () -> Float
+  def to_i: () -> Integer
+  def to_int: () -> Integer
+  def to_r: () -> Rational
+  def to_s: () -> String
+  def truncate: (?Integer digits) -> Numeric
+end
+
+class Rational < Numeric
+  def denominator: () -> Integer
+  def numerator: () -> Integer
+  def to_f: () -> Float
+  def to_i: () -> Integer
+  def to_r: () -> Rational
+  def to_s: () -> String
+end
+
+class Complex < Numeric
+  def imaginary: () -> Numeric
+  def real: () -> Numeric
+  def rect: () -> Array
+  def to_c: () -> Complex
+  def to_s: () -> String
+end

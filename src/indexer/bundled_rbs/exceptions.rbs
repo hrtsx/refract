@@ -1,0 +1,118 @@
+class Exception
+  def self.exception: (?String msg) -> Exception
+  def self.to_tty?: () -> bool
+
+  def ==: (untyped other) -> bool
+  def backtrace: () -> Array?
+  def backtrace_locations: () -> Array?
+  def cause: () -> Exception?
+  def exception: (?String msg) -> Exception
+  def full_message: (?highlight: bool, ?order: Symbol) -> String
+  def inspect: () -> String
+  def message: () -> String
+  def set_backtrace: (Array? backtrace) -> Array?
+  def to_s: () -> String
+end
+
+class StandardError < Exception
+end
+
+class RuntimeError < StandardError
+end
+
+class ArgumentError < StandardError
+end
+
+class TypeError < StandardError
+end
+
+class NameError < StandardError
+  def name: () -> Symbol?
+  def receiver: () -> untyped
+end
+
+class NoMethodError < NameError
+  def args: () -> Array
+end
+
+class IndexError < StandardError
+end
+
+class KeyError < IndexError
+  def key: () -> untyped
+  def receiver: () -> untyped
+end
+
+class RangeError < StandardError
+end
+
+class FloatDomainError < RangeError
+end
+
+class ZeroDivisionError < StandardError
+end
+
+class IOError < StandardError
+end
+
+class EOFError < IOError
+end
+
+class StopIteration < IndexError
+  def result: () -> untyped
+end
+
+class LoadError < ScriptError
+  def path: () -> String?
+end
+
+class ScriptError < Exception
+end
+
+class SyntaxError < ScriptError
+end
+
+class NotImplementedError < ScriptError
+end
+
+class LocalJumpError < StandardError
+  def exit_value: () -> untyped
+  def reason: () -> Symbol
+end
+
+class RegexpError < StandardError
+end
+
+class EncodingError < StandardError
+end
+
+class FrozenError < RuntimeError
+  def receiver: () -> untyped
+end
+
+class SystemCallError < StandardError
+  def self.===: (untyped other) -> bool
+  def errno: () -> Integer?
+end
+
+class SignalException < Exception
+  def signo: () -> Integer
+  def signm: () -> String
+end
+
+class Interrupt < SignalException
+end
+
+class SecurityError < Exception
+end
+
+class SystemExit < Exception
+  def status: () -> Integer
+  def success?: () -> bool
+end
+
+class ThreadError < StandardError
+end
+
+class FiberError < StandardError
+end

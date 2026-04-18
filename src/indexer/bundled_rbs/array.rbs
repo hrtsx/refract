@@ -1,0 +1,138 @@
+class Array
+  def self.new: (?Integer size, ?untyped default) -> Array
+  def self.try_convert: (untyped obj) -> Array?
+
+  def &: (Array other) -> Array
+  def *: (Integer | String n) -> untyped
+  def +: (Array other) -> Array
+  def -: (Array other) -> Array
+  def <<: (untyped obj) -> Array
+  def <=>: (Array other) -> Integer?
+  def ==: (untyped other) -> bool
+  def []: (*untyped args) -> untyped
+  def []=: (*untyped args) -> untyped
+  def all?: () { (untyped) -> boolish } -> bool
+  def any?: () { (untyped) -> boolish } -> bool
+  def append: (*untyped args) -> Array
+  def assoc: (untyped key) -> Array?
+  def at: (Integer index) -> untyped
+  def bsearch: () { (untyped) -> boolish } -> untyped
+  def bsearch_index: () { (untyped) -> boolish } -> Integer?
+  def chain: (*Array arrays) -> Enumerator
+  def chunk: () { (untyped) -> untyped } -> Enumerator
+  def chunk_while: () { (untyped, untyped) -> boolish } -> Enumerator
+  def clear: () -> Array
+  def collect: () { (untyped) -> untyped } -> Array
+  def collect!: () { (untyped) -> untyped } -> Array
+  def combination: (Integer n) { (Array) -> void } -> Array
+  def compact: () -> Array
+  def compact!: () -> Array?
+  def concat: (*Array arrays) -> Array
+  def count: (?untyped item) { (untyped) -> boolish } -> Integer
+  def cycle: (?Integer n) { (untyped) -> void } -> nil
+  def delete: (untyped obj) -> untyped
+  def delete_at: (Integer index) -> untyped
+  def delete_if: () { (untyped) -> boolish } -> Array
+  def difference: (*Array arrays) -> Array
+  def dig: (*untyped keys) -> untyped
+  def drop: (Integer n) -> Array
+  def drop_while: () { (untyped) -> boolish } -> Array
+  def each: () { (untyped) -> void } -> Array
+  def each_index: () { (Integer) -> void } -> Array
+  def each_with_index: () { (untyped, Integer) -> void } -> Array
+  def each_with_object: (untyped memo) { (untyped, untyped) -> void } -> untyped
+  def empty?: () -> bool
+  def entries: () -> Array
+  def eql?: (untyped other) -> bool
+  def fetch: (Integer index, ?untyped default) -> untyped
+  def fill: (*untyped args) -> Array
+  def filter: () { (untyped) -> boolish } -> Array
+  def filter!: () { (untyped) -> boolish } -> Array?
+  def filter_map: () { (untyped) -> untyped } -> Array
+  def find: () { (untyped) -> boolish } -> untyped
+  def find_all: () { (untyped) -> boolish } -> Array
+  def find_index: (?untyped item) -> Integer?
+  def first: (?Integer n) -> untyped
+  def flat_map: () { (untyped) -> untyped } -> Array
+  def flatten: (?Integer depth) -> Array
+  def flatten!: (?Integer depth) -> Array?
+  def freeze: () -> Array
+  def group_by: () { (untyped) -> untyped } -> Hash
+  def hash: () -> Integer
+  def include?: (untyped obj) -> bool
+  def index: (?untyped item) -> Integer?
+  def inject: (?untyped init) { (untyped, untyped) -> untyped } -> untyped
+  def insert: (Integer index, *untyped args) -> Array
+  def inspect: () -> String
+  def intersect?: (Array other) -> bool
+  def intersection: (*Array arrays) -> Array
+  def join: (?String sep) -> String
+  def keep_if: () { (untyped) -> boolish } -> Array
+  def last: (?Integer n) -> untyped
+  def lazy: () -> Enumerator::Lazy
+  def length: () -> Integer
+  def map: () { (untyped) -> untyped } -> Array
+  def map!: () { (untyped) -> untyped } -> Array
+  def max: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def max_by: (?Integer n) { (untyped) -> untyped } -> untyped
+  def member?: (untyped obj) -> bool
+  def min: (?Integer n) { (untyped, untyped) -> Integer } -> untyped
+  def min_by: (?Integer n) { (untyped) -> untyped } -> untyped
+  def minmax: () { (untyped, untyped) -> Integer } -> Array
+  def minmax_by: () { (untyped) -> untyped } -> Array
+  def none?: () { (untyped) -> boolish } -> bool
+  def one?: () { (untyped) -> boolish } -> bool
+  def pack: (String format) -> String
+  def partition: () { (untyped) -> boolish } -> Array
+  def permutation: (?Integer n) { (Array) -> void } -> Array
+  def pop: (?Integer n) -> untyped
+  def prepend: (*untyped args) -> Array
+  def product: (*Array arrays) -> Array
+  def push: (*untyped args) -> Array
+  def rassoc: (untyped value) -> Array?
+  def reduce: (?untyped init) { (untyped, untyped) -> untyped } -> untyped
+  def reject: () { (untyped) -> boolish } -> Array
+  def reject!: () { (untyped) -> boolish } -> Array?
+  def repeated_combination: (Integer n) { (Array) -> void } -> Array
+  def repeated_permutation: (Integer n) { (Array) -> void } -> Array
+  def replace: (Array other) -> Array
+  def reverse: () -> Array
+  def reverse!: () -> Array
+  def reverse_each: () { (untyped) -> void } -> Array
+  def rindex: (?untyped item) -> Integer?
+  def rotate: (?Integer count) -> Array
+  def rotate!: (?Integer count) -> Array
+  def sample: (?Integer n) -> untyped
+  def scan: (Regexp pattern) -> Array
+  def select: () { (untyped) -> boolish } -> Array
+  def select!: () { (untyped) -> boolish } -> Array?
+  def shift: (?Integer n) -> untyped
+  def shuffle: () -> Array
+  def shuffle!: () -> Array
+  def size: () -> Integer
+  def slice: (*untyped args) -> untyped
+  def slice!: (*untyped args) -> untyped
+  def slice_after: (*untyped args) { (untyped) -> boolish } -> Enumerator
+  def slice_before: (*untyped args) { (untyped) -> boolish } -> Enumerator
+  def slice_when: () { (untyped, untyped) -> boolish } -> Enumerator
+  def sort: () { (untyped, untyped) -> Integer } -> Array
+  def sort!: () { (untyped, untyped) -> Integer } -> Array
+  def sort_by: () { (untyped) -> untyped } -> Array
+  def sort_by!: () { (untyped) -> untyped } -> Array
+  def sum: (?untyped init) { (untyped) -> untyped } -> untyped
+  def take: (Integer n) -> Array
+  def take_while: () { (untyped) -> boolish } -> Array
+  def tally: () -> Hash
+  def to_a: () -> Array
+  def to_ary: () -> Array
+  def to_h: () { (untyped) -> Array } -> Hash
+  def to_s: () -> String
+  def transpose: () -> Array
+  def union: (*Array arrays) -> Array
+  def uniq: () { (untyped) -> untyped } -> Array
+  def uniq!: () { (untyped) -> untyped } -> Array?
+  def unshift: (*untyped args) -> Array
+  def values_at: (*untyped args) -> Array
+  def zip: (*Array arrays) -> Array
+  def |: (Array other) -> Array
+end
