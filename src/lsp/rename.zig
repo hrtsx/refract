@@ -16,8 +16,8 @@ const isRubyIdent = S.isRubyIdent;
 const isValidRubyIdent = S.isValidRubyIdent;
 
 pub fn handlePrepareRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -98,8 +98,9 @@ pub fn handlePrepareRename(self: *Server, msg: types.RequestMessage) !?types.Res
 }
 
 pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -223,7 +224,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
 
             var depth: u8 = 0;
             while (depth < 4) : (depth += 1) {
-                var new_names = std.ArrayList([]const u8){};
+                var new_names = std.ArrayList([]const u8).empty;
                 var it = related_classes.keyIterator();
                 while (it.next()) |kp| {
                     if (self.db.prepare(
@@ -236,7 +237,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                         while (inc_stmt.step() catch false) {
                             const cn = inc_stmt.column_text(0);
                             if (cn.len > 0 and !related_classes.contains(cn)) {
-                                new_names.append(a, a.dupe(u8, cn) catch continue) catch {}; // OOM: name list
+                                new_names.append(a, a.dupe(u8, cn) catch continue) catch S.logOomOnce("rename.new_names.inc");
                             }
                         }
                     } else |_| {}
@@ -249,13 +250,13 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                         while (sub_stmt.step() catch false) {
                             const cn = sub_stmt.column_text(0);
                             if (cn.len > 0 and !related_classes.contains(cn)) {
-                                new_names.append(a, a.dupe(u8, cn) catch continue) catch {}; // OOM: name list
+                                new_names.append(a, a.dupe(u8, cn) catch continue) catch S.logOomOnce("rename.new_names.sub");
                             }
                         }
                     } else |_| {}
                 }
                 if (new_names.items.len == 0) break;
-                for (new_names.items) |nn| related_classes.put(nn, {}) catch {}; // OOM: name set
+                for (new_names.items) |nn| related_classes.put(nn, {}) catch S.logOomOnce("rename.related_classes");
             }
 
             var rc_it = related_classes.keyIterator();
@@ -276,7 +277,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     const sym_path = sym_stmt.column_text(2);
                     const key = try a.dupe(u8, sym_path);
                     const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
                 }
                 const ref_stmt = self.db.prepare(
@@ -294,7 +295,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     const ref_path = ref_stmt.column_text(2);
                     const key = try a.dupe(u8, ref_path);
                     const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
                 }
             }
@@ -312,7 +313,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     const rp = gr.column_text(2);
                     const key = try a.dupe(u8, rp);
                     const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     var exists = false;
                     for (gop.value_ptr.items) |existing| {
                         if (existing.line == rl and existing.col == rc) {
@@ -335,7 +336,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 const sym_path = sym_stmt.column_text(2);
                 const key = try a.dupe(u8, sym_path);
                 const gop = try edits_map.getOrPut(key);
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                 try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
             }
 
@@ -350,7 +351,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 const ref_path = ref_stmt.column_text(2);
                 const key = try a.dupe(u8, ref_path);
                 const gop = try edits_map.getOrPut(key);
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                 try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
             }
         }
@@ -369,7 +370,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 const lv_path = lv_stmt.column_text(2);
                 const key = try a.dupe(u8, lv_path);
                 const gop = try edits_map.getOrPut(key);
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                 try gop.value_ptr.append(a, .{ .line = lv_line, .col = lv_col });
             }
 
@@ -386,7 +387,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 const ref_path = ref_stmt.column_text(2);
                 const key = try a.dupe(u8, ref_path);
                 const gop = try edits_map.getOrPut(key);
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                 try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
             }
         } else {
@@ -408,7 +409,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     const lv_path = lv_stmt.column_text(2);
                     const key = try a.dupe(u8, lv_path);
                     const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     try gop.value_ptr.append(a, .{ .line = lv_line, .col = lv_col });
                 }
 
@@ -425,7 +426,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     const ref_path = ref_stmt.column_text(2);
                     const key = try a.dupe(u8, ref_path);
                     const gop = try edits_map.getOrPut(key);
-                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit){};
+                    if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
                 }
             }
@@ -576,13 +577,13 @@ pub fn handleWillRenameFiles(self: *Server, msg: types.RequestMessage) !?types.R
         const new_stem = new_base[0 .. new_base.len - 3];
         if (std.mem.eql(u8, old_stem, new_stem)) continue;
 
-        self.db_mutex.lock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
         const fstmt = self.db.prepare("SELECT path FROM files WHERE is_gem=0") catch {
-            self.db_mutex.unlock();
+            self.db_mutex.unlock(std.Options.debug_io);
             continue;
         };
         defer fstmt.finalize();
-        var caller_paths = std.ArrayList([]u8){};
+        var caller_paths = std.ArrayList([]u8).empty;
         defer {
             for (caller_paths.items) |p| self.alloc.free(p);
             caller_paths.deinit(self.alloc);
@@ -590,13 +591,13 @@ pub fn handleWillRenameFiles(self: *Server, msg: types.RequestMessage) !?types.R
         while (fstmt.step() catch false) {
             const p = fstmt.column_text(0);
             if (p.len > 0) {
-                caller_paths.append(self.alloc, self.alloc.dupe(u8, p) catch continue) catch {}; // OOM: path list
+                caller_paths.append(self.alloc, self.alloc.dupe(u8, p) catch continue) catch S.logOomOnce("rename.caller_paths");
             }
         }
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
 
         for (caller_paths.items) |cpath| {
-            const content = std.fs.cwd().readFileAlloc(self.alloc, cpath, self.max_file_size.load(.monotonic)) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, cpath, self.alloc, std.Io.Limit.limited(self.max_file_size.load(.monotonic))) catch continue;
             defer self.alloc.free(content);
 
             var line_num: i64 = 0;
@@ -631,7 +632,7 @@ pub fn handleWillRenameFiles(self: *Server, msg: types.RequestMessage) !?types.R
                                     break;
                                 };
                                 if (!gop.found_existing) {
-                                    gop.value_ptr.* = .{};
+                                    gop.value_ptr.* = .empty;
                                 } else {
                                     self.alloc.free(file_uri);
                                 }

@@ -28,9 +28,9 @@ const empty_json_array = S.empty_json_array;
 
 pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     self.flushDirtyUris();
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
     const line: u32 = pos.line;
@@ -190,9 +190,9 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
 
 pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     self.flushDirtyUris();
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
@@ -276,9 +276,9 @@ pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.Re
 }
 
 pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
     const line: u32 = pos.line;
@@ -347,7 +347,13 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
             defer lv_stmt.finalize();
             lv_stmt.bind_text(1, word);
             lv_stmt.bind_int(2, sid);
+            var lv_i: usize = 0;
             while (try lv_stmt.step()) {
+                lv_i += 1;
+                if ((lv_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+                    aw.deinit();
+                    return self.cancelledResponse(msg.id);
+                }
                 if (!first) try w.writeByte(',');
                 first = false;
                 const rp = lv_stmt.column_text(0);
@@ -373,7 +379,13 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
             defer scoped_ref.finalize();
             scoped_ref.bind_text(1, word);
             scoped_ref.bind_int(2, sid);
+            var sr_i: usize = 0;
             while (try scoped_ref.step()) {
+                sr_i += 1;
+                if ((sr_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+                    aw.deinit();
+                    return self.cancelledResponse(msg.id);
+                }
                 if (!first) try w.writeByte(',');
                 first = false;
                 const rp = scoped_ref.column_text(0);
@@ -403,7 +415,13 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
         );
         defer stmt.finalize();
         stmt.bind_text(1, word);
+        var gref_i: usize = 0;
         while (try stmt.step()) {
+            gref_i += 1;
+            if ((gref_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+                aw.deinit();
+                return self.cancelledResponse(msg.id);
+            }
             if (!first) try w.writeByte(',');
             first = false;
             const ref_path = stmt.column_text(0);
@@ -434,8 +452,8 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -525,10 +543,13 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
     const sym_stmt = try self.db.prepare(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ? AND s.kind IN ('class', 'module') LIMIT 5
+        \\WHERE (s.name = ? OR s.name LIKE '%::' || ?) AND s.kind IN ('class', 'module')
+        \\ORDER BY CASE WHEN s.name = ? THEN 0 ELSE 1 END, s.id LIMIT 5
     );
     defer sym_stmt.finalize();
     sym_stmt.bind_text(1, tn);
+    sym_stmt.bind_text(2, tn);
+    sym_stmt.bind_text(3, tn);
     while (try sym_stmt.step()) {
         if (found_any) try w.writeByte(',');
         found_any = true;
@@ -569,7 +590,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
     const stmt = try self.db.prepare(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ?
+        \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
         \\UNION
         \\SELECT s2.name, s2.line, s2.col, f2.path
         \\FROM symbols s2 JOIN files f2 ON s2.file_id = f2.id
@@ -582,6 +603,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
     defer stmt.finalize();
     stmt.bind_text(1, name);
     stmt.bind_text(2, name);
+    stmt.bind_text(3, name);
     while (try stmt.step()) {
         if (found_any.*) try w.writeByte(',');
         found_any.* = true;
@@ -624,8 +646,8 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
 }
 
 pub fn handlePrepareTypeHierarchy(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -701,8 +723,8 @@ pub fn handlePrepareTypeHierarchy(self: *Server, msg: types.RequestMessage) !?ty
 }
 
 pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -798,8 +820,8 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
 }
 
 pub fn handleTypeHierarchySubtypes(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -846,8 +868,8 @@ pub fn handleTypeHierarchySubtypes(self: *Server, msg: types.RequestMessage) !?t
 }
 
 pub fn handleCallHierarchyPrepare(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -935,8 +957,9 @@ pub fn handleCallHierarchyPrepare(self: *Server, msg: types.RequestMessage) !?ty
 }
 
 pub fn handleCallHierarchyIncomingCalls(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -981,7 +1004,13 @@ pub fn handleCallHierarchyIncomingCalls(self: *Server, msg: types.RequestMessage
     }
     try w.writeAll("[");
     var first = true;
+    var chi_i: usize = 0;
     while (try ref_stmt.step()) {
+        chi_i += 1;
+        if ((chi_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+            aw.deinit();
+            return self.cancelledResponse(msg.id);
+        }
         const ref_line = ref_stmt.column_int(0);
         const ref_col = ref_stmt.column_int(1);
         const ref_path = ref_stmt.column_text(2);
@@ -1026,9 +1055,10 @@ pub fn handleCallHierarchyIncomingCalls(self: *Server, msg: types.RequestMessage
 }
 
 pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const RefPos = struct { line: i64, col: i64 };
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -1104,7 +1134,7 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
         const ref_col = ref_stmt.column_int(2);
         const gop = try ref_names.getOrPut(ref_name);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.ArrayList(RefPos){};
+            gop.value_ptr.* = std.ArrayList(RefPos).empty;
         }
         try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
     }

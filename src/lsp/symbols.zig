@@ -25,9 +25,20 @@ const frcGet = S.frcGet;
 pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     self.flushIncrPaths();
     self.flushDirtyUris();
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    {
+        // Bounded wait so workspace/symbol doesn't query a half-built index
+        // immediately after server start (or after forceReindex).
+        var waited_ms: u32 = 0;
+        while (waited_ms < 200 and !self.bg_indexing_done.load(.acquire)) : (waited_ms += 10) {
+            {
+                var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
+                _ = std.c.nanosleep(&_sleep_ts, null);
+            }
+        }
+    }
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const query = blk: {
         if (msg.params) |params| {
             switch (params) {
@@ -49,6 +60,40 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
     defer self.alloc.free(pattern);
     const prefix_pattern = try buildPrefixPattern(self.alloc, query);
     defer self.alloc.free(prefix_pattern);
+
+    // Parse optional LSP symbol kind filter (1=File,2=Module,3=Namespace,4=Package,5=Class,
+    // 6=Method,7=Property,8=Field,9=Constructor,10=Enum,11=Interface,12=Function,
+    // 13=Variable,14=Constant,15=String,16=Number,17=Boolean,18=Array,23=Struct,26=TypeParameter)
+    // Map LSP kind → DB kind string. null = no filter.
+    const lsp_kind_filter: ?[]const u8 = blk: {
+        if (msg.params) |params| {
+            switch (params) {
+                .object => |obj| {
+                    if (obj.get("filter")) |filter_val| {
+                        switch (filter_val) {
+                            .object => |fobj| {
+                                if (fobj.get("kind")) |kv| {
+                                    switch (kv) {
+                                        .integer => |k| break :blk switch (k) {
+                                            2 => @as(?[]const u8, "module"),
+                                            5 => "class",
+                                            6 => "def",
+                                            12 => "classdef",
+                                            else => null,
+                                        },
+                                        else => {},
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        break :blk null;
+    };
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
     const w = &aw.writer;
@@ -132,13 +177,30 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
             try w.writeAll("}}}}");
         }
     } else {
-        const sql = if (query.len > 0)
-            "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND f.is_gem = 0 ORDER BY length(s.name), s.name LIMIT 500"
-        else
-            "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.is_gem = 0 ORDER BY s.name LIMIT 100";
+        // Build SQL dynamically to apply optional kind filter.
+        // Relevance-aware ORDER BY: exact match → prefix match → rest, then length, then name.
+        var sql_buf: [1024]u8 = undefined;
+        const sql = if (query.len > 0) blk: {
+            if (lsp_kind_filter) |kf| {
+                _ = kf;
+                break :blk try std.fmt.bufPrintZ(&sql_buf, "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND s.kind = ? AND f.is_gem = 0 ORDER BY CASE WHEN lower(s.name)=lower(?) THEN 0 WHEN s.name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, length(s.name), s.name LIMIT 500", .{});
+            } else {
+                break :blk try std.fmt.bufPrintZ(&sql_buf, "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND f.is_gem = 0 ORDER BY CASE WHEN lower(s.name)=lower(?) THEN 0 WHEN s.name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, length(s.name), s.name LIMIT 500", .{});
+            }
+        } else "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.is_gem = 0 ORDER BY s.name LIMIT 100";
         const stmt = try self.db.prepare(sql);
         defer stmt.finalize();
-        if (query.len > 0) stmt.bind_text(1, prefix_pattern);
+        if (query.len > 0) {
+            stmt.bind_text(1, prefix_pattern);
+            if (lsp_kind_filter) |kf| {
+                stmt.bind_text(2, kf);
+                stmt.bind_text(3, query); // exact match check
+                stmt.bind_text(4, prefix_pattern); // prefix match check
+            } else {
+                stmt.bind_text(2, query); // exact match check
+                stmt.bind_text(3, prefix_pattern); // prefix match check
+            }
+        }
         while (try stmt.step()) {
             if (!first) try w.writeByte(',');
             first = false;
@@ -176,7 +238,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
             const infix_stmt = try self.db.prepare(
                 \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
-                \\WHERE s.name LIKE ? ESCAPE '\' AND s.name NOT LIKE ? ESCAPE '\'
+                \\WHERE s.name LIKE ? ESCAPE '\' AND s.name NOT LIKE ? ESCAPE '\' AND f.is_gem = 0
                 \\LIMIT 100
             );
             defer infix_stmt.finalize();
@@ -219,9 +281,9 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
             const fuzzy_exclude = try buildQueryPattern(self.alloc, query);
             defer self.alloc.free(fuzzy_exclude);
             const fuzzy_stmt = try self.db.prepare(
-                \\SELECT s.name, s.kind, s.line, s.col, f.path
+                \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
-                \\WHERE s.name NOT LIKE ? ESCAPE '\'
+                \\WHERE s.name NOT LIKE ? ESCAPE '\' AND f.is_gem = 0
                 \\LIMIT 500
             );
             defer fuzzy_stmt.finalize();
@@ -236,6 +298,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
                 const fline = fuzzy_stmt.column_int(2);
                 const fcol = fuzzy_stmt.column_int(3);
                 const fpath = fuzzy_stmt.column_text(4);
+                const fcname = fuzzy_stmt.column_text(5);
                 const fkind_num: u8 = if (std.mem.eql(u8, fkind_str, "class")) 5 else if (std.mem.eql(u8, fkind_str, "module")) 2 else if (std.mem.eql(u8, fkind_str, "def") or std.mem.eql(u8, fkind_str, "classdef")) 6 else if (std.mem.eql(u8, fkind_str, "constant")) 13 else 14;
                 const fstart_char = self.toClientColFromPath(&frc_ws, fpath, fline - 1, fcol);
                 try w.writeAll("{\"name\":");
@@ -251,6 +314,10 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
                 try w.writeAll(",\"character\":");
                 try w.print("{d}", .{fstart_char + @as(u32, @intCast(fname.len))});
                 try w.writeAll("}}}");
+                if (fcname.len > 0) {
+                    try w.writeAll(",\"containerName\":");
+                    try writeEscapedJson(w, fcname);
+                }
                 try w.writeByte('}');
             }
         }
@@ -266,9 +333,9 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
 }
 
 pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return null;
-    self.db_mutex.lock();
-    defer self.db_mutex.unlock();
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -305,7 +372,7 @@ pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.Re
     const doc_src = src_opt orelse "";
 
     const DocSym = struct { name: []const u8, kind: []const u8, line: i64, col: i64, return_type: []const u8, end_line: i64 };
-    var syms = std.ArrayList(DocSym){};
+    var syms = std.ArrayList(DocSym).empty;
     while (try stmt.step()) {
         try syms.append(a, .{
             .name = try a.dupe(u8, stmt.column_text(0)),
@@ -332,7 +399,7 @@ pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.Re
                 const nk = syms.items[next_ci].kind;
                 if (std.mem.eql(u8, nk, "class") or std.mem.eql(u8, nk, "module")) break;
             }
-            const end_line: i64 = if (s.end_line > 0) s.end_line else if (next_ci < syms.items.len) syms.items[next_ci].line - 1 else s.line + 50;
+            const end_line: i64 = @max(s.line + 1, if (s.end_line > 0) s.end_line else if (next_ci < syms.items.len) syms.items[next_ci].line - 1 else s.line + 50);
             const kind_num: u8 = if (std.mem.eql(u8, s.kind, "class")) 5 else 2;
             if (!first_top) try w.writeByte(',');
             first_top = false;
@@ -357,7 +424,7 @@ pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.Re
                         try w.writeAll(",\"detail\":");
                         try writeEscapedJson(w, c.return_type);
                     }
-                    const c_end: i64 = if (c.end_line > 0) c.end_line - 1 else c.line - 1;
+                    const c_end: i64 = @max(c.line, if (c.end_line > 0) c.end_line - 1 else c.line - 1);
                     try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}}", .{ c.line - 1, c_end });
                     emitSelRange(w, doc_src, self, c.line, c.col, c.name);
                     try w.writeByte('}');
@@ -376,7 +443,7 @@ pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.Re
                 try w.writeAll(",\"detail\":");
                 try writeEscapedJson(w, s.return_type);
             }
-            const s_end: i64 = if (s.end_line > 0) s.end_line - 1 else s.line - 1;
+            const s_end: i64 = @max(s.line, if (s.end_line > 0) s.end_line - 1 else s.line - 1);
             try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}}", .{ s.line - 1, s_end });
             emitSelRange(w, doc_src, self, s.line, s.col, s.name);
             try w.writeByte('}');

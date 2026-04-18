@@ -47,8 +47,8 @@ pub fn writeDiagItems(
 pub fn enqueueRubocopPath(self: *Server, path: []const u8) void {
     if (self.disable_rubocop.load(.monotonic)) return;
     const duped = self.alloc.dupe(u8, path) catch return;
-    self.rubocop_queue_mu.lock();
-    defer self.rubocop_queue_mu.unlock();
+    self.rubocop_queue_mu.lockUncancelable(std.Options.debug_io);
+    defer self.rubocop_queue_mu.unlock(std.Options.debug_io);
     if (self.rubocop_pending.contains(duped)) {
         self.alloc.free(duped);
         return;
@@ -57,17 +57,17 @@ pub fn enqueueRubocopPath(self: *Server, path: []const u8) void {
         self.alloc.free(duped);
         return;
     };
-    self.rubocop_queue_cond.signal();
+    self.rubocop_queue_cond.signal(std.Options.debug_io);
 }
 
 pub fn enqueueAllOpenDocs(self: *Server) void {
-    var uris = std.ArrayList([]const u8){};
+    var uris = std.ArrayList([]const u8).empty;
     defer uris.deinit(self.alloc);
     {
-        self.open_docs_mu.lock();
-        defer self.open_docs_mu.unlock();
+        self.open_docs_mu.lockUncancelable(std.Options.debug_io);
+        defer self.open_docs_mu.unlock(std.Options.debug_io);
         var uri_it = self.open_docs.keyIterator();
-        while (uri_it.next()) |k| uris.append(self.alloc, k.*) catch {}; // OOM: uri list
+        while (uri_it.next()) |k| uris.append(self.alloc, k.*) catch S.logOomOnce("diagnostics.uris");
     }
     for (uris.items) |uri| {
         const path = uriToPath(self.alloc, uri) catch continue;
@@ -89,13 +89,13 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
 
     if (run_rubocop) {
         var is_gem_file = false;
-        self.db_mutex.lock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
         if (self.db.prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
             defer gs.finalize();
             gs.bind_text(1, path);
             if (gs.step() catch false) is_gem_file = gs.column_int(0) != 0;
         } else |_| {}
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
         if (!is_gem_file) enqueueRubocopPath(self, path);
     }
 
@@ -109,8 +109,8 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
 
     // Semantic checks (unused vars, undefined methods)
     sem_blk: {
-        self.db_mutex.lock();
-        defer self.db_mutex.unlock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.db_mutex.unlock(std.Options.debug_io);
         const fid_stmt = self.db.prepare("SELECT id FROM files WHERE path = ?") catch break :sem_blk;
         defer fid_stmt.finalize();
         fid_stmt.bind_text(1, path);
@@ -137,18 +137,26 @@ pub fn probeRubocopBundle(self: *Server) void {
     const root = self.root_path orelse return;
     const gl = std.fmt.allocPrint(self.alloc, "{s}/Gemfile.lock", .{root}) catch return;
     defer self.alloc.free(gl);
-    std.fs.accessAbsolute(gl, .{}) catch return;
-    var probe = std.process.Child.init(&.{ "bundle", "exec", "rubocop", "--version" }, self.alloc);
-    probe.stdout_behavior = .Ignore;
-    probe.stderr_behavior = .Ignore;
-    probe.cwd = root;
-    probe.spawn() catch return;
-    const term = probe.wait() catch return;
-    if (term == .Exited and term.Exited == 0) self.rubocop_use_bundle.store(true, .monotonic);
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, gl, .{}) catch return;
+    var probe = std.process.spawn(self.io, .{
+        .argv = &.{ "bundle", "exec", "rubocop", "--version" },
+        .cwd = .{ .path = root },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return;
+    const term = probe.wait(std.Options.debug_io) catch return;
+    if (term == .exited and term.exited == 0) self.rubocop_use_bundle.store(true, .monotonic);
 }
 
 pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
     if (self.rubocop_checked.load(.monotonic) and !self.rubocop_available.load(.monotonic)) return &.{};
+    const file_mtime: ?i64 = if (std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{})) |st| st.mtime.toMilliseconds() else |_| null;
+    if (file_mtime) |mt| {
+        self.rubocop_mtime_mu.lockUncancelable(std.Options.debug_io);
+        const cached = self.rubocop_mtime_cache.get(path);
+        self.rubocop_mtime_mu.unlock(std.Options.debug_io);
+        if (cached) |c| if (c == mt) return &.{};
+    }
     probeRubocopBundle(
         self,
     );
@@ -156,11 +164,12 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
         &.{ "bundle", "exec", "rubocop", "--format", "json", "--no-color", "--no-cache", path }
     else
         &.{ "rubocop", "--format", "json", "--no-color", "--no-cache", path };
-    var child = std.process.Child.init(argv, self.alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.cwd = self.root_path orelse std.fs.path.dirname(path) orelse ".";
-    child.spawn() catch |err| {
+    var child = std.process.spawn(self.io, .{
+        .argv = argv,
+        .cwd = .{ .path = self.root_path orelse std.fs.path.dirname(path) orelse "." },
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch |err| {
         if (err == error.FileNotFound and !self.rubocop_checked.load(.monotonic)) {
             self.rubocop_checked.store(true, .monotonic);
             self.rubocop_available.store(false, .monotonic);
@@ -176,26 +185,26 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
     defer {
         tctx.done.store(true, .release);
         if (tkill) |t| t.join();
-        _ = child.wait() catch {}; // cleanup
+        _ = child.wait(std.Options.debug_io) catch {}; // cleanup
     }
 
-    var stdout_buf = std.ArrayList(u8){};
+    var stdout_buf = std.ArrayList(u8).empty;
     defer stdout_buf.deinit(self.alloc);
     var buf: [4096]u8 = undefined;
     const max_rubocop_bytes: usize = LOG_FILE_SIZE_LIMIT;
     while (true) {
         if (stdout_buf.items.len >= max_rubocop_bytes) {
-            child.stdout.?.close();
+            child.stdout.?.close(std.Options.debug_io);
             child.stdout = null;
             break;
         }
-        const n = child.stdout.?.read(&buf) catch break;
+        const n = child.stdout.?.readStreaming(std.Options.debug_io, &.{buf[0..]}) catch break;
         if (n == 0) break;
         stdout_buf.appendSlice(self.alloc, buf[0..n]) catch return &.{};
     }
 
     var stderr_bytes: [1024]u8 = undefined;
-    const stderr_n: usize = if (child.stderr) |se| se.read(&stderr_bytes) catch 0 else 0;
+    const stderr_n: usize = if (child.stderr) |se| se.readStreaming(std.Options.debug_io, &.{stderr_bytes[0..]}) catch 0 else 0;
     child.stderr = null;
 
     if (stdout_buf.items.len == 0) {
@@ -242,7 +251,7 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
         else => return &.{},
     };
 
-    var list = std.ArrayList(indexer.DiagEntry){};
+    var list = std.ArrayList(indexer.DiagEntry).empty;
     errdefer {
         for (list.items) |e| {
             self.alloc.free(e.message);
@@ -307,11 +316,35 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
         });
     }
 
+    if (file_mtime) |mt| updateRubocopMtime(self, path, mt);
     return list.toOwnedSlice(self.alloc);
 }
 
+fn updateRubocopMtime(self: *Server, path: []const u8, mtime_ns: i64) void {
+    self.rubocop_mtime_mu.lockUncancelable(std.Options.debug_io);
+    defer self.rubocop_mtime_mu.unlock(std.Options.debug_io);
+    if (self.rubocop_mtime_cache.getPtr(path)) |v| {
+        v.* = mtime_ns;
+        return;
+    }
+    if (self.rubocop_mtime_cache.count() >= 512) {
+        var oldest: ?[]const u8 = null;
+        var it = self.rubocop_mtime_cache.keyIterator();
+        if (it.next()) |k| oldest = k.*;
+        if (oldest) |k| {
+            if (self.rubocop_mtime_cache.fetchRemove(k)) |kv| {
+                self.alloc.free(kv.key);
+            }
+        }
+    }
+    const dup_key = self.alloc.dupe(u8, path) catch return;
+    self.rubocop_mtime_cache.put(self.alloc, dup_key, mtime_ns) catch {
+        self.alloc.free(dup_key);
+    };
+}
+
 pub fn handlePullDiagnostic(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return null;
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -359,13 +392,13 @@ pub fn handlePullDiagnostic(self: *Server, msg: types.RequestMessage) !?types.Re
 
     {
         var is_gem_file = false;
-        self.db_mutex.lock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
         if (self.db.prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
             defer gs.finalize();
             gs.bind_text(1, path);
             if (gs.step() catch false) is_gem_file = gs.column_int(0) != 0;
         } else |_| {}
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
         if (!is_gem_file) enqueueRubocopPath(self, path);
     }
 

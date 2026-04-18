@@ -52,11 +52,11 @@ pub fn handleDidSave(self: *Server, msg: types.RequestMessage) void {
                 if (norm_owned) |n| {
                     defer self.alloc.free(n);
                     var index_failed = false;
-                    self.db_mutex.lock();
+                    self.db_mutex.lockUncancelable(std.Options.debug_io);
                     indexer.indexSource(n, path, self.db, self.alloc) catch {
                         index_failed = true;
                     };
-                    self.db_mutex.unlock();
+                    self.db_mutex.unlock(std.Options.debug_io);
                     if (index_failed) self.sendLogMessage(2, "refract: index failed on save");
                     diagnostics.publishDiagnostics(self, uri, path, true);
                     return;
@@ -66,11 +66,11 @@ pub fn handleDidSave(self: *Server, msg: types.RequestMessage) void {
     }
     const paths = [_][]const u8{path};
     var reindex_save_failed = false;
-    self.db_mutex.lock();
-    indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic)) catch {
+    self.db_mutex.lockUncancelable(std.Options.debug_io);
+    indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic), null) catch {
         reindex_save_failed = true;
     };
-    self.db_mutex.unlock();
+    self.db_mutex.unlock(std.Options.debug_io);
     if (reindex_save_failed) self.sendLogMessage(2, "refract: reindex failed on save");
     diagnostics.publishDiagnostics(self, uri, path, true);
 }
@@ -143,8 +143,8 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
                 doc_val = stripped;
             }
         }
-        self.open_docs_mu.lock();
-        defer self.open_docs_mu.unlock();
+        self.open_docs_mu.lockUncancelable(std.Options.debug_io);
+        defer self.open_docs_mu.unlock(std.Options.debug_io);
         const stored_version = self.open_docs_version.get(uri) orelse std.math.minInt(i64);
         if (incoming_version <= stored_version) {
             self.alloc.free(doc_key);
@@ -188,10 +188,10 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         }
     }
     // Mark URI dirty with current timestamp; flush happens lazily at query time
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
     {
-        self.last_index_mu.lock();
-        defer self.last_index_mu.unlock();
+        self.last_index_mu.lockUncancelable(std.Options.debug_io);
+        defer self.last_index_mu.unlock(std.Options.debug_io);
         const gop = self.last_index_ms.getOrPut(uri) catch {
             diagnostics.publishDiagnostics(self, uri, real_path, false);
             return;
@@ -256,10 +256,10 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
         if (!is_indexed) continue;
 
         if (change_type == 3) {
-            self.last_index_mu.lock();
+            self.last_index_mu.lockUncancelable(std.Options.debug_io);
             if (self.last_index_ms.fetchRemove(uri)) |kv| self.alloc.free(kv.key);
-            self.last_index_mu.unlock();
-            self.incr_paths_mu.lock();
+            self.last_index_mu.unlock(std.Options.debug_io);
+            self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
             var incr_idx: usize = 0;
             while (incr_idx < self.incr_paths.items.len) {
                 if (std.mem.eql(u8, self.incr_paths.items[incr_idx], path)) {
@@ -269,9 +269,9 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
                     incr_idx += 1;
                 }
             }
-            self.incr_paths_mu.unlock();
+            self.incr_paths_mu.unlock(std.Options.debug_io);
             // Mark path as explicitly deleted so background workers skip it
-            self.deleted_paths_mu.lock();
+            self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
             if (self.alloc.dupe(u8, path)) |dp| {
                 if (self.deleted_paths.count() < MAX_DELETED_PATHS) {
                     self.deleted_paths.put(self.alloc, dp, {}) catch self.alloc.free(dp);
@@ -279,15 +279,15 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
                     self.alloc.free(dp);
                 }
             } else |_| {}
-            self.deleted_paths_mu.unlock();
-            self.db_mutex.lock();
+            self.deleted_paths_mu.unlock(std.Options.debug_io);
+            self.db_mutex.lockUncancelable(std.Options.debug_io);
             self.db.begin() catch {
-                self.db_mutex.unlock();
+                self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
             const del = self.db.prepare("DELETE FROM files WHERE path = ?") catch {
                 self.db.rollback() catch {}; // cleanup — ignore error
-                self.db_mutex.unlock();
+                self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
             del.bind_text(1, path);
@@ -295,7 +295,7 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
                 self.logErr("delete file step", e);
                 del.finalize();
                 self.db.rollback() catch {}; // cleanup — ignore error
-                self.db_mutex.unlock();
+                self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
             del.finalize();
@@ -303,35 +303,35 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
                 self.logErr("delete file commit", e);
                 self.db.rollback() catch {}; // cleanup — ignore error
             };
-            self.db_mutex.unlock();
+            self.db_mutex.unlock(std.Options.debug_io);
         } else {
             // Remove from deleted_paths if the file is being re-created/modified
-            self.deleted_paths_mu.lock();
+            self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
             if (self.deleted_paths.fetchRemove(path)) |old_dp| self.alloc.free(old_dp.key);
-            self.deleted_paths_mu.unlock();
+            self.deleted_paths_mu.unlock(std.Options.debug_io);
             // Try synchronous reindex; if db_mutex is contended, queue for background
             if (self.db_mutex.tryLock()) {
                 const paths_arr = [_][]const u8{path};
-                _ = indexer.reindex(self.db, &paths_arr, false, self.alloc, self.max_file_size.load(.monotonic)) catch |e| {
+                _ = indexer.reindex(self.db, &paths_arr, false, self.alloc, self.max_file_size.load(.monotonic), null) catch |e| {
                     var buf: [128]u8 = undefined;
                     const m = std.fmt.bufPrint(&buf, "refract: reindex failed for watched file: {s}", .{@errorName(e)}) catch "refract: reindex failed for watched file";
                     self.sendLogMessage(2, m);
                 };
-                self.db_mutex.unlock();
+                self.db_mutex.unlock(std.Options.debug_io);
             } else {
                 const duped = self.alloc.dupe(u8, path) catch continue;
-                self.incr_paths_mu.lock();
+                self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
                 if (self.incr_paths.items.len < MAX_INCR_PATHS) {
                     self.incr_paths.append(self.alloc, duped) catch {
                         self.alloc.free(duped);
-                        self.incr_paths_mu.unlock();
+                        self.incr_paths_mu.unlock(std.Options.debug_io);
                         continue;
                     };
                 } else {
                     self.alloc.free(duped);
                     watched_overflow = true;
                 }
-                self.incr_paths_mu.unlock();
+                self.incr_paths_mu.unlock(std.Options.debug_io);
             }
         }
     }
@@ -364,11 +364,11 @@ pub fn handleDidOpen(self: *Server, msg: types.RequestMessage) void {
         if (txt_val == .string) {
             var index_open_err: ?[]const u8 = null;
             var index_open_err_buf: [512]u8 = undefined;
-            self.db_mutex.lock();
+            self.db_mutex.lockUncancelable(std.Options.debug_io);
             indexer.indexSource(txt_val.string, path, self.db, self.alloc) catch |e| {
                 index_open_err = std.fmt.bufPrint(&index_open_err_buf, "refract: index failed for {s}: {s}", .{ path, @errorName(e) }) catch "refract: index failed";
             };
-            self.db_mutex.unlock();
+            self.db_mutex.unlock(std.Options.debug_io);
             if (index_open_err) |msg_str| self.sendLogMessage(2, msg_str);
             const doc_key = self.alloc.dupe(u8, uri) catch return;
             const raw_val = self.alloc.dupe(u8, txt_val.string) catch {
@@ -393,8 +393,8 @@ pub fn handleDidOpen(self: *Server, msg: types.RequestMessage) void {
                     doc_val = stripped;
                 }
             }
-            self.open_docs_mu.lock();
-            defer self.open_docs_mu.unlock();
+            self.open_docs_mu.lockUncancelable(std.Options.debug_io);
+            defer self.open_docs_mu.unlock(std.Options.debug_io);
             if (self.open_docs.fetchRemove(doc_key)) |old| {
                 self.alloc.free(old.key);
                 self.alloc.free(old.value);
@@ -435,11 +435,11 @@ pub fn handleDidOpen(self: *Server, msg: types.RequestMessage) void {
     } else {
         const paths = [_][]const u8{path};
         var reindex_open_failed = false;
-        self.db_mutex.lock();
-        indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic)) catch {
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic), null) catch {
             reindex_open_failed = true;
         };
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
         if (reindex_open_failed) self.sendLogMessage(2, "refract: reindex failed on open");
     }
     diagnostics.publishDiagnostics(self, uri, path, false);
@@ -462,8 +462,8 @@ pub fn handleDidClose(self: *Server, msg: types.RequestMessage) void {
         else => return,
     };
     {
-        self.open_docs_mu.lock();
-        defer self.open_docs_mu.unlock();
+        self.open_docs_mu.lockUncancelable(std.Options.debug_io);
+        defer self.open_docs_mu.unlock(std.Options.debug_io);
         if (self.open_docs.fetchRemove(uri)) |old| {
             self.alloc.free(old.key);
             self.alloc.free(old.value);
@@ -479,9 +479,9 @@ pub fn handleDidClose(self: *Server, msg: types.RequestMessage) void {
             }
         }
     }
-    self.last_index_mu.lock();
+    self.last_index_mu.lockUncancelable(std.Options.debug_io);
     if (self.last_index_ms.fetchRemove(uri)) |kv| self.alloc.free(kv.key);
-    self.last_index_mu.unlock();
+    self.last_index_mu.unlock(std.Options.debug_io);
     {
         const close_path = uriToPath(self.alloc, uri) catch return;
         defer self.alloc.free(close_path);
@@ -489,11 +489,11 @@ pub fn handleDidClose(self: *Server, msg: types.RequestMessage) void {
             const paths = [_][]const u8{close_path};
             var close_err: ?[]const u8 = null;
             var close_err_buf: [512]u8 = undefined;
-            self.db_mutex.lock();
-            indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic)) catch |e| {
+            self.db_mutex.lockUncancelable(std.Options.debug_io);
+            indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic), null) catch |e| {
                 close_err = std.fmt.bufPrint(&close_err_buf, "refract: index failed for {s}: {s}", .{ close_path, @errorName(e) }) catch "refract: index failed";
             };
-            self.db_mutex.unlock();
+            self.db_mutex.unlock(std.Options.debug_io);
             if (close_err) |msg_str| self.sendLogMessage(2, msg_str);
         }
     }
@@ -544,9 +544,9 @@ pub fn handleDidCreateFiles(self: *Server, msg: types.RequestMessage) void {
             std.mem.endsWith(u8, path, "/Gemfile");
         if (!is_indexed) continue;
         const paths = [_][]const u8{path};
-        self.db_mutex.lock();
-        indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic)) catch self.sendLogMessage(2, "refract: reindex failed");
-        self.db_mutex.unlock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        indexer.reindex(self.db, &paths, false, self.alloc, self.max_file_size.load(.monotonic), null) catch self.sendLogMessage(2, "refract: reindex failed");
+        self.db_mutex.unlock(std.Options.debug_io);
     }
 }
 
@@ -574,9 +574,9 @@ pub fn handleDidDeleteFiles(self: *Server, msg: types.RequestMessage) void {
         };
         const path = uriToPath(self.alloc, uri) catch continue;
         defer self.alloc.free(path);
-        self.db_mutex.lock();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
         const sel = self.db.prepare("SELECT id FROM files WHERE path = ?") catch {
-            self.db_mutex.unlock();
+            self.db_mutex.unlock(std.Options.debug_io);
             continue;
         };
         sel.bind_text(1, path);
@@ -601,9 +601,9 @@ pub fn handleDidDeleteFiles(self: *Server, msg: types.RequestMessage) void {
                 st.finalize();
             }
         }
-        self.db_mutex.unlock();
+        self.db_mutex.unlock(std.Options.debug_io);
         // Remove from incr_paths so flushIncrPaths doesn't re-add deleted files
-        self.incr_paths_mu.lock();
+        self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
         var ip_idx: usize = 0;
         while (ip_idx < self.incr_paths.items.len) {
             if (std.mem.eql(u8, self.incr_paths.items[ip_idx], path)) {
@@ -613,9 +613,9 @@ pub fn handleDidDeleteFiles(self: *Server, msg: types.RequestMessage) void {
                 ip_idx += 1;
             }
         }
-        self.incr_paths_mu.unlock();
+        self.incr_paths_mu.unlock(std.Options.debug_io);
         // Mark as explicitly deleted so background scan workers skip it
-        self.deleted_paths_mu.lock();
+        self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
         if (self.alloc.dupe(u8, path)) |dp| {
             if (self.deleted_paths.count() < MAX_DELETED_PATHS) {
                 self.deleted_paths.put(self.alloc, dp, {}) catch self.alloc.free(dp);
@@ -623,7 +623,7 @@ pub fn handleDidDeleteFiles(self: *Server, msg: types.RequestMessage) void {
                 self.alloc.free(dp);
             }
         } else |_| {}
-        self.deleted_paths_mu.unlock();
+        self.deleted_paths_mu.unlock(std.Options.debug_io);
         var aw2 = std.Io.Writer.Allocating.init(self.alloc);
         const w2 = &aw2.writer;
         w2.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":") catch continue;

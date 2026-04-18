@@ -312,7 +312,7 @@ pub const RSPEC_SNIPPETS = [_]Snippet{
 };
 
 pub fn matchSnippets(prefix: []const u8, alloc: std.mem.Allocator) ![]const Snippet {
-    var results = std.ArrayList(Snippet){};
+    var results = std.ArrayList(Snippet).empty;
     const all_lists = [_][]const Snippet{
         &RUBY_SNIPPETS,
         &RAILS_SNIPPETS,

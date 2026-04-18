@@ -1,5 +1,6 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
+const srv = @import("server.zig");
 
 pub const RefactorKind = enum {
     extract_method,
@@ -80,16 +81,16 @@ fn scanLocalsInRange(source: []const u8, start: usize, end: usize, alloc: std.me
             while (i < end and i < source.len and isRubyIdent(source[i])) i += 1;
             const word = source[word_start..i];
             if (word.len > 0 and !isUpperCase(word[0]) and !isKeyword(word)) {
-                locals.put(word, {}) catch {}; // OOM: local set
+                locals.put(word, {}) catch srv.logOomOnce("refactor.locals");
             }
         } else {
             i += 1;
         }
     }
-    var result = std.ArrayList([]const u8){};
+    var result = std.ArrayList([]const u8).empty;
     var it = locals.keyIterator();
     while (it.next()) |k| {
-        result.append(alloc, k.*) catch {}; // OOM: result list
+        result.append(alloc, k.*) catch srv.logOomOnce("refactor.result");
     }
     return result.toOwnedSlice(alloc);
 }
@@ -116,7 +117,7 @@ pub fn extractMethod(
     end_line: u32,
     method_name: []const u8,
 ) !RefactorResult {
-    var edits = std.ArrayList(RefactorEdit){};
+    var edits = std.ArrayList(RefactorEdit).empty;
 
     const sel_start = lineOffset(source, start_line);
     const sel_end = if (end_line + 1 < countLines(source))
@@ -143,29 +144,29 @@ pub fn extractMethod(
     const inner_locals = try scanLocalsInRange(source, sel_start, sel_end, alloc);
     defer alloc.free(inner_locals);
 
-    var params = std.ArrayList([]const u8){};
+    var params = std.ArrayList([]const u8).empty;
     defer params.deinit(alloc);
     for (inner_locals) |local| {
         for (outer_locals) |outer| {
             if (std.mem.eql(u8, local, outer)) {
-                params.append(alloc, local) catch {}; // OOM: param list
+                params.append(alloc, local) catch srv.logOomOnce("refactor.params");
                 break;
             }
         }
     }
 
-    var written_after = std.ArrayList([]const u8){};
+    var written_after = std.ArrayList([]const u8).empty;
     defer written_after.deinit(alloc);
     for (inner_locals) |local| {
         if (sel_end < source.len) {
             const after_end = if (def_end_offset) |de| @min(de, source.len) else source.len;
             if (sel_end <= after_end and std.mem.indexOf(u8, source[sel_end..after_end], local) != null) {
-                written_after.append(alloc, local) catch {}; // OOM: local list
+                written_after.append(alloc, local) catch srv.logOomOnce("refactor.written_after");
             }
         }
     }
 
-    var method_def = std.ArrayList(u8){};
+    var method_def = std.ArrayList(u8).empty;
     defer method_def.deinit(alloc);
     try method_def.appendSlice(alloc, indent);
     try method_def.appendSlice(alloc, "def ");
@@ -179,17 +180,17 @@ pub fn extractMethod(
         try method_def.append(alloc, ')');
     }
     try method_def.append(alloc, '\n');
-    var split_iter = std.mem.splitScalar(u8, std.mem.trimRight(u8, selected, "\n"), '\n');
+    var split_iter = std.mem.splitScalar(u8, std.mem.trimEnd(u8, selected, "\n"), '\n');
     while (split_iter.next()) |line| {
         try method_def.appendSlice(alloc, indent);
         try method_def.appendSlice(alloc, "  ");
-        try method_def.appendSlice(alloc, std.mem.trimLeft(u8, line, " \t"));
+        try method_def.appendSlice(alloc, std.mem.trimStart(u8, line, " \t"));
         try method_def.append(alloc, '\n');
     }
     try method_def.appendSlice(alloc, indent);
     try method_def.appendSlice(alloc, "end\n\n");
 
-    var call = std.ArrayList(u8){};
+    var call = std.ArrayList(u8).empty;
     defer call.deinit(alloc);
     try call.appendSlice(alloc, indent);
     if (written_after.items.len == 1) {
@@ -253,7 +254,7 @@ pub fn extractVariable(
     end_col: u32,
     var_name: []const u8,
 ) !RefactorResult {
-    var edits = std.ArrayList(RefactorEdit){};
+    var edits = std.ArrayList(RefactorEdit).empty;
 
     const sel_start = lineOffset(source, start_line) + start_col;
     const sel_end_line_off = lineOffset(source, end_line);
@@ -267,7 +268,7 @@ pub fn extractVariable(
     const line_text = lineAt(source, start_line);
     const indent = getIndent(line_text);
 
-    var assign = std.ArrayList(u8){};
+    var assign = std.ArrayList(u8).empty;
     defer assign.deinit(alloc);
     try assign.appendSlice(alloc, indent);
     try assign.appendSlice(alloc, var_name);
@@ -306,7 +307,7 @@ pub fn extractConstant(
     end_col: u32,
     const_name: []const u8,
 ) !RefactorResult {
-    var edits = std.ArrayList(RefactorEdit){};
+    var edits = std.ArrayList(RefactorEdit).empty;
 
     const sel_start = lineOffset(source, start_line) + start_col;
     const sel_end_line_off = lineOffset(source, end_line);
@@ -329,7 +330,7 @@ pub fn extractConstant(
     else
         "";
 
-    var assign = std.ArrayList(u8){};
+    var assign = std.ArrayList(u8).empty;
     defer assign.deinit(alloc);
     try assign.appendSlice(alloc, class_indent);
     try assign.appendSlice(alloc, "  ");
@@ -366,7 +367,7 @@ pub fn inlineVariable(
     target_line: u32,
     target_col: u32,
 ) !RefactorResult {
-    var edits = std.ArrayList(RefactorEdit){};
+    var edits = std.ArrayList(RefactorEdit).empty;
 
     const line_text = lineAt(source, target_line);
     const trimmed = std.mem.trim(u8, line_text, " \t");
@@ -421,7 +422,7 @@ pub fn inlineVariable(
         .new_text = try alloc.dupe(u8, ""),
     });
 
-    var replaced = std.ArrayList(u8){};
+    var replaced = std.ArrayList(u8).empty;
     defer replaced.deinit(alloc);
     pos = 0;
     while (pos < scope_text.len) {
@@ -471,7 +472,7 @@ pub fn convertStringStyle(
     col: u32,
     style: StringStyle,
 ) !RefactorResult {
-    var edits = std.ArrayList(RefactorEdit){};
+    var edits = std.ArrayList(RefactorEdit).empty;
 
     const offset = lineOffset(source, line) + col;
     if (offset >= source.len) {
@@ -498,7 +499,7 @@ pub fn convertStringStyle(
     }
 
     const original = source[str_start..str_end];
-    var new_text = std.ArrayList(u8){};
+    var new_text = std.ArrayList(u8).empty;
     defer new_text.deinit(alloc);
 
     switch (style) {
