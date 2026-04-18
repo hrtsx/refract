@@ -778,7 +778,13 @@ pub fn main(init: std.process.Init) !void {
             defer alloc.free(json_resp);
             server.writer_mutex.lockUncancelable(std.Options.debug_io);
             defer server.writer_mutex.unlock(std.Options.debug_io);
-            try transport.writeMessage(writer, json_resp);
+            transport.writeMessage(writer, json_resp) catch |err| {
+                if (err == error.BrokenPipe) {
+                    server.exit_code = 0;
+                    break;
+                }
+                return err;
+            };
         }
         if (server.exit_code != null) break;
     }
