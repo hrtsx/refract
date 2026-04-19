@@ -89,24 +89,29 @@ pub fn rebuildHotIndex(self: *Server) void {
     const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
     const hot_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
 
-    self.hot_mu.lockUncancelable(std.Options.debug_io);
-    defer self.hot_mu.unlock(std.Options.debug_io);
+    var ro_db = db_mod.Db.openReadOnly(self.db_pathz) catch |e| {
+        var ebuf: [256]u8 = undefined;
+        const emsg = std.fmt.bufPrint(&ebuf, "refract: hot index warmup RO db open failed: {s}", .{@errorName(e)}) catch "refract: hot index warmup RO db open failed";
+        self.sendLogMessage(2, emsg);
+        return;
+    };
+    defer ro_db.close();
 
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
-
-    const new_idx = hot_index_mod.buildFromDb(self.alloc, self.db) catch |e| {
+    const new_idx = hot_index_mod.buildFromDb(self.alloc, ro_db) catch |e| {
         var ebuf: [256]u8 = undefined;
         const emsg = std.fmt.bufPrint(&ebuf, "refract: hot index rebuild failed: {s}", .{@errorName(e)}) catch "refract: hot index rebuild failed";
         self.sendLogMessage(2, emsg);
         return;
     };
 
-    if (self.hot) |old| {
+    self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer self.hot_mu.unlock(std.Options.debug_io);
+
+    if (self.hot.load(.acquire)) |old| {
         old.deinit();
         self.alloc.destroy(old);
     }
-    self.hot = new_idx;
+    self.hot.store(new_idx, .release);
 
     if (profiling) {
         const hot_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - hot_start;
@@ -1016,7 +1021,7 @@ pub const Server = struct {
     db_mutex: std.Io.Mutex,
     log_mutex: std.Io.Mutex,
     hot_mu: std.Io.Mutex = std.Io.Mutex.init,
-    hot: ?*hot_index_mod.HotIndex = null,
+    hot: std.atomic.Value(?*hot_index_mod.HotIndex) = std.atomic.Value(?*hot_index_mod.HotIndex).init(null),
     hot_index_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     warmup_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     stdout_writer: ?*std.Io.Writer,
@@ -1138,10 +1143,10 @@ pub const Server = struct {
         while (rmc_it.next()) |k| self.alloc.free(k.*);
         self.rubocop_mtime_cache.deinit(self.alloc);
         self.hot_mu.lockUncancelable(std.Options.debug_io);
-        if (self.hot) |h| {
+        if (self.hot.load(.acquire)) |h| {
             h.deinit();
             self.alloc.destroy(h);
-            self.hot = null;
+            self.hot.store(null, .release);
         }
         self.hot_mu.unlock(std.Options.debug_io);
         self.db.runOptimize();
@@ -1229,7 +1234,7 @@ pub const Server = struct {
 
     pub fn startWarmupIndexer(self: *Server) void {
         if (!self.warmup_enabled.load(.monotonic)) return;
-        if (self.hot != null) return;
+        if (self.hot.load(.acquire) != null) return;
 
         const ctx = std.heap.c_allocator.create(WarmupCtx) catch return;
         ctx.server_ptr = self;

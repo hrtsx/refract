@@ -118,6 +118,36 @@ pub const HotIndex = struct {
 
     pub fn lookupMethodOnClassWithQuery(self: *const HotIndex, class_name: []const u8, method_name: []const u8, query: LookupQuery) ?HotSymbol {
         const candidates = self.lookupMethodsOnClass(class_name);
+
+        // First pass: collect candidates matching name and kind filters
+        var count: usize = 0;
+        var first_match: ?HotSymbol = null;
+        for (candidates) |s| {
+            if (!std.mem.eql(u8, s.name, method_name)) continue;
+            if (s.kind != .def and s.kind != .classdef) continue;
+            if (count == 0) first_match = s;
+            count += 1;
+        }
+
+        // No matches
+        if (count == 0) return null;
+
+        // Single match: return immediately without scoring
+        if (count == 1) return first_match;
+
+        // Multiple matches with no receiver type: return first non-bundled, else first.
+        // This preserves precedence from rowid order, avoiding unnecessary scoring calls.
+        if (query.receiver_type == null) {
+            for (candidates) |s| {
+                if (!std.mem.eql(u8, s.name, method_name)) continue;
+                if (s.kind != .def and s.kind != .classdef) continue;
+                if (!s.is_bundled) return s;
+            }
+            // All are bundled; return the first one
+            return first_match;
+        }
+
+        // Multiple matches with receiver type: use scoring
         var best: ?HotSymbol = null;
         var best_score: u32 = 0;
         for (candidates) |s| {
@@ -670,4 +700,51 @@ test "score ranking breaks ties: matching receiver_type wins" {
     const hit = idx.lookupMethodOnClassWithQuery("String", "upcase", query).?;
     try std.testing.expectEqualStrings("String", hit.parent_name.?);
     try std.testing.expectEqual(true, hit.is_bundled);
+}
+
+test "lookupMethodOnClassWithQuery skips scoring for null receiver_type and single match" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/lib.rb',1)");
+    const fid = db.last_insert_rowid();
+
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col,parent_name) VALUES(?,?,?,?,?,?)");
+    defer ins.finalize();
+
+    // Build 1000 candidates with same name "foo" but different parent_name values
+    for (0..1000) |i| {
+        var parent_buf: [32]u8 = undefined;
+        const parent_str = std.fmt.bufPrint(&parent_buf, "Parent{d}", .{i}) catch "ParentX";
+
+        ins.bind_int(1, fid);
+        ins.bind_text(2, "foo");
+        ins.bind_text(3, "def");
+        ins.bind_int(4, @intCast(i));
+        ins.bind_int(5, 0);
+        ins.bind_text(6, parent_str);
+        _ = try ins.step();
+        ins.reset();
+    }
+
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+
+    // Test 1: null receiver_type returns first non-bundled (precedence without scoring)
+    const hit_null = idx.lookupMethodOnClassWithQuery("Parent500", "foo", LookupQuery{}).?;
+    try std.testing.expectEqualStrings("foo", hit_null.name);
+    try std.testing.expectEqualStrings("Parent500", hit_null.parent_name.?);
+
+    // Test 2: with receiver_type, scoring path finds the matching parent
+    const query_with_type = LookupQuery{ .receiver_type = "Parent500" };
+    const hit_typed = idx.lookupMethodOnClassWithQuery("Parent500", "foo", query_with_type).?;
+    try std.testing.expectEqualStrings("foo", hit_typed.name);
+    try std.testing.expectEqualStrings("Parent500", hit_typed.parent_name.?);
+
+    // Both should return the same result (the single candidate for Parent500)
+    try std.testing.expectEqual(hit_null.line, hit_typed.line);
 }

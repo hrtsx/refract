@@ -11,11 +11,13 @@ class LspClient
     @next_id = 0
     @notifs = []
     @rss_peak_kb = 0
+    @fd_peak = 0
+    @cpu_jiffies_final = 0
     @rss_thread = nil
     @stop_rss = false
   end
 
-  attr_reader :rss_peak_kb
+  attr_reader :rss_peak_kb, :fd_peak, :cpu_jiffies_final
 
   def start
     @stdin, @stdout, @stderr, @wait = Open3.popen3(*@cmd)
@@ -23,6 +25,19 @@ class LspClient
     @stdout.binmode
     @pid = @wait.pid
     start_rss_sampler
+    start_stderr_drain
+  end
+
+  def start_stderr_drain
+    @stderr_thread = Thread.new do
+      begin
+        while (chunk = @stderr.read(4096))
+          $stderr.write("[#{@name}.stderr] #{chunk}")
+          $stderr.flush
+        end
+      rescue StandardError
+      end
+    end
   end
 
   def stop
@@ -179,16 +194,25 @@ class LspClient
     { first_ms: first_ms, settle_ms: settle_ms_val, received_count: received }
   end
 
-  def write_dead?
-    @stdin.nil? || @stdin.closed?
+  # True once the server's stdin has gone away (process died, EPIPE on write,
+  # or pipe closed). Drivers poll this to record (CRASH) cleanly instead of
+  # raising Errno::EPIPE up to the caller.
+  def dead?
+    @dead == true || @stdin.nil? || @stdin.closed?
   end
+  alias_method :write_dead?, :dead?
 
   private
 
   def write(obj)
+    return false if @dead
     body = JSON.dump(obj)
     @stdin.write("Content-Length: #{body.bytesize}\r\n\r\n#{body}")
     @stdin.flush
+    true
+  rescue Errno::EPIPE, Errno::ECONNRESET, IOError
+    @dead = true
+    false
   end
 
   def read_msg(timeout)
@@ -223,14 +247,23 @@ class LspClient
     @rss_thread = Thread.new do
       while !@stop_rss
         begin
-          line = File.read("/proc/#{@pid}/status").lines.find { |l| l.start_with?("VmRSS:") }
-          if line && (m = line.match(/(\d+)\s*kB/))
+          status = File.read("/proc/#{@pid}/status")
+          if (m = status.match(/^VmRSS:\s+(\d+)\s*kB/))
             kb = m[1].to_i
             @rss_peak_kb = kb if kb > @rss_peak_kb
           end
+          fd_count = Dir.children("/proc/#{@pid}/fd").length rescue 0
+          @fd_peak = fd_count if fd_count > @fd_peak
+          stat = File.read("/proc/#{@pid}/stat") rescue nil
+          if stat
+            parts = stat.split(" ")
+            utime = parts[13].to_i
+            stime = parts[14].to_i
+            @cpu_jiffies_final = utime + stime
+          end
         rescue StandardError
         end
-        sleep 0.02
+        sleep 0.05
       end
     end
   end

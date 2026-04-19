@@ -207,7 +207,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
         }
     }
 
-    if (self.hot == null and !self.bg_indexing_done.load(.acquire)) {
+    if (self.hot.load(.acquire) == null and !self.bg_indexing_done.load(.acquire)) {
         var waited_ms: u32 = 0;
         while (waited_ms < 200) : (waited_ms += 10) {
             var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
@@ -356,7 +356,7 @@ fn resolveHoverReceiverType(self: *Server, path: []const u8, recv_name: []const 
 
 fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []const u8, class_name: []const u8, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
     if (self.hot_index_enabled.load(.monotonic)) {
-        if (self.hot) |hot| {
+        if (self.hot.load(.acquire)) |hot| {
             if (hot.lookupMethodOnClass(class_name, method_name)) |hs| {
                 if (hot.pathFor(hs.file_id)) |sym_path| {
                     const kind_str: []const u8 = if (hs.kind == .classdef) "classdef" else "def";
@@ -540,7 +540,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
     var hot_hit = false;
     var hot_best: ?hot_index_mod.HotSymbol = null;
     if (self.hot_index_enabled.load(.monotonic)) {
-        if (self.hot) |hot| {
+        if (self.hot.load(.acquire)) |hot| {
             var best: ?hot_index_mod.HotSymbol = null;
             var best_score: i64 = std.math.minInt(i64);
             for (hot.lookupName(name)) |s| {
@@ -575,8 +575,8 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
     // small amount of detail for an order-of-magnitude latency win on the
     // common case (method hover).
     if (hot_best) |hs| {
-        if ((hs.kind == .def or hs.kind == .classdef) and self.hot != null) {
-            if (self.hot.?.pathFor(hs.file_id)) |sym_path| {
+        if ((hs.kind == .def or hs.kind == .classdef) and self.hot.load(.acquire) != null) {
+            if (self.hot.load(.acquire).?.pathFor(hs.file_id)) |sym_path| {
                 const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
                 var aw = std.Io.Writer.Allocating.init(self.alloc);
                 const w = &aw.writer;

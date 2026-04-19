@@ -24,8 +24,10 @@ done
 
 # Ensure the benchmark fixtures exist in the corpus.
 [[ -f "$CORPUS/bench_fixture.rb" ]] || cp "$DRIVER_DIR/fixtures/bench_fixture.rb" "$CORPUS/" 2>/dev/null
-[[ -f "$CORPUS/accuracy_main.rb" ]] || cp "$DRIVER_DIR/fixtures/accuracy_main.rb" "$CORPUS/" 2>/dev/null
-[[ -f "$CORPUS/accuracy_lib.rb"  ]] || cp "$DRIVER_DIR/fixtures/accuracy_lib.rb"  "$CORPUS/" 2>/dev/null
+cp "$DRIVER_DIR/fixtures/accuracy_main.rb"   "$CORPUS/" 2>/dev/null
+cp "$DRIVER_DIR/fixtures/accuracy_lib.rb"    "$CORPUS/" 2>/dev/null
+cp "$DRIVER_DIR/fixtures/accuracy_helper.rb" "$CORPUS/" 2>/dev/null
+cp "$DRIVER_DIR/fixtures/accuracy_model.rb"  "$CORPUS/" 2>/dev/null
 
 run_perf() {
   local name="$1"; shift

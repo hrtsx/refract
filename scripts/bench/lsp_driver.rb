@@ -26,25 +26,32 @@ results[:initialize_ms] = ((t_init_done - t0) * 1000).round(1)
 
 uri = client.did_open(fixture_abs, text)
 
-# Cold-to-first-def: poll definition on a same-file method call until non-empty.
+# Cold-to-first-answer: poll workspace/symbol for the fixture class until
+# non-empty. Aligns with realistic_run.sh probe and avoids racing the
+# background warm-up against a position-precise definition request.
+warmup_query = ENV.fetch("WARMUP_QUERY", "BenchFixture")
 t_query_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-first_def = nil
+first_answer = nil
 attempts = 0
 loop do
   attempts += 1
-  r = client.definition(uri, 15, 12, timeout: 60)
+  r = client.workspace_symbol(warmup_query, timeout: 60)
   body = r && r["result"]
   if body && !(body.is_a?(Array) && body.empty?)
-    first_def = body
+    first_answer = body
     break
   end
   break if attempts > 30
   sleep 0.5
 end
-t_first_def = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-results[:cold_to_first_def_ms] = ((t_first_def - t_query_start) * 1000).round(1)
+t_first_answer = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+results[:cold_to_first_answer_ms] = ((t_first_answer - t_query_start) * 1000).round(1)
+results[:first_answer_attempts] = attempts
+results[:first_answer_ok] = !first_answer.nil?
+# Backwards-compat keys (read by older aggregators):
+results[:cold_to_first_def_ms] = results[:cold_to_first_answer_ms]
 results[:first_def_attempts] = attempts
-results[:first_def_ok] = !first_def.nil?
+results[:first_def_ok] = !first_answer.nil?
 
 def_times = []
 hover_times = []
