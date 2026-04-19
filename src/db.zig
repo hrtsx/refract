@@ -178,6 +178,17 @@ pub const Db = struct {
         unreachable;
     }
 
+    pub fn openReadOnly(path: [:0]const u8) DbError!Db {
+        var db: ?*c.sqlite3 = null;
+        const rc = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READONLY | c.SQLITE_OPEN_URI, null);
+        if (rc != c.SQLITE_OK) {
+            if (db) |h| _ = c.sqlite3_close(h);
+            return DbError.Open;
+        }
+        _ = c.sqlite3_busy_timeout(db.?, 5000);
+        return Db{ .raw = db.?, .was_self_healed = false };
+    }
+
     pub fn close(self: Db) void {
         _ = c.sqlite3_close(self.raw);
     }

@@ -25,9 +25,11 @@ const frcGet = S.frcGet;
 pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     self.flushIncrPaths();
     self.flushDirtyUris();
-    {
+    if (self.hot.load(.acquire) == null) {
         // Bounded wait so workspace/symbol doesn't query a half-built index
-        // immediately after server start (or after forceReindex).
+        // immediately after server start (or after forceReindex). Skipped
+        // when the hot index is already populated — partial-but-fresh data
+        // beats a 200ms latency floor on every call.
         var waited_ms: u32 = 0;
         while (waited_ms < 200 and !self.bg_indexing_done.load(.acquire)) : (waited_ms += 10) {
             {

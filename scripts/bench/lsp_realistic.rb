@@ -17,6 +17,7 @@
 
 require "json"
 require "digest"
+require "shellwords"
 require_relative "lsp_driver_lib"
 
 ROOT = File.expand_path(ENV.fetch("ROOT"))
@@ -344,6 +345,21 @@ per_method = case WORKLOAD
 
 result[:per_method] = per_method
 result[:peak_rss_mb] = (client.rss_peak_kb / 1024.0).round(1)
+result[:peak_fd] = client.fd_peak
+clk_tck = (`getconf CLK_TCK`.to_i.nonzero? || 100)
+result[:cpu_total_ms] = ((client.cpu_jiffies_final.to_f / clk_tck) * 1000).round(1)
+
+if NAME == "refract"
+  begin
+    db_path = `cd #{ROOT.shellescape} && #{CMD[0].shellescape} --print-db-path 2>/dev/null`.strip
+    if !db_path.empty? && File.exist?(db_path)
+      total = [db_path, "#{db_path}-wal", "#{db_path}-shm"].sum { |f| File.size(f) rescue 0 }
+      result[:index_disk_kb] = (total / 1024.0).round(1)
+      result[:index_path] = db_path
+    end
+  rescue StandardError
+  end
+end
 
 client.stop
 puts JSON.pretty_generate(result)

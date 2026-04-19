@@ -48,7 +48,7 @@ fn lessRanked(_: void, a: RankedSymbol, b: RankedSymbol) bool {
 
 fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]const u8 {
     if (!self.hot_index_enabled.load(.monotonic)) return null;
-    const hot = self.hot orelse return null;
+    const hot = self.hot.load(.acquire) orelse return null;
     for (hot.lookupName(method_name)) |sym| {
         if (sym.kind != .def) continue;
         const ret = sym.return_type orelse continue;
@@ -1109,9 +1109,10 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     var first = true;
     var symbol_count: usize = 0;
 
-    const use_hot = self.hot_index_enabled.load(.monotonic) and self.hot != null and word.len > 0;
+    const hot_opt = self.hot.load(.acquire);
+    const use_hot = self.hot_index_enabled.load(.monotonic) and hot_opt != null and word.len > 0;
     if (use_hot) {
-        const hot = self.hot.?;
+        const hot = hot_opt.?;
         var ranked = std.ArrayList(RankedSymbol).empty;
         defer ranked.deinit(self.alloc);
         for (hot.lookupPrefix(word)) |sym| {

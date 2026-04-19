@@ -11,16 +11,40 @@ require_relative "lsp_driver_lib"
 
 QUERIES = [
   # [label, file, line(0-idx), char(0-idx), expected_file, expected_line(1-based)]
-  # Service.new.call("world") on line 17 (idx 16): `c` of .call at col 16
-  ["same-file method call -> def",      "accuracy_main.rb", 16, 16, "accuracy_main.rb", 5],
-  # `S` of Service.new on line 17 (idx 16) at col 5 (inside "Service")
-  ["same-file class ref -> class def",  "accuracy_main.rb", 16, 5,  "accuracy_main.rb", 4],
-  # AccuracyLib::Helper.greet on line 6 (idx 5): `A` of AccuracyLib at col 6 -> col 7 inside
-  ["cross-file module ref -> module",   "accuracy_main.rb", 5, 7,   "accuracy_lib.rb",  1],
-  # .greet on line 6 (idx 5): `g` at col 25 -> col 26 inside
-  ["cross-file method ref -> def",      "accuracy_main.rb", 5, 26,  "accuracy_lib.rb",  3],
-  # s.to_s.upcase on line 10 (idx 9): `u` of upcase at col 14 -> 15 inside
-  ["stdlib method (String#upcase)",     "accuracy_main.rb", 9, 15,  "(stdlib)",         nil],
+
+  ["same-file method call -> def",         "accuracy_main.rb", 22, 16, "accuracy_main.rb", 7],
+  ["same-file class ref -> class def",     "accuracy_main.rb", 22,  4, "accuracy_main.rb", 6],
+  ["same-file constant ref",               "accuracy_main.rb", 26,  4, "accuracy_main.rb", 20],
+  ["inherited parent class ref",           "accuracy_main.rb", 37, 18, "accuracy_main.rb", 6],
+  ["inherited method via self",            "accuracy_main.rb", 39,  6, "accuracy_main.rb", 7],
+
+  ["cross-file module ref -> module",      "accuracy_main.rb",  7,  6, "accuracy_lib.rb",  1],
+  ["cross-file Helper namespace",          "accuracy_main.rb",  7, 19, "accuracy_lib.rb",  2],
+  ["cross-file method greet -> def",       "accuracy_main.rb",  7, 26, "accuracy_lib.rb",  3],
+  ["cross-file method farewell -> def",    "accuracy_main.rb", 15, 26, "accuracy_lib.rb",  7],
+
+  ["include namespace ref",                "accuracy_main.rb", 30, 12, "accuracy_helper.rb", 1],
+  ["include mixin module ref",             "accuracy_main.rb", 30, 28, "accuracy_helper.rb", 2],
+  ["mixin method call resolved",           "accuracy_main.rb", 33,  6, "accuracy_helper.rb", 3],
+
+  ["cross-file namespace AccuracyModel",   "accuracy_main.rb", 44, 11, "accuracy_model.rb", 1],
+  ["cross-file class Post",                "accuracy_main.rb", 44, 26, "accuracy_model.rb", 2],
+  ["cross-file method author",             "accuracy_main.rb", 45,  9, "accuracy_model.rb", 5],
+  ["attr_accessor-defined reader (title)", "accuracy_main.rb", 46,  9, "accuracy_model.rb", 3],
+  ["cross-file class method find_recent",  "accuracy_main.rb", 47, 24, "accuracy_model.rb", 9],
+
+  ["intra-file via const-path (User.find)", "accuracy_model.rb", 5, 11, "accuracy_model.rb", 15],
+
+  # Literal-receiver stdlib (phase ④ should resolve canonically):
+  ["stdlib literal String#upcase",         "accuracy_main.rb", 51, 12, "(stdlib)", nil],
+  ["stdlib literal Array#first",           "accuracy_main.rb", 52, 14, "(stdlib)", nil],
+  ["stdlib literal Hash#fetch",            "accuracy_main.rb", 53, 11, "(stdlib)", nil],
+  ["stdlib literal Integer#to_s",          "accuracy_main.rb", 54,  7, "(stdlib)", nil],
+  ["stdlib literal Symbol#to_s",           "accuracy_main.rb", 55,  9, "(stdlib)", nil],
+
+  # Chained-receiver stdlib (phase ⑤ deferred — expected to miss for now):
+  ["stdlib chained Object#to_s",           "accuracy_main.rb", 11,  8, "(stdlib)", nil],
+  ["stdlib chained String#upcase",         "accuracy_main.rb", 11, 13, "(stdlib)", nil],
 ]
 
 def basename_of(uri)
@@ -50,11 +74,12 @@ client = LspClient.new(name, cmd, root: root)
 client.start
 client.initialize!
 
-# didOpen all referenced files so each LSP has them in memory
+# didOpen all fixture files so each LSP has them in memory.
+fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb]
 opens = {}
-QUERIES.each do |_, file, *|
-  next if opens[file]
+fixture_files.each do |file|
   abs = File.join(root, file)
+  next unless File.exist?(abs)
   opens[file] = client.did_open(abs, File.read(abs))
 end
 

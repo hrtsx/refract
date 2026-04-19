@@ -676,7 +676,7 @@ fn tryEmitFromHotIndex(
     origin: ?DefOrigin,
 ) !u32 {
     if (!self.hot_index_enabled.load(.monotonic)) return 0;
-    const hot = self.hot orelse return 0;
+    const hot = self.hot.load(.acquire) orelse return 0;
 
     var emitted: u32 = 0;
     var seen: std.AutoHashMap(u64, void) = .init(self.alloc);

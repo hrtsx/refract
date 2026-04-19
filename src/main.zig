@@ -9,6 +9,7 @@ const indexer = @import("indexer/index.zig");
 const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
 const crash = @import("lsp/crash.zig");
+const doctor = @import("cli/doctor.zig");
 
 pub const Panic = crash.Panic;
 
@@ -58,6 +59,7 @@ pub fn main(init: std.process.Init) !void {
     var flag_json: bool = false;
     var flag_last_crash: bool = false;
     var flag_doctor: bool = false;
+    var flag_repair: bool = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -90,7 +92,8 @@ pub fn main(init: std.process.Init) !void {
                     "  --dump-symbols       Dump all indexed symbols as JSON and exit\n" ++
                     "  --workspace-info     Print workspace info and exit\n" ++
                     "  --last-crash         Print most recent crash log and exit\n" ++
-                    "  --doctor             Print diagnostic report (paste-able for issues)\n" ++
+                    "  --doctor             Print diagnostic report (colored checklist)\n" ++
+                    "  --repair             Perform safe repairs (with --doctor)\n" ++
                     "  --mcp                Run as MCP server\n",
             );
             return;
@@ -153,6 +156,8 @@ pub fn main(init: std.process.Init) !void {
             flag_last_crash = true;
         } else if (std.mem.eql(u8, arg, "--doctor")) {
             flag_doctor = true;
+        } else if (std.mem.eql(u8, arg, "--repair")) {
+            flag_repair = true;
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -236,47 +241,13 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (flag_doctor) {
-        var doctor_buf: [4096]u8 = undefined;
-        var fw = std.Io.File.stdout().writerStreaming(io, &doctor_buf);
-        const w = &fw.interface;
-        try w.print("refract --doctor\n", .{});
-        try w.print("================\n", .{});
-        try w.print("version:      {s}\n", .{build_meta.version});
-        try w.print("git:          {s}\n", .{build_meta.git_sha});
-        try w.print("zig:          {s}\n", .{build_meta.zig_version});
-        try w.print("os:           {s}\n", .{@tagName(@import("builtin").os.tag)});
-        try w.print("arch:         {s}\n", .{@tagName(@import("builtin").cpu.arch)});
-        try w.print("db path:      {s}\n", .{db_path});
-        if (std.Io.Dir.cwd().statFile(io, db_path, .{})) |st| {
-            try w.print("db size:      {d} bytes\n", .{st.size});
-        } else |_| {
-            try w.print("db size:      (not present)\n", .{});
-        }
-        var exe_buf: [4096]u8 = undefined;
-        const exe_path_opt: ?[]const u8 = blk: {
-            const n = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
-            if (n > 0 and n < exe_buf.len) break :blk exe_buf[0..@intCast(n)];
-            if (args.len > 0) break :blk args[0];
-            break :blk null;
+        const no_color = std.c.getenv("NO_COLOR") != null;
+        const opts = doctor.DoctorOptions{
+            .json = flag_json,
+            .repair = flag_repair,
+            .no_color = no_color,
         };
-        if (exe_path_opt) |p| {
-            const install_method: []const u8 = blk: {
-                if (std.mem.indexOf(u8, p, "/Cellar/") != null) break :blk "homebrew";
-                if (std.mem.indexOf(u8, p, ".vscode/extensions") != null) break :blk "vscode-extension";
-                if (std.mem.indexOf(u8, p, "/.local/bin/") != null) break :blk "manual (~/.local/bin)";
-                if (std.mem.startsWith(u8, p, "/usr/local/bin/")) break :blk "manual (/usr/local/bin)";
-                break :blk "unknown";
-            };
-            try w.print("install:      {s}\n", .{install_method});
-            try w.print("exe path:     {s}\n", .{p});
-        }
-        if (crash.lastCrashMtime(io, alloc)) |mt_ns| {
-            const seconds: i64 = @intCast(@divFloor(mt_ns, @as(i96, std.time.ns_per_s)));
-            try w.print("last crash:   mtime={d} (run --last-crash to view)\n", .{seconds});
-        } else {
-            try w.print("last crash:   none\n", .{});
-        }
-        try w.flush();
+        try doctor.runDoctor(io, db_path, cwd, opts, alloc);
         return;
     }
 
