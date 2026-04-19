@@ -1,71 +1,163 @@
 on: [push, pull_request]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Zig
-        run: |
-          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
-      - uses: actions/cache@v5
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
         with:
-          path: |
-            ~/.cache/zig
-            .zig-cache
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-
-      - run: zig build
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - run: zig fmt --check src/
-      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log
+
   cross:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Zig
-        run: |
-          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/zig
             .zig-cache
-          key: ${{ runner.os }}-zig-cross-${{ hashFiles('build.zig.zon') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-cross-
+          key: linux-zig-cross-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-cross-
       - run: zig build -Dtarget=aarch64-linux-gnu
       - run: zig build -Dtarget=x86_64-linux-musl
       - run: zig build -Dtarget=aarch64-macos
-  alpine:
+
+  test-linux:
     runs-on: ubuntu-latest
-    container: alpine:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lsp, mcp, edge]
     steps:
-      - run: apk add --no-cache git curl xz
-      - uses: actions/checkout@v6
-      - name: Install Zig
-        run: |
-          curl -sL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
-      - run: zig build
-      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install Zig
-        run: |
-          curl -sL https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz | tar -xJ
-          echo "$PWD/zig-aarch64-macos-0.15.2" >> $GITHUB_PATH
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/zig
             .zig-cache
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-
+          key: linux-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: zig build
-      - run: zig fmt --check src/
-      - run: zig build test 2>&1 | tee /tmp/test.log; grep -q '773/773 tests passed' /tmp/test.log
+      - uses: actions/cache@v5
+        with:
+          path: /tmp/refract_test_stdlib_template.db
+          key: linux-rbs-template-${{ hashFiles('src/indexer/**', 'src/main.zig') }}
+          restore-keys: linux-rbs-template-
+      - name: Warm stdlib RBS template
+        run: |
+          if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
+            ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
+          fi
+      - run: zig build test:${{ matrix.suite }}
+
+  test-alpine:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lsp, mcp, edge]
+    steps:
+      - run: apk add --no-cache git curl xz sqlite tar
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: alpine-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: alpine-zig-
+      - run: zig build
+      - uses: actions/cache@v5
+        with:
+          path: /tmp/refract_test_stdlib_template.db
+          key: alpine-rbs-template-${{ hashFiles('src/indexer/**', 'src/main.zig') }}
+          restore-keys: alpine-rbs-template-
+      - name: Warm stdlib RBS template
+        run: |
+          if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
+            ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
+          fi
+      - run: zig build test:${{ matrix.suite }}
+
+  test-macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lsp, mcp, edge]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-aarch64-macos-0.16.0
+          key: zig-bin-aarch64-macos-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-aarch64-macos-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: macos-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: macos-zig-
+      - run: zig build
+      - uses: actions/cache@v5
+        with:
+          path: /tmp/refract_test_stdlib_template.db
+          key: macos-rbs-template-${{ hashFiles('src/indexer/**', 'src/main.zig') }}
+          restore-keys: macos-rbs-template-
+      - name: Warm stdlib RBS template
+        run: |
+          if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
+            ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
+          fi
+      - run: zig build test:${{ matrix.suite }}
