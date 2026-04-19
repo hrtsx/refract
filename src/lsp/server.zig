@@ -107,6 +107,15 @@ pub fn rebuildHotIndex(self: *Server) void {
     self.hot_mu.lockUncancelable(std.Options.debug_io);
     defer self.hot_mu.unlock(std.Options.debug_io);
 
+    // Guard against shutdown racing past us: if the server is winding down,
+    // its deinit has already torn down the hot slot. Storing here would leak
+    // because deinit's mutex section already ran. Free locally and bail.
+    if (self.bg_cancelled.load(.acquire)) {
+        new_idx.deinit();
+        self.alloc.destroy(new_idx);
+        return;
+    }
+
     if (self.hot.load(.acquire)) |old| {
         old.deinit();
         self.alloc.destroy(old);
@@ -705,6 +714,15 @@ const BgCtx = struct {
             indexBundledRbsLsp(self);
         }
 
+        // Rebuild the hot index now that the workspace + bundled RBS are
+        // indexed. System stdlib RBS + gem indexing below add more, but
+        // blocking query handlers on those is wasteful — what most queries
+        // need (workspace symbols + Time/String/Integer/etc.) is already in
+        // place. Incremental rebuilds catch the rest later.
+        if (!self.server_ptr.bg_cancelled.load(.acquire)) {
+            rebuildHotIndex(self.server_ptr);
+        }
+
         // Expensive: system RBS discovery + reindex — only once per DB.
         if (!self.server_ptr.bg_cancelled.load(.acquire)) {
             self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
@@ -1009,6 +1027,8 @@ pub const Server = struct {
     db: db_mod.Db,
     db_pathz: [:0]u8,
     bg_thread: ?std.Thread,
+    warmup_thread: ?std.Thread = null,
+    warmup_thread_mu: std.Io.Mutex = std.Io.Mutex.init,
     alloc: std.mem.Allocator,
     io: std.Io,
     initialized: bool,
@@ -1131,6 +1151,10 @@ pub const Server = struct {
     pub fn deinit(self: *Server) void {
         self.bg_cancelled.store(true, .seq_cst);
         if (self.bg_thread) |t| t.join();
+        if (self.warmup_thread) |t| {
+            t.join();
+            self.warmup_thread = null;
+        }
         self.rubocop_thread_done.store(true, .seq_cst);
         self.rubocop_queue_cond.signal(std.Options.debug_io);
         if (self.rubocop_thread) |t| t.join();
@@ -1236,10 +1260,17 @@ pub const Server = struct {
         if (!self.warmup_enabled.load(.monotonic)) return;
         if (self.hot.load(.acquire) != null) return;
 
+        // Don't spawn a second warmup if one is already running. Joining it
+        // before respawn would block the LSP read loop.
+        self.warmup_thread_mu.lockUncancelable(std.Options.debug_io);
+        defer self.warmup_thread_mu.unlock(std.Options.debug_io);
+        if (self.warmup_thread != null) return;
+
         const ctx = std.heap.c_allocator.create(WarmupCtx) catch return;
         ctx.server_ptr = self;
-        _ = std.Thread.spawn(.{}, WarmupCtx.run, .{ctx}) catch {
+        self.warmup_thread = std.Thread.spawn(.{}, WarmupCtx.run, .{ctx}) catch blk: {
             std.heap.c_allocator.destroy(ctx);
+            break :blk null;
         };
     }
 
@@ -1381,6 +1412,8 @@ pub const Server = struct {
             }
             self.requestWorkspaceConfiguration();
             return null;
+        } else if (std.mem.eql(u8, msg.method, "$/refract/__waitForIdle")) {
+            return try document_sync.handleWaitForIdle(self, msg);
         } else if (std.mem.eql(u8, msg.method, "$/cancelRequest")) {
             if (msg.params) |p| {
                 const obj = switch (p) {

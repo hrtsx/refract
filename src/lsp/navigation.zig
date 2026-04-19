@@ -6,6 +6,7 @@ const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
 const editing = @import("editing.zig");
 const hot_index_mod = @import("hot_index.zig");
+const literal_receiver = @import("literal_receiver.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -98,7 +99,28 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
         frc_def.deinit(self.alloc);
     }
 
-    try queryAndEmitDefinitions(self, w, word, &found_any, &frc_def, def_origin);
+    // Receiver-aware definition: when the cursor is on a method called on a
+    // literal receiver (`[1,2,3].first`, `"x".upcase`, `42.to_s`, …) or a
+    // capitalized constant receiver, prefer the canonical class-scoped match
+    // before falling through to unscoped name lookup.
+    if (word_start_offset > 0 and source[word_start_offset - 1] == '.') {
+        var recv_type: ?[]const u8 = null;
+        if (literal_receiver.extractLiteralReceiver(source, word_start_offset - 1)) |lit| {
+            recv_type = literal_receiver.classifyLiteralType(lit);
+        }
+        if (recv_type == null) {
+            const recv_off = if (word_start_offset >= 2) word_start_offset - 2 else 0;
+            const recv_w = extractWord(source, recv_off);
+            if (recv_w.len > 0 and std.ascii.isUpper(recv_w[0])) recv_type = recv_w;
+        }
+        if (recv_type) |rt| {
+            try emitDefinitionOnClass(self, w, word, rt, &found_any, &frc_def, def_origin);
+        }
+    }
+
+    if (!found_any) {
+        try queryAndEmitDefinitions(self, w, word, &found_any, &frc_def, def_origin);
+    }
 
     if (!found_any) {
         const qualified = extractQualifiedName(source, offset);
@@ -663,6 +685,34 @@ fn emitOneDef(
     }
 }
 
+/// Receiver-typed definition emit. Looks up `method_name` scoped to
+/// `class_name` via `hot.lookupMethodOnClass` and emits a single canonical
+/// location. Falls through silently when the hot index is unavailable or the
+/// method isn't recorded for that class — caller continues with the unscoped
+/// path. This is what makes `[1,2,3].first` land on `array.rbs` instead of
+/// the first `first` symbol by row id.
+fn emitDefinitionOnClass(
+    self: *Server,
+    w: *std.Io.Writer,
+    method_name: []const u8,
+    class_name: []const u8,
+    found_any: *bool,
+    frc: *std.StringHashMapUnmanaged([]const u8),
+    origin: ?DefOrigin,
+) !void {
+    if (!self.hot_index_enabled.load(.monotonic)) return;
+    self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer self.hot_mu.unlock(std.Options.debug_io);
+    const hot = self.hot.load(.acquire) orelse return;
+    const base = if (class_name.len > 2 and class_name[0] == '[' and class_name[class_name.len - 1] == ']')
+        class_name[1 .. class_name.len - 1]
+    else
+        class_name;
+    const hs = hot.lookupMethodOnClass(base, method_name) orelse return;
+    const sym_path = hot.pathFor(hs.file_id) orelse return;
+    try emitOneDef(self, w, hs.name, @intCast(hs.line), @intCast(hs.col), sym_path, found_any, frc, origin);
+}
+
 /// Try to satisfy a definition lookup from the in-memory hot index. Returns
 /// the number of results emitted. Caller falls back to SQL if zero.
 /// Replicates the semantics of the SQL `s.name = ?` and qualified-suffix
@@ -676,6 +726,8 @@ fn tryEmitFromHotIndex(
     origin: ?DefOrigin,
 ) !u32 {
     if (!self.hot_index_enabled.load(.monotonic)) return 0;
+    self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer self.hot_mu.unlock(std.Options.debug_io);
     const hot = self.hot.load(.acquire) orelse return 0;
 
     var emitted: u32 = 0;
