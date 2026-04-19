@@ -53,6 +53,10 @@ pub const HotSymbol = struct {
     doc: ?[]const u8,
 };
 
+pub const LookupQuery = struct {
+    receiver_type: ?[]const u8 = null,
+};
+
 pub const HotIndex = struct {
     arena: std.heap.ArenaAllocator,
     /// Keyed by symbol's stored name. Equivalent to `WHERE s.name = ?`.
@@ -106,19 +110,25 @@ pub const HotIndex = struct {
     }
 
     /// Returns the best-ranked HotSymbol for a method on a class, or null if
-    /// no such method is recorded. Mirrors the SQL ORDER BY in
-    /// `hoverLookupOnClass` (parent match first, then doc presence).
+    /// no such method is recorded. Ranks by receiver type match, bundled
+    /// stdlib for known types, and doc presence.
     pub fn lookupMethodOnClass(self: *const HotIndex, class_name: []const u8, method_name: []const u8) ?HotSymbol {
+        return self.lookupMethodOnClassWithQuery(class_name, method_name, LookupQuery{});
+    }
+
+    pub fn lookupMethodOnClassWithQuery(self: *const HotIndex, class_name: []const u8, method_name: []const u8, query: LookupQuery) ?HotSymbol {
         const candidates = self.lookupMethodsOnClass(class_name);
         var best: ?HotSymbol = null;
-        var best_has_doc = false;
+        var best_score: u32 = 0;
         for (candidates) |s| {
             if (!std.mem.eql(u8, s.name, method_name)) continue;
             if (s.kind != .def and s.kind != .classdef) continue;
-            const has_doc = s.doc != null;
-            if (best == null or (has_doc and !best_has_doc)) {
+            const s_score = score(s, query);
+            if (best == null or s_score > best_score or
+                (s_score == best_score and scoreOrder(query, s, best.?)))
+            {
                 best = s;
-                best_has_doc = has_doc;
+                best_score = s_score;
             }
         }
         return best;
@@ -162,6 +172,45 @@ pub const HotIndex = struct {
 };
 
 const BUNDLED_PREFIX = "<bundled>/";
+
+const BUILTIN_TYPES = [_][]const u8{
+    "String", "Array", "Hash", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
+};
+
+fn isBuiltinType(name: ?[]const u8) bool {
+    if (name == null) return false;
+    for (BUILTIN_TYPES) |builtin| {
+        if (std.mem.eql(u8, name.?, builtin)) return true;
+    }
+    return false;
+}
+
+fn score(candidate: HotSymbol, query: LookupQuery) u32 {
+    var s: u32 = 0;
+    if (query.receiver_type != null and candidate.parent_name != null and
+        std.mem.eql(u8, candidate.parent_name.?, query.receiver_type.?))
+    {
+        s += 200;
+    }
+    if (candidate.is_bundled and isBuiltinType(query.receiver_type)) {
+        s += 100;
+    }
+    if (candidate.doc != null and candidate.doc.?.len > 0) {
+        s += 50;
+    }
+    return s;
+}
+
+fn scoreOrder(context: LookupQuery, a: HotSymbol, b: HotSymbol) bool {
+    const score_a = score(a, context);
+    const score_b = score(b, context);
+    if (score_a != score_b) return score_a > score_b;
+    const cmp_parent = std.mem.order(u8, a.parent_name orelse "", b.parent_name orelse "");
+    if (cmp_parent != .eq) return cmp_parent == .lt;
+    const cmp_name = std.mem.order(u8, a.name, b.name);
+    if (cmp_name != .eq) return cmp_name == .lt;
+    return a.line < b.line;
+}
 
 /// Build a fresh HotIndex by streaming the symbols + files tables once.
 /// Caller owns the returned pointer; deinit() releases everything.
@@ -582,4 +631,43 @@ test "build with one symbol" {
     const tail = idx.lookupTail("add");
     try std.testing.expectEqual(@as(usize, 1), tail.len);
     try std.testing.expectEqualStrings("foo.rb", idx.pathFor(@intCast(fid)).?);
+}
+
+test "score ranking breaks ties: matching receiver_type wins" {
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('/repo/user.rb',1)");
+    const user_fid = db.last_insert_rowid();
+    try db.exec("INSERT INTO files(path,mtime) VALUES('<bundled>/string.rbs',1)");
+    const bundled_fid = db.last_insert_rowid();
+
+    const ins = try db.prepare("INSERT INTO symbols(file_id,name,kind,line,col,parent_name) VALUES(?,?,?,?,?,?)");
+    defer ins.finalize();
+    ins.bind_int(1, user_fid);
+    ins.bind_text(2, "upcase");
+    ins.bind_text(3, "def");
+    ins.bind_int(4, 5);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "MyString");
+    _ = try ins.step();
+    ins.reset();
+    ins.bind_int(1, bundled_fid);
+    ins.bind_text(2, "upcase");
+    ins.bind_text(3, "def");
+    ins.bind_int(4, 100);
+    ins.bind_int(5, 0);
+    ins.bind_text(6, "String");
+    _ = try ins.step();
+
+    const idx = try buildFromDb(std.testing.allocator, db);
+    defer {
+        idx.deinit();
+        std.testing.allocator.destroy(idx);
+    }
+
+    const query = LookupQuery{ .receiver_type = "String" };
+    const hit = idx.lookupMethodOnClassWithQuery("String", "upcase", query).?;
+    try std.testing.expectEqualStrings("String", hit.parent_name.?);
+    try std.testing.expectEqual(true, hit.is_bundled);
 }

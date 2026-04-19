@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
     var server_log_level: u8 = 2;
     var server_disable_rubocop: bool = false;
     var server_disable_hot_index: bool = false;
+    var server_disable_warmup: bool = false;
     var custom_db_path: ?[]const u8 = null;
     var flag_reset_db: bool = false;
     var flag_print_db_path: bool = false;
@@ -77,6 +78,7 @@ pub fn main(init: std.process.Init) !void {
                     "  --log-level 1|2|3|4  Set log verbosity (1=error … 4=debug)\n" ++
                     "  --disable-rubocop    Disable RuboCop diagnostics\n" ++
                     "  --no-hot-index       Disable in-memory hot symbol index (A/B for benchmarks)\n" ++
+                    "  --no-warmup          Disable hot index warmup on initialize (A/B for benchmarks)\n" ++
                     "  --db-path PATH       Override database file path\n" ++
                     "  --print-db-path      Print computed database path and exit\n" ++
                     "  --reset-db           Delete the database and exit\n" ++
@@ -113,6 +115,8 @@ pub fn main(init: std.process.Init) !void {
             server_disable_rubocop = true;
         } else if (std.mem.eql(u8, arg, "--no-hot-index")) {
             server_disable_hot_index = true;
+        } else if (std.mem.eql(u8, arg, "--no-warmup")) {
+            server_disable_warmup = true;
         } else if (std.mem.eql(u8, arg, "--db-path")) {
             if (i + 1 >= args.len) {
                 try std.Io.File.stderr().writeStreamingAll(io, "refract: --db-path requires a value\n");
@@ -700,6 +704,7 @@ pub fn main(init: std.process.Init) !void {
     defer if (g_tmp_dir) |d| alloc.free(d);
     server.disable_rubocop.store(server_disable_rubocop, .monotonic);
     server.hot_index_enabled.store(!server_disable_hot_index, .monotonic);
+    server.warmup_enabled.store(!server_disable_warmup, .monotonic);
     if (flag_max_workers) |mw| {
         server.max_workers = @intCast(@max(1, @min(mw, 16)));
     }
