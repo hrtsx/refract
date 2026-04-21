@@ -68,6 +68,17 @@ pub const Session = struct {
         try self.input.append(self.alloc, '\n');
     }
 
+    /// Deterministic sync against the bg indexer. Send after any
+    /// `didChangeWatchedFiles` (or any other notification that enqueues work)
+    /// when the next request must observe that work as committed. The id is
+    /// only used to correlate the response — pass anything that won't collide
+    /// with the test's real-query ids (100 is a safe convention).
+    pub fn waitIdle(self: *Session, id: i64) !void {
+        var buf: [128]u8 = undefined;
+        const json = try std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"$/refract/__waitForIdle\"}}", .{id});
+        try self.send(json);
+    }
+
     pub fn run(self: *Session) ![]u8 {
         return self.runWithArgs(&.{});
     }

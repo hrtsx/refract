@@ -1192,7 +1192,13 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
             try w.writeByte('}');
             try w.writeByte('}');
         }
-    } else {
+    }
+    // Fall through to SQL when hot was unavailable, or when use_hot returned
+    // zero items — the in-memory hot index can be empty during cold start
+    // (warmup builds it from an empty DB before the bg scan completes), and
+    // we'd otherwise return an empty completion list while the DB already
+    // has the just-indexed-via-didOpen rows.
+    if (!use_hot or symbol_count == 0) {
         const stmt = try self.cachedStmt(
             \\SELECT s.name, s.kind,
             \\  (SELECT GROUP_CONCAT(

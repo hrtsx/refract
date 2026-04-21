@@ -704,3 +704,34 @@ pub fn handleDidRenameFiles(self: *Server, msg: types.RequestMessage) void {
         self.sendNotification(json3);
     }
 }
+
+/// Internal LSP request `$/refract/__waitForIdle`. Test-only deterministic sync
+/// for `didChangeWatchedFiles → query` sequences. Production clients can also
+/// call it before issuing a query that strictly requires a recently-watched
+/// change to be visible.
+///
+/// 1. Wait until the bg initial workspace scan signals done (cap 10 s).
+/// 2. Acquire `db_mutex` and synchronously drain `incr_paths` via
+///    `indexer.reindex` (mirrors the bg loop body).
+/// 3. Rebuild the hot index so the next hot-path lookup sees the new symbols.
+/// 4. Reply with `result: null`.
+pub fn handleWaitForIdle(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    // Only wait when bg indexer is actually running. If `initialized` was never
+    // sent (some tests skip it), or bg has been cancelled, skip the wait — no
+    // signal to wait for and the deadline would block needlessly.
+    if (self.bg_started_event.load(.acquire) and !self.bg_cancelled.load(.acquire)) {
+        const deadline_ms: u32 = 10_000;
+        var waited: u32 = 0;
+        while (waited < deadline_ms) : (waited += 5) {
+            if (self.bg_indexing_done.load(.acquire)) break;
+            if (self.bg_cancelled.load(.acquire)) break;
+            var ts: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
+            _ = std.c.nanosleep(&ts, null);
+        }
+    }
+
+    self.flushIncrPaths();
+
+    const raw = try self.alloc.dupe(u8, "null");
+    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw, .@"error" = null };
+}
