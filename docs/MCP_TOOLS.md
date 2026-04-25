@@ -9,7 +9,7 @@ Refract exposes a Model Context Protocol (MCP) server with 35 tools (including 2
   "mcpServers": {
     "refract": {
       "command": "refract",
-      "args": ["--mcp"]
+      "args": ["--mcp", "--db-path", "/path/to/workspace/.refract.db"]
     }
   }
 }
@@ -194,7 +194,7 @@ Get ActiveRecord associations (has_many, belongs_to, etc) for a class.
 
 **Input:** `class_name` (string, required), `offset` (integer, default 0)
 
-**Output:** `{ associations: [{kind, name, class_name, through, options}] }` — `through` is present only for `has_many :x, through: :y` associations.
+**Output:** `{ associations: [{kind, name, class_name, options}] }`
 
 ---
 

@@ -71,7 +71,7 @@
 
 ### MCP Server (35 tools)
 
-35 tools across 9 categories: code intelligence, symbol search, call graph, source access, Rails (associations with `through:`, routes, i18n, validations, callbacks, concerns), diagnostics, workspace, code actions, and testing. See [`docs/MCP_TOOLS.md`](docs/MCP_TOOLS.md) for the full reference.
+Code intelligence (`resolve_type`, `class_summary`, `method_signature`, `explain_symbol`, `explain_type_chain`, `suggest_types`, `type_coverage`), symbol search (`workspace_symbols`, `list_by_kind`, `get_file_overview`, `find_unused`, `find_similar`), call graph (`find_callers`, `find_implementations`, `find_references`, `type_hierarchy`), source access (`get_symbol_source`, `grep_source`), Rails (`association_graph`, `route_map`, `i18n_lookup`, `list_validations`, `list_callbacks`, `concern_usage`), diagnostics (`diagnostics`, `diagnostic_summary`), workspace (`workspace_health`, `batch_resolve`), code actions (`refactor`, `available_code_actions`), testing (`test_summary`).
 
 ### RuboCop Integration
 
