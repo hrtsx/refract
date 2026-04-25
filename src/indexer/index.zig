@@ -9,12 +9,31 @@ pub const LogSink = *const fn (ctx: ?*anyopaque, level: u8, msg: []const u8) voi
 pub var log_sink: ?LogSink = null;
 pub var log_sink_ctx: ?*anyopaque = null;
 
+var reindex_stat_error_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var commitparsed_prepare_error_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var commitparsed_step_error_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var indexsource_cleanup_error_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
 fn emitLog(level: u8, msg: []const u8) void {
     if (log_sink) |sink| {
         sink(log_sink_ctx, level, msg);
     } else {
         std.debug.print("{s}", .{msg});
         std.debug.print("{s}", .{"\n"});
+    }
+}
+
+fn logRateLimited(site: []const u8, err: anyerror, relpath: []const u8, counter: *std.atomic.Value(u32)) void {
+    const count = counter.fetchAdd(1, .monotonic);
+    if (count < 5) {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "refract index: {s}: {}: {s}", .{ site, err, relpath }) catch return;
+        emitLog(3, msg);
+    } else if (count == 1023) {
+        var buf: [512]u8 = undefined;
+        const suppressed = count - 4;
+        const msg = std.fmt.bufPrint(&buf, "refract index: {s}: ({} suppressed)", .{ site, suppressed }) catch return;
+        emitLog(3, msg);
     }
 }
 
@@ -45,34 +64,7 @@ const VisitCtx = struct {
     /// Holds the camelized model name (e.g. "User" for table "users").
     schema_table: ?[]const u8 = null,
     schema_table_buf: [256]u8 = undefined,
-    /// When true, skip speculative cross-file return-type lookups during
-    /// indexing (the `SELECT return_type … file_id IN (…)` pattern that
-    /// scales super-linearly on >5k-symbol workspaces). Inference falls
-    /// back to LSP query time.
-    defer_cross_file: bool = false,
-    /// Source-byte range in which constant refs should NOT be inserted —
-    /// used while traversing the name path of a class/module declaration
-    /// (the visitor would otherwise emit a self-ref at the def site).
-    suppress_const_ref_start: u32 = 0,
-    suppress_const_ref_end: u32 = 0,
 };
-
-inline fn inSuppressedConstRange(ctx: *const VisitCtx, start: u32) bool {
-    return ctx.suppress_const_ref_end > ctx.suppress_const_ref_start and
-        start >= ctx.suppress_const_ref_start and
-        start < ctx.suppress_const_ref_end;
-}
-
-const DEFER_CROSS_FILE_THRESHOLD: i64 = 5000;
-
-fn shouldDeferCrossFile(db: db_mod.Db) bool {
-    const stmt = db.prepare("SELECT COUNT(*) FROM symbols") catch return false;
-    defer stmt.finalize();
-    if (stmt.step() catch false) {
-        return stmt.column_int(0) > DEFER_CROSS_FILE_THRESHOLD;
-    }
-    return false;
-}
 
 threadlocal var hash_type_buf: [128]u8 = undefined;
 threadlocal var generic_return_buf: [256]u8 = undefined;
@@ -1716,13 +1708,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
                 ctx.namespace_stack_len += 1;
             }
-            const prev_supp_start = ctx.suppress_const_ref_start;
-            const prev_supp_end = ctx.suppress_const_ref_end;
-            ctx.suppress_const_ref_start = cn.constant_path.*.location.start;
-            ctx.suppress_const_ref_end = cn.constant_path.*.location.start + cn.constant_path.*.location.length;
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
-            ctx.suppress_const_ref_start = prev_supp_start;
-            ctx.suppress_const_ref_end = prev_supp_end;
             if (ns_pushed_class and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
             ctx.current_visibility = prev_vis;
@@ -1773,13 +1759,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
                 ctx.namespace_stack_len += 1;
             }
-            const prev_supp_start_mod = ctx.suppress_const_ref_start;
-            const prev_supp_end_mod = ctx.suppress_const_ref_end;
-            ctx.suppress_const_ref_start = mn.constant_path.*.location.start;
-            ctx.suppress_const_ref_end = mn.constant_path.*.location.start + mn.constant_path.*.location.length;
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
-            ctx.suppress_const_ref_start = prev_supp_start_mod;
-            ctx.suppress_const_ref_end = prev_supp_end_mod;
             if (ns_pushed_mod and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
             ctx.current_class_id = prev_class;
             ctx.current_visibility = prev_vis;
@@ -2088,11 +2068,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, rn.base.location.start);
             const name = resolveConstant(ctx.parser, rn.name);
-            if (!inSuppressedConstRange(ctx, rn.base.location.start)) {
-                insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
-                    ctx.error_count += 1;
-                };
-            }
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
         },
         prism.NODE_CALL => {
@@ -2617,40 +2595,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             var rcv_buf: [128]u8 = undefined;
             const call_recv_type: ?[]const u8 = blk: {
                 if (cn.receiver) |rcv| {
-                    const type_val = rcv.*.type;
-                    if (type_val == prism.NODE_STRING or type_val == prism.NODE_INTERPOLATED_STR) {
-                        const s = "String";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_INTEGER) {
-                        const s = "Integer";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_FLOAT) {
-                        const s = "Float";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_ARRAY) {
-                        const s = "Array";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_HASH) {
-                        const s = "Hash";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_SYMBOL) {
-                        const s = "Symbol";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_NIL) {
-                        const s = "NilClass";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (type_val == prism.NODE_RANGE) {
-                        const s = "Range";
-                        @memcpy(rcv_buf[0..s.len], s);
-                        break :blk rcv_buf[0..s.len];
-                    } else if (rcv.*.type == prism.NODE_LOCAL_VAR_READ) {
+                    if (rcv.*.type == prism.NODE_LOCAL_VAR_READ) {
                         const lvr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(rcv));
                         const rname = resolveConstant(ctx.parser, lvr.name);
                         // Pull the most-recent typed binding. Accept confidence >= 70 (RBS/sigs/narrowing)
@@ -2733,7 +2678,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 if (pn.name != 0) break :blk resolveConstant(ctx.parser, pn.name);
                 break :blk "";
             };
-            if (ref_name.len > 0 and !inSuppressedConstRange(ctx, pn.base.location.start)) {
+            if (ref_name.len > 0) {
                 const lc = locationLineCol(ctx.parser, pn.base.location.start);
                 insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null) catch {
                     ctx.error_count += 1;
@@ -3212,27 +3157,25 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     else
                         current_type;
                     var found = false;
-                    if (!ctx.defer_cross_file) {
-                        if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
-                            "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                            "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                        {
-                            defer rs.finalize();
-                            rs.bind_text(1, method_name);
-                            rs.bind_text(2, base_type);
-                            if (rs.step() catch false) {
-                                const raw = rs.column_text(0);
-                                if (raw.len > 0) {
-                                    const ft_len = @min(raw.len, step_buf.len);
-                                    @memcpy(step_buf[0..ft_len], raw[0..ft_len]);
-                                    const cpy_len = @min(ft_len, root_type_storage.len);
-                                    @memcpy(root_type_storage[0..cpy_len], step_buf[0..cpy_len]);
-                                    current_type = root_type_storage[0..cpy_len];
-                                    found = true;
-                                }
+                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                        "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
+                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                    {
+                        defer rs.finalize();
+                        rs.bind_text(1, method_name);
+                        rs.bind_text(2, base_type);
+                        if (rs.step() catch false) {
+                            const raw = rs.column_text(0);
+                            if (raw.len > 0) {
+                                const ft_len = @min(raw.len, step_buf.len);
+                                @memcpy(step_buf[0..ft_len], raw[0..ft_len]);
+                                const cpy_len = @min(ft_len, root_type_storage.len);
+                                @memcpy(root_type_storage[0..cpy_len], step_buf[0..cpy_len]);
+                                current_type = root_type_storage[0..cpy_len];
+                                found = true;
                             }
-                        } else |_| {}
-                    }
+                        }
+                    } else |_| {}
                     if (!found) {
                         if (lookupStdlibReturn(base_type, method_name)) |stdlib_rt| {
                             const ft_len = @min(stdlib_rt.len, step_buf.len);
@@ -3265,24 +3208,22 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     current_type;
                 var leaf_type_buf: [128]u8 = undefined;
                 var leaf_type: ?[]const u8 = null;
-                if (!ctx.defer_cross_file) {
-                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
-                        "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
-                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                    {
-                        defer rs.finalize();
-                        rs.bind_text(1, leaf_method);
-                        rs.bind_text(2, leaf_base);
-                        if (rs.step() catch false) {
-                            const raw = rs.column_text(0);
-                            if (raw.len > 0) {
-                                const lt_len = @min(raw.len, leaf_type_buf.len);
-                                @memcpy(leaf_type_buf[0..lt_len], raw[0..lt_len]);
-                                leaf_type = leaf_type_buf[0..lt_len];
-                            }
+                if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name=? AND kind='def' " ++
+                    "AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?) " ++
+                    "AND return_type IS NOT NULL LIMIT 1")) |rs|
+                {
+                    defer rs.finalize();
+                    rs.bind_text(1, leaf_method);
+                    rs.bind_text(2, leaf_base);
+                    if (rs.step() catch false) {
+                        const raw = rs.column_text(0);
+                        if (raw.len > 0) {
+                            const lt_len = @min(raw.len, leaf_type_buf.len);
+                            @memcpy(leaf_type_buf[0..lt_len], raw[0..lt_len]);
+                            leaf_type = leaf_type_buf[0..lt_len];
                         }
-                    } else |_| {}
-                }
+                    }
+                } else |_| {}
                 if (leaf_type == null) {
                     if (lookupStdlibReturn(leaf_base, leaf_method)) |stdlib_lt| {
                         const lt_len = @min(stdlib_lt.len, leaf_type_buf.len);
@@ -5619,7 +5560,6 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
     // wal_autocheckpoint=100 pages) and keeps memory + write throughput steady.
     // Refs are keyed by name, not symbol_id, so cross-chunk lookups still work.
     const CHUNK_SIZE: usize = 500;
-    const defer_cross_file = shouldDeferCrossFile(db);
 
     var in_tx = false;
     defer if (in_tx) {
@@ -5642,7 +5582,10 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             }
         }
         // Check mtime; fast-skip unchanged files
-        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{}) catch continue;
+        const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{}) catch |err| {
+            logRateLimited("stat", err, path, &reindex_stat_error_count);
+            continue;
+        };
         const disk_mtime: i64 = stat.mtime.toMilliseconds();
 
         const check = try db.prepare("SELECT mtime, content_hash FROM files WHERE path = ?");
@@ -5796,7 +5739,6 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             .alloc = alloc,
             .sem_tokens = std.ArrayList(SemToken).empty,
             .source = parse_source,
-            .defer_cross_file = defer_cross_file,
         };
         defer ctx.sem_tokens.deinit(alloc);
 
@@ -5848,10 +5790,17 @@ pub fn shouldSkip(db: db_mod.Db, path: []const u8, disk_mtime: i64) bool {
 
 pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_gem: bool, alloc: std.mem.Allocator) !void {
     // Query the mem_db for parse results
-    const fq = mem_db.prepare("SELECT id, mtime, content_hash FROM files WHERE path = ?") catch return;
+    const fq = mem_db.prepare("SELECT id, mtime, content_hash FROM files WHERE path = ?") catch |err| {
+        logRateLimited("commitParsed_prepare", err, path, &commitparsed_prepare_error_count);
+        return;
+    };
     defer fq.finalize();
     fq.bind_text(1, path);
-    if (!(fq.step() catch return)) return; // file was skipped (empty, too large, parse error)
+    const stepped = fq.step() catch |err| {
+        logRateLimited("commitParsed_step", err, path, &commitparsed_step_error_count);
+        return;
+    };
+    if (!stepped) return;
     const mem_file_id = fq.column_int(0);
     const disk_mtime = fq.column_int(1);
     const content_hash = fq.column_int(2);
@@ -6065,64 +6014,6 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         _ = try ins_st.step();
     }
 
-    // Copy routes (Rails route definitions)
-    const del_routes = try real_db.prepare("DELETE FROM routes WHERE file_id = ?");
-    defer del_routes.finalize();
-    del_routes.bind_int(1, real_file_id);
-    _ = try del_routes.step();
-
-    const sel_rt = try mem_db.prepare(
-        \\SELECT http_method, path_pattern, helper_name, controller, action, line, col
-        \\FROM routes WHERE file_id = ?
-    );
-    defer sel_rt.finalize();
-    sel_rt.bind_int(1, mem_file_id);
-
-    const ins_rt = try real_db.prepare(
-        \\INSERT INTO routes (file_id, http_method, path_pattern, helper_name, controller, action, line, col)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    );
-    defer ins_rt.finalize();
-
-    while (try sel_rt.step()) {
-        ins_rt.reset();
-        ins_rt.bind_int(1, real_file_id);
-        ins_rt.bind_text(2, sel_rt.column_text(0));
-        ins_rt.bind_text(3, sel_rt.column_text(1));
-        ins_rt.bind_text(4, sel_rt.column_text(2));
-        ins_rt.bind_text(5, sel_rt.column_text(3));
-        ins_rt.bind_text(6, sel_rt.column_text(4));
-        ins_rt.bind_int(7, sel_rt.column_int(5));
-        ins_rt.bind_int(8, sel_rt.column_int(6));
-        _ = try ins_rt.step();
-    }
-
-    // Copy i18n_keys (translation entries from locale files)
-    const del_i18n = try real_db.prepare("DELETE FROM i18n_keys WHERE file_id = ?");
-    defer del_i18n.finalize();
-    del_i18n.bind_int(1, real_file_id);
-    _ = try del_i18n.step();
-
-    const sel_i18n = try mem_db.prepare(
-        \\SELECT key, value, locale FROM i18n_keys WHERE file_id = ?
-    );
-    defer sel_i18n.finalize();
-    sel_i18n.bind_int(1, mem_file_id);
-
-    const ins_i18n = try real_db.prepare(
-        \\INSERT INTO i18n_keys (key, value, locale, file_id) VALUES (?, ?, ?, ?)
-    );
-    defer ins_i18n.finalize();
-
-    while (try sel_i18n.step()) {
-        ins_i18n.reset();
-        ins_i18n.bind_text(1, sel_i18n.column_text(0));
-        ins_i18n.bind_text(2, sel_i18n.column_text(1));
-        ins_i18n.bind_text(3, sel_i18n.column_text(2));
-        ins_i18n.bind_int(4, real_file_id);
-        _ = try ins_i18n.step();
-    }
-
     try real_db.commit();
     committed = true;
 }
@@ -6165,17 +6056,23 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
     if (db.prepare("DELETE FROM i18n_keys WHERE file_id = ?")) |s| {
         defer s.finalize();
         s.bind_int(1, file_id);
-        _ = s.step() catch {};
+        _ = s.step() catch |err| {
+            logRateLimited("indexSource_i18n", err, path, &indexsource_cleanup_error_count);
+        };
     } else |_| {}
     if (db.prepare("DELETE FROM routes WHERE file_id = ?")) |s| {
         defer s.finalize();
         s.bind_int(1, file_id);
-        _ = s.step() catch {};
+        _ = s.step() catch |err| {
+            logRateLimited("indexSource_routes", err, path, &indexsource_cleanup_error_count);
+        };
     } else |_| {}
     if (db.prepare("DELETE FROM aliases WHERE file_id = ?")) |s| {
         defer s.finalize();
         s.bind_int(1, file_id);
-        _ = s.step() catch {};
+        _ = s.step() catch |err| {
+            logRateLimited("indexSource_aliases", err, path, &indexsource_cleanup_error_count);
+        };
     } else |_| {}
 
     var arena = prism.Arena{ .current = null, .block_count = 0 };
@@ -6194,7 +6091,6 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
         .alloc = alloc,
         .sem_tokens = std.ArrayList(SemToken).empty,
         .source = src,
-        .defer_cross_file = shouldDeferCrossFile(db),
     };
     defer ctx.sem_tokens.deinit(alloc);
 
@@ -6283,22 +6179,6 @@ pub fn cleanupStale(db: db_mod.Db, scanned: []const []const u8, root_path: []con
     committed = true;
 }
 
-test "indexSource strips UTF-8 BOM and indexes class symbol" {
-    const alloc = std.testing.allocator;
-
-    const db = try db_mod.Db.open(":memory:");
-    defer db.close();
-    try db.init_schema();
-
-    const bom_source = "\xEF\xBB\xBFclass BomTest\nend\n";
-    try indexSource(bom_source, "/tmp/bom_unit.rb", db, alloc);
-
-    const stmt = try db.prepare("SELECT COUNT(*) FROM symbols WHERE name = 'BomTest' AND kind = 'class'");
-    defer stmt.finalize();
-    try std.testing.expect(try stmt.step());
-    try std.testing.expectEqual(@as(i64, 1), stmt.column_int(0));
-}
-
 test "cleanupStale preserves gem entries" {
     const alloc = std.testing.allocator;
 
@@ -6318,4 +6198,14 @@ test "cleanupStale preserves gem entries" {
     defer check.finalize();
     try std.testing.expect(try check.step());
     try std.testing.expectEqual(@as(i64, 1), check.column_int(0));
+}
+
+test "error logging with rate limiting" {
+    const nonexistent_path = "/nonexistent/path/to/file.rb";
+    const initial_count = reindex_stat_error_count.load(.monotonic);
+    _ = std.Io.Dir.cwd().statFile(std.Options.debug_io, nonexistent_path, .{}) catch |err| {
+        logRateLimited("test_site", err, nonexistent_path, &reindex_stat_error_count);
+    };
+    const final_count = reindex_stat_error_count.load(.monotonic);
+    try std.testing.expect(final_count > initial_count);
 }

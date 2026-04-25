@@ -1,0 +1,20 @@
+{
+  "id": "hello",
+  "version": "0.1.0",
+  "entry": "bin/refract-plugin-hello",
+  "description": "Reference plugin: registers refract.hello.echo and round-trips its argument.",
+  "capabilities": {
+    "lsp_requests": ["refract.hello.echo"],
+    "lsp_notifications": [],
+    "mcp_tools": []
+  },
+  "timeouts": {
+    "initialize_ms": 5000,
+    "request_ms": 2000,
+    "shutdown_ms": 1000
+  },
+  "sandbox": {
+    "allow_network": false,
+    "allow_fs_write": []
+  }
+}

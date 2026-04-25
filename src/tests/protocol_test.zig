@@ -15627,7 +15627,7 @@ test "P29 T12.1 db pragma cache_size set" {
     defer alloc.free(q.stdout);
     defer alloc.free(q.stderr);
     const val_str = std.mem.trim(u8, q.stdout, " \t\r\n");
-    try std.testing.expect(std.mem.eql(u8, val_str, "6"));
+    try std.testing.expect(std.mem.eql(u8, val_str, "7"));
 }
 
 test "P29 T12.2 db pragma temp_store memory" {

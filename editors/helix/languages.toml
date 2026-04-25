@@ -1,0 +1,14 @@
+# Snippet for ~/.config/helix/languages.toml. Adds refract as the
+# Ruby/ERB LSP. Drop the [[language]] / [language-server] blocks in.
+
+[language-server.refract]
+command = "refract"
+args = ["--stdio"]
+
+[[language]]
+name = "ruby"
+language-servers = ["refract"]
+
+[[language]]
+name = "erb"
+language-servers = ["refract"]

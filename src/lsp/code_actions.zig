@@ -7,6 +7,8 @@ const db_mod = @import("../db.zig");
 const diagnostics = @import("diagnostics.zig");
 const refactor = @import("refactor.zig");
 const disabled_codes = @import("disabled_codes.zig");
+const test_runner = @import("test_runner.zig");
+const rdbg_bridge = @import("../dap/rdbg_bridge.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -528,35 +530,73 @@ const RunTestCtx = struct {
     server: *Server,
     file_path: []const u8,
     line_num: ?u32,
+    debug: bool,
 
     fn run(ctx: *RunTestCtx) void {
         defer {
             std.heap.c_allocator.free(ctx.file_path);
             std.heap.c_allocator.destroy(ctx);
         }
-        var cmd_buf: [2048]u8 = undefined;
-        const cmd_str = if (ctx.line_num) |ln|
-            std.fmt.bufPrint(&cmd_buf, "bundle exec rspec {s}:{d} 2>&1", .{ ctx.file_path, ln }) catch return
-        else
-            std.fmt.bufPrint(&cmd_buf, "bundle exec rspec {s} 2>&1", .{ctx.file_path}) catch return;
 
-        // Announce what we're running
-        var hdr_buf: [2200]u8 = undefined;
-        const hdr = std.fmt.bufPrint(&hdr_buf, "refract: running {s}", .{cmd_str}) catch "refract: running tests";
-        ctx.server.sendLogMessage(3, hdr);
+        const alloc = std.heap.c_allocator;
+        const root = ctx.server.root_path orelse ".";
 
-        // Spawn the test subprocess; use sh -c so shell builtins and PATH work
-        // stderr is already merged into stdout via "2>&1" in cmd_str (sh -c)
-        var child = std.process.spawn(ctx.server.io, .{
-            .argv = &.{ "sh", "-c", cmd_str },
-            .cwd = if (ctx.server.root_path) |rp| .{ .path = rp } else .{ .path = "." },
-            .stdout = .pipe,
-            .stderr = .ignore,
-        }) catch {
-            ctx.server.sendShowMessage(2, "refract: failed to spawn rspec — ensure bundle exec rspec is available");
+        const fw = test_runner.detect(alloc, root);
+        if (fw == .unknown) {
+            ctx.server.sendShowMessage(2, "refract: no Ruby test framework detected — add spec/, test/, or features/ to your workspace");
+            return;
+        }
+
+        const test_argv = test_runner.buildRunArgv(alloc, fw, ctx.file_path, ctx.line_num) catch {
+            ctx.server.sendShowMessage(2, "refract: failed to build test command");
             return;
         };
-        // Stream stdout lines as window/logMessage (level 4 = log)
+        defer test_runner.freeArgv(alloc, test_argv);
+
+        // When debug=true, prepend rdbg so the user's debug client can attach.
+        // The actual DAP front-end is `refract --dap` (Lane D); this hook
+        // produces an rdbg-debugged subprocess for editors that drive it directly.
+        var argv_owned: ?[][]const u8 = null;
+        defer if (argv_owned) |a| rdbg_bridge.RdbgBridge.freeArgv(alloc, a);
+        const final_argv: []const []const u8 = if (ctx.debug) blk: {
+            const head = test_argv[0];
+            const tail = test_argv[1..];
+            argv_owned = rdbg_bridge.RdbgBridge.buildArgv(alloc, head, tail) catch {
+                ctx.server.sendShowMessage(2, "refract: rdbg argv build failed — ensure rdbg is installed");
+                return;
+            };
+            break :blk argv_owned.?;
+        } else test_argv;
+
+        // Announce what we're running
+        var hdr_buf: [4096]u8 = undefined;
+        var hb_pos: usize = 0;
+        const prefix = "refract: running ";
+        @memcpy(hdr_buf[hb_pos..][0..prefix.len], prefix);
+        hb_pos += prefix.len;
+        for (final_argv, 0..) |a, i| {
+            if (i > 0 and hb_pos < hdr_buf.len) {
+                hdr_buf[hb_pos] = ' ';
+                hb_pos += 1;
+            }
+            const room = hdr_buf.len - hb_pos;
+            const take = if (a.len > room) room else a.len;
+            @memcpy(hdr_buf[hb_pos..][0..take], a[0..take]);
+            hb_pos += take;
+            if (hb_pos >= hdr_buf.len) break;
+        }
+        ctx.server.sendLogMessage(3, hdr_buf[0..hb_pos]);
+
+        var child = std.process.spawn(ctx.server.io, .{
+            .argv = final_argv,
+            .cwd = .{ .path = root },
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch {
+            ctx.server.sendShowMessage(2, "refract: failed to spawn test runner — ensure bundle/rspec/minitest/cucumber are installed");
+            return;
+        };
+
         var read_buf: [4096]u8 = undefined;
         while (true) {
             const n = child.stdout.?.readStreaming(ctx.server.io, &.{read_buf[0..]}) catch break;
@@ -566,15 +606,16 @@ const RunTestCtx = struct {
         }
 
         const term = child.wait(ctx.server.io) catch {
-            ctx.server.sendShowMessage(2, "refract: rspec process wait failed");
+            ctx.server.sendShowMessage(2, "refract: test process wait failed");
             return;
         };
         const exit_code: u8 = if (term == .exited) term.exited else 1;
         if (exit_code == 0) {
             ctx.server.sendShowMessage(3, "refract: tests passed");
         } else {
-            var fail_buf: [64]u8 = undefined;
-            const fail_msg = std.fmt.bufPrint(&fail_buf, "refract: tests failed (exit {d})", .{exit_code}) catch "refract: tests failed";
+            var fail_buf: [128]u8 = undefined;
+            const fw_label = fw.label();
+            const fail_msg = std.fmt.bufPrint(&fail_buf, "refract: {s} tests failed (exit {d})", .{ fw_label, exit_code }) catch "refract: tests failed";
             ctx.server.sendShowMessage(2, fail_msg);
         }
     }
@@ -656,8 +697,9 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
     }
     if (std.mem.eql(u8, cmd, "refract.showReferences")) {
         known_cmd = true;
-    } else if (std.mem.eql(u8, cmd, "refract.runTest")) {
+    } else if (std.mem.eql(u8, cmd, "refract.runTest") or std.mem.eql(u8, cmd, "refract.debugTest")) {
         known_cmd = true;
+        const debug = std.mem.eql(u8, cmd, "refract.debugTest");
         if (obj.get("arguments")) |args_val| switch (args_val) {
             .array => |arr| if (arr.items.len >= 1) {
                 const file_uri = switch (arr.items[0]) {
@@ -674,7 +716,7 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
                         std.heap.c_allocator.free(p);
                         break :spawn;
                     };
-                    rctx.* = .{ .server = self, .file_path = p, .line_num = line_num };
+                    rctx.* = .{ .server = self, .file_path = p, .line_num = line_num, .debug = debug };
                     _ = std.Thread.spawn(.{}, RunTestCtx.run, .{rctx}) catch {
                         std.heap.c_allocator.destroy(rctx);
                         std.heap.c_allocator.free(p);

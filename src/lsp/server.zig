@@ -24,6 +24,11 @@ const rename = @import("rename.zig");
 const hot_index_mod = @import("hot_index.zig");
 const workspace_config = @import("workspace_config.zig");
 const handler_registry = @import("handler_registry.zig");
+const observability = @import("observability.zig");
+const plugin_host = @import("plugin_host.zig");
+const sorbet_bridge = @import("sorbet_bridge.zig");
+const sorbet_worker = @import("sorbet_worker.zig");
+const llm_adapter = @import("llm_adapter.zig");
 
 pub const ruby_block_keywords = [_][]const u8{ "if ", "unless ", "case ", "while ", "until ", "begin", "for " };
 pub const empty_json_array = "[]";
@@ -1105,6 +1110,15 @@ pub const Server = struct {
     env_keys_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     env_keys_mu: std.Io.Mutex = std.Io.Mutex.init,
     registry: handler_registry.Registry = .{},
+    recorder: ?observability.Recorder = null,
+    plugin_host: ?plugin_host.Host = null,
+    sorbet_handle: ?sorbet_bridge.Bridge = null,
+    steep_handle: ?sorbet_bridge.Bridge = null,
+    sorbet_worker_handle: ?*sorbet_worker.Worker = null,
+    steep_worker_handle: ?*sorbet_worker.Worker = null,
+    sorbet_worker_thread: ?std.Thread = null,
+    steep_worker_thread: ?std.Thread = null,
+    llm_config: ?llm_adapter.Config = null,
 
     pub fn init(io: std.Io, db: db_mod.Db, db_pathz: [:0]const u8, alloc: std.mem.Allocator) !Server {
         var s = Server{
@@ -1142,6 +1156,44 @@ pub const Server = struct {
         return s;
     }
 
+    fn spawnTypeWorker(self: *Server, kind: sorbet_bridge.ServerKind) void {
+        const bridge_ptr: *sorbet_bridge.Bridge = switch (kind) {
+            .sorbet => if (self.sorbet_handle) |*b| b else return,
+            .steep => if (self.steep_handle) |*b| b else return,
+        };
+        const w = self.alloc.create(sorbet_worker.Worker) catch return;
+        w.* = .{
+            .bridge = bridge_ptr,
+            .db = self.db,
+            .db_mu = &self.db_mutex,
+            .kind = kind,
+            .alloc = self.alloc,
+            .done = std.atomic.Value(bool).init(false),
+        };
+        const t = std.Thread.spawn(.{}, sorbet_worker.Worker.run, .{w}) catch {
+            self.alloc.destroy(w);
+            return;
+        };
+        switch (kind) {
+            .sorbet => {
+                self.sorbet_worker_handle = w;
+                self.sorbet_worker_thread = t;
+            },
+            .steep => {
+                self.steep_worker_handle = w;
+                self.steep_worker_thread = t;
+            },
+        }
+    }
+
+    /// Notify type-bridge workers that `path` was edited/saved. Called from
+    /// document_sync.didSave/didChange. Workers debounce 500 ms before
+    /// re-running phase 2/4 narrowed to that file.
+    pub fn notifyFileTouched(self: *Server, path: []const u8) void {
+        if (self.sorbet_worker_handle) |w| w.enqueueFile(path);
+        if (self.steep_worker_handle) |w| w.enqueueFile(path);
+    }
+
     pub fn requestShutdown(self: *Server) void {
         self.bg_cancelled.store(true, .seq_cst);
         self.rubocop_thread_done.store(true, .seq_cst);
@@ -1151,6 +1203,36 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        if (self.sorbet_worker_handle) |w| {
+            w.requestStop();
+            if (self.sorbet_worker_thread) |t| {
+                t.join();
+                self.sorbet_worker_thread = null;
+            }
+            w.deinitQueue();
+            self.alloc.destroy(w);
+            self.sorbet_worker_handle = null;
+        }
+        if (self.steep_worker_handle) |w| {
+            w.requestStop();
+            if (self.steep_worker_thread) |t| {
+                t.join();
+                self.steep_worker_thread = null;
+            }
+            w.deinitQueue();
+            self.alloc.destroy(w);
+            self.steep_worker_handle = null;
+        }
+        if (self.sorbet_handle) |*b| b.deinit();
+        self.sorbet_handle = null;
+        if (self.steep_handle) |*b| b.deinit();
+        self.steep_handle = null;
+        if (self.llm_config) |*c| c.deinit(self.alloc);
+        self.llm_config = null;
+        if (self.recorder) |*r| r.deinit();
+        self.recorder = null;
+        if (self.plugin_host) |*ph| ph.deinit();
+        self.plugin_host = null;
         self.registry.deinit(self.alloc);
         self.bg_cancelled.store(true, .seq_cst);
         if (self.bg_thread) |t| t.join();
@@ -1374,6 +1456,11 @@ pub const Server = struct {
     }
 
     pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+        const t0_ns: i96 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+        defer if (self.recorder) |*rec| {
+            const t1_ns: i96 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+            if (t1_ns > t0_ns) rec.recordRequest(msg.method, @intCast(t1_ns - t0_ns));
+        };
         if (std.mem.eql(u8, msg.method, "initialize")) {
             return self.handleInitialize(msg);
         }
@@ -1570,7 +1657,12 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, msg.method, "textDocument/codeAction")) {
             return try code_actions.handleCodeAction(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/definition")) {
-            return try navigation.handleDefinition(self, msg);
+            const t0 = std.Io.Timestamp.now(self.io, .real);
+            const result = try navigation.handleDefinition(self, msg);
+            const t1 = std.Io.Timestamp.now(self.io, .real);
+            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            if (self.recorder) |*rec| rec.recordRequest("textDocument/definition", dt_ns);
+            return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/implementation")) {
             return try navigation.handleImplementation(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/declaration")) {
@@ -1578,13 +1670,30 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, msg.method, "textDocument/documentSymbol")) {
             return try symbols.handleDocumentSymbol(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/hover")) {
-            return try hover.handleHover(self, msg);
+            const t0 = std.Io.Timestamp.now(self.io, .real);
+            const result = try hover.handleHover(self, msg);
+            const t1 = std.Io.Timestamp.now(self.io, .real);
+            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            if (self.recorder) |*rec| rec.recordRequest("textDocument/hover", dt_ns);
+            return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/completion")) {
-            return try completion.handleCompletion(self, msg);
+            const t0 = std.Io.Timestamp.now(self.io, .real);
+            const result = try completion.handleCompletion(self, msg);
+            const t1 = std.Io.Timestamp.now(self.io, .real);
+            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            if (self.recorder) |*rec| rec.recordRequest("textDocument/completion", dt_ns);
+            return result;
+        } else if (std.mem.eql(u8, msg.method, "textDocument/inlineCompletion")) {
+            return try completion.handleInlineCompletion(self, msg);
         } else if (std.mem.eql(u8, msg.method, "completionItem/resolve")) {
             return try completion.handleCompletionItemResolve(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/references")) {
-            return try navigation.handleReferences(self, msg);
+            const t0 = std.Io.Timestamp.now(self.io, .real);
+            const result = try navigation.handleReferences(self, msg);
+            const t1 = std.Io.Timestamp.now(self.io, .real);
+            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            if (self.recorder) |*rec| rec.recordRequest("textDocument/references", dt_ns);
+            return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/signatureHelp")) {
             return try editing.handleSignatureHelp(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/typeDefinition")) {
@@ -1602,7 +1711,12 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, msg.method, "textDocument/prepareRename")) {
             return try rename.handlePrepareRename(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/rename")) {
-            return try rename.handleRename(self, msg);
+            const t0 = std.Io.Timestamp.now(self.io, .real);
+            const result = try rename.handleRename(self, msg);
+            const t1 = std.Io.Timestamp.now(self.io, .real);
+            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            if (self.recorder) |*rec| rec.recordRequest("textDocument/rename", dt_ns);
+            return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/formatting")) {
             return try code_actions.handleFormatting(self, msg);
         } else if (std.mem.eql(u8, msg.method, "textDocument/foldingRange")) {
@@ -2228,6 +2342,65 @@ pub const Server = struct {
             }
         }
         self.initialized = true;
+
+        // Wave-0/Wave-1 wiring: spawn observability worker; discover plugins.
+        // Failures here are non-fatal and surfaced via window/showMessage.
+        if (self.recorder == null) {
+            self.recorder = observability.Recorder.init(self.alloc, self.db, self.io, &self.db_mutex);
+            self.recorder.?.spawnWorker();
+        }
+        if (self.plugin_host == null) {
+            self.plugin_host = plugin_host.Host.init(self.alloc, build_meta.version);
+            if (self.root_uri) |ruri| {
+                if (uriToPath(self.alloc, ruri) catch null) |rp| {
+                    defer self.alloc.free(rp);
+                    self.plugin_host.?.discoverAndSpawn(rp) catch |err| {
+                        var pbuf: [256]u8 = undefined;
+                        const pmsg = std.fmt.bufPrint(&pbuf, "refract: plugin host discovery failed: {s}", .{@errorName(err)}) catch "refract: plugin host discovery failed";
+                        self.sendLogMessage(2, pmsg);
+                    };
+                }
+            }
+        }
+
+        // Sorbet/Steep auto-launch: detect via workspace markers, spawn bridge,
+        // send LSP `initialize` to wake the server. Failures are non-fatal —
+        // the bridge stays null and the type chain falls back to RBS / literal.
+        if (self.root_uri) |ruri| {
+            if (uriToPath(self.alloc, ruri) catch null) |rp| {
+                defer self.alloc.free(rp);
+                if (self.sorbet_handle == null and sorbet_bridge.workspaceHasSorbet(rp, self.alloc)) {
+                    if (sorbet_bridge.Bridge.launch(.sorbet, rp, self.alloc)) |handle| {
+                        self.sorbet_handle = handle;
+                        const init_resp = self.sorbet_handle.?.request("initialize", "{}") catch null;
+                        if (init_resp) |r| self.alloc.free(r);
+                        self.sendLogMessage(3, "refract: sorbet bridge ready");
+                        self.spawnTypeWorker(.sorbet);
+                    } else |err| {
+                        var sbuf: [256]u8 = undefined;
+                        const smsg = std.fmt.bufPrint(&sbuf, "refract: sorbet bridge launch failed: {s}", .{@errorName(err)}) catch "refract: sorbet bridge launch failed";
+                        self.sendLogMessage(2, smsg);
+                    }
+                }
+                if (self.steep_handle == null and sorbet_bridge.workspaceHasSteep(rp, self.alloc)) {
+                    if (sorbet_bridge.Bridge.launch(.steep, rp, self.alloc)) |handle| {
+                        self.steep_handle = handle;
+                        const init_resp = self.steep_handle.?.request("initialize", "{}") catch null;
+                        if (init_resp) |r| self.alloc.free(r);
+                        self.sendLogMessage(3, "refract: steep bridge ready");
+                        self.spawnTypeWorker(.steep);
+                    } else |err| {
+                        var sbuf: [256]u8 = undefined;
+                        const smsg = std.fmt.bufPrint(&sbuf, "refract: steep bridge launch failed: {s}", .{@errorName(err)}) catch "refract: steep bridge launch failed";
+                        self.sendLogMessage(2, smsg);
+                    }
+                }
+                if (self.llm_config == null) {
+                    self.llm_config = llm_adapter.loadFromWorkspace(self.alloc, rp) catch null;
+                }
+            }
+        }
+
         {
             var vbuf: [256]u8 = undefined;
             const vmsg = std.fmt.bufPrint(&vbuf, "refract {s} ready", .{build_meta.version}) catch "refract ready";
@@ -2922,8 +3095,15 @@ pub fn writeCodeActionEdits(w: *std.Io.Writer, title: []const u8, kind: []const 
 }
 
 const init_caps_before_enc =
-    \\{"capabilities":{"textDocumentSync":{"change":1,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentLinkProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.extract","refactor.inline","refactor.rewrite"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.recheckRubocop","refract.disableDiagnostic"]},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
+    \\{"capabilities":{"textDocumentSync":{"change":1,"save":{"includeText":true},"openClose":true},"workspaceSymbolProvider":true,"definitionProvider":true,"implementationProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"completionProvider":{"triggerCharacters":[".","::", "@","$"],"resolveProvider":true},"inlineCompletionProvider":{},"referencesProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","]},"typeDefinitionProvider":true,"inlayHintProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["class","namespace","method","parameter","variable","type"],"tokenModifiers":["declaration","readonly","deprecated","static"]},"full":{"delta":true},"range":true},"renameProvider":true,"prepareRenameProvider":true,"documentHighlightProvider":true,"documentLinkProvider":true,"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","refactor.extract","refactor.inline","refactor.rewrite"]},"foldingRangeProvider":true,"documentRangeFormattingProvider":true,"callHierarchyProvider":true,"codeLensProvider":{"resolveProvider":false},"typeHierarchyProvider":true,"selectionRangeProvider":true,"linkedEditingRangeProvider":true,"diagnosticProvider":{"identifier":"refract","interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["refract.restartIndexer","refract.forceReindex","refract.toggleGemIndex","refract.showReferences","refract.runTest","refract.debugTest","refract.recheckRubocop","refract.disableDiagnostic"]},"experimental":{"refract":{"dap":true,"plugins":true,"inlineCompletion":true}},"workspace":{"workspaceFolders":{"supported":true,"changeNotifications":true},"didChangeConfiguration":{"dynamicRegistration":true},"fileOperations":{"didCreate":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didDelete":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"didChange":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]},"willRename":{"filters":[{"scheme":"file","pattern":{"glob":"**/*.{rb,rbs,rbi,erb,rake,gemspec,ru}"}}]}}},"positionEncoding":
 ;
 const init_caps_after_enc =
     \\},"serverInfo":{"name":"refract","version":"
 ;
+
+test "capability JSON advertises wired experimental flags" {
+    const haystack = init_caps_before_enc;
+    try std.testing.expect(std.mem.indexOf(u8, haystack, "\"dap\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, haystack, "\"plugins\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, haystack, "\"inlineCompletion\":true") != null);
+}

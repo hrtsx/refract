@@ -59,6 +59,7 @@ pub fn handleDidSave(self: *Server, msg: types.RequestMessage) void {
                     self.db_mutex.unlock(std.Options.debug_io);
                     if (index_failed) self.sendLogMessage(2, "refract: index failed on save");
                     self.env_keys_dirty.store(true, .release);
+                    self.notifyFileTouched(path);
                     diagnostics.publishDiagnostics(self, uri, path, true);
                     return;
                 }
@@ -74,6 +75,7 @@ pub fn handleDidSave(self: *Server, msg: types.RequestMessage) void {
     self.db_mutex.unlock(std.Options.debug_io);
     if (reindex_save_failed) self.sendLogMessage(2, "refract: reindex failed on save");
     self.env_keys_dirty.store(true, .release);
+    self.notifyFileTouched(path);
     diagnostics.publishDiagnostics(self, uri, path, true);
 }
 
@@ -207,6 +209,7 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         }
         gop.value_ptr.* = now_ms;
     }
+    self.notifyFileTouched(real_path);
     diagnostics.publishDiagnostics(self, uri, real_path, false);
 }
 

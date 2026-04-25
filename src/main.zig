@@ -5,6 +5,7 @@ const transport = @import("lsp/transport.zig");
 const types = @import("lsp/types.zig");
 const server_mod = @import("lsp/server.zig");
 const mcp = @import("mcp/server.zig");
+const dap_server = @import("dap/server.zig");
 const indexer = @import("indexer/index.zig");
 const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
@@ -52,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
     var flag_check: bool = false;
     var flag_stats: bool = false;
     var flag_mcp: bool = false;
+    var flag_dap: bool = false;
     var flag_index_only: bool = false;
     var flag_warm_stdlib: bool = false;
     var flag_dump_symbols: bool = false;
@@ -147,6 +149,8 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "--mcp")) {
             flag_mcp = true;
+        } else if (std.mem.eql(u8, arg, "--dap")) {
+            flag_dap = true;
         } else if (std.mem.eql(u8, arg, "--index-only")) {
             flag_index_only = true;
         } else if (std.mem.eql(u8, arg, "--warm-stdlib")) {
@@ -202,6 +206,15 @@ pub fn main(init: std.process.Init) !void {
             .flags = 0,
         };
         std.posix.sigaction(std.posix.SIG.ALRM, &alrm_act, null);
+    }
+
+    if (flag_dap) {
+        const dap_cwd = try std.process.currentPathAlloc(io, alloc);
+        defer alloc.free(dap_cwd);
+        var dsrv = dap_server.Server.init(alloc, io);
+        dsrv.cwd = dap_cwd;
+        try dsrv.run();
+        return;
     }
 
     const cwd = try std.process.currentPathAlloc(io, alloc);
@@ -914,4 +927,21 @@ test {
     _ = @import("indexer/index.zig");
     _ = @import("lsp/hot_index.zig");
     _ = @import("tests/sorbet_harness.zig");
+    _ = @import("tests/inline_completion_test.zig");
+    _ = @import("tests/dap_test.zig");
+    _ = @import("lsp/observability.zig");
+    _ = @import("lsp/plugin_host.zig");
+    _ = @import("lsp/sorbet_bridge.zig");
+    _ = @import("lsp/type_resolver.zig");
+    _ = @import("dap/server.zig");
+    _ = @import("dap/rdbg_bridge.zig");
+    _ = @import("indexer/ruby_env.zig");
+    _ = @import("indexer/coverage_reader.zig");
+    _ = @import("lsp/diagnostics_brakeman.zig");
+    _ = @import("lsp/diagnostics_semgrep.zig");
+    _ = @import("lsp/test_runner.zig");
+    _ = @import("lsp/llm_adapter.zig");
+    _ = @import("lsp/otlp_exporter.zig");
+    _ = @import("lsp/sorbet_worker.zig");
+    _ = @import("lsp/navigation.zig");
 }

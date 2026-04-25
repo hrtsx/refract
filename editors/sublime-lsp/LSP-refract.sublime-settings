@@ -1,0 +1,14 @@
+{
+  "clients": {
+    "refract": {
+      "enabled": true,
+      "command": ["refract", "--stdio"],
+      "selector": "source.ruby | text.html.ruby | source.ruby.rails",
+      "schemes": ["file"],
+      "settings": {
+        "refract.gemIndex": true,
+        "refract.rubocop": true
+      }
+    }
+  }
+}

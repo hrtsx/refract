@@ -1,25 +1,30 @@
 const std = @import("std");
-const prism = @import("../prism.zig");
-const db_mod = @import("../db.zig");
-const indexer = @import("../indexer/index.zig");
-const routes = @import("../indexer/routes.zig");
+const prism = @import("prism.zig");
+const db_mod = @import("db.zig");
+const indexer = @import("indexer/index.zig");
+const routes = @import("indexer/routes.zig");
+
+const bench_io = std.Options.debug_io;
+
+fn nowNs() i96 {
+    return std.Io.Timestamp.now(bench_io, .awake).toNanoseconds();
+}
 
 fn timedRun(comptime name: []const u8, iterations: u32, func: anytype) void {
-    var timer = std.time.Timer.start() catch return;
-    var min_ns: u64 = std.math.maxInt(u64);
-    var max_ns: u64 = 0;
-    var total_ns: u64 = 0;
+    var min_ns: i96 = std.math.maxInt(i96);
+    var max_ns: i96 = 0;
+    var total_ns: i96 = 0;
     for (0..iterations) |_| {
-        timer.reset();
+        const t0 = nowNs();
         func();
-        const elapsed = timer.read();
+        const elapsed: i96 = nowNs() - t0;
         total_ns += elapsed;
         if (elapsed < min_ns) min_ns = elapsed;
         if (elapsed > max_ns) max_ns = elapsed;
     }
-    const avg_us = total_ns / iterations / 1000;
-    const min_us = min_ns / 1000;
-    const max_us = max_ns / 1000;
+    const avg_us = @divTrunc(total_ns, @as(i96, iterations) * 1000);
+    const min_us = @divTrunc(min_ns, 1000);
+    const max_us = @divTrunc(max_ns, 1000);
     std.debug.print("  {s}: {d}us avg, {d}us min, {d}us max ({d} iters)\n", .{ name, avg_us, min_us, max_us, iterations });
 }
 
@@ -33,7 +38,7 @@ const small_ruby =
     \\end
 ;
 
-const medium_ruby = blk: {
+const medium_ruby_arr = blk: {
     var buf: [4096]u8 = undefined;
     var len: usize = 0;
     const header = "module App\n";
@@ -47,8 +52,9 @@ const medium_ruby = blk: {
     const footer = "end\n";
     @memcpy(buf[len..][0..footer.len], footer);
     len += footer.len;
-    break :blk buf[0..len];
+    break :blk buf[0..len].*;
 };
+const medium_ruby: []const u8 = &medium_ruby_arr;
 
 test "bench: prism parse small Ruby file" {
     std.debug.print("\n--- Prism Parse Benchmarks ---\n", .{});
@@ -79,23 +85,31 @@ test "bench: prism parse medium Ruby file" {
 
 test "bench: indexSource small file" {
     std.debug.print("\n--- Index Benchmarks ---\n", .{});
-    const alloc = std.testing.allocator;
     const db = db_mod.Db.open("/tmp/refract_bench.db") catch return;
     defer {
         db.close();
-        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db") catch {};
-        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db-wal") catch {};
-        std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, "/tmp/refract_bench.db-shm") catch {};
+        std.Io.Dir.deleteFileAbsolute(bench_io, "/tmp/refract_bench.db") catch {};
+        std.Io.Dir.deleteFileAbsolute(bench_io, "/tmp/refract_bench.db-wal") catch {};
+        std.Io.Dir.deleteFileAbsolute(bench_io, "/tmp/refract_bench.db-shm") catch {};
     }
     db.init_schema() catch return;
 
-    timedRun("index small (7 lines)", 50, struct {
-        fn run() void {
-            indexer.indexSource(small_ruby, "bench_small.rb", @as(db_mod.Db, undefined), std.testing.allocator) catch {};
-        }
-    }.run);
-    _ = alloc;
-    _ = db;
+    const iters: u32 = 50;
+    var min_ns: i96 = std.math.maxInt(i96);
+    var max_ns: i96 = 0;
+    var total_ns: i96 = 0;
+    for (0..iters) |_| {
+        const t0 = nowNs();
+        indexer.indexSource(small_ruby, "bench_small.rb", db, std.testing.allocator) catch {};
+        const elapsed = nowNs() - t0;
+        total_ns += elapsed;
+        if (elapsed < min_ns) min_ns = elapsed;
+        if (elapsed > max_ns) max_ns = elapsed;
+    }
+    const avg_us = @divTrunc(total_ns, @as(i96, iters) * 1000);
+    const min_us = @divTrunc(min_ns, 1000);
+    const max_us = @divTrunc(max_ns, 1000);
+    std.debug.print("  index small (7 lines): {d}us avg, {d}us min, {d}us max ({d} iters)\n", .{ avg_us, min_us, max_us, iters });
 }
 
 test "bench: route parsing" {
@@ -137,7 +151,6 @@ test "bench: DB symbol lookup by name" {
     defer db.close();
     db.init_schema() catch return;
 
-    // Seed with realistic data
     for (0..200) |i| {
         var name_buf: [64]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "method_{d}", .{i}) catch continue;
@@ -159,8 +172,7 @@ test "bench: DB symbol lookup by name" {
     timedRun("symbol lookup by name (1K symbols)", 500, struct {
         fn run() void {
             const sdb = db_mod.Db.open(":memory:") catch return;
-            defer sdb.close();
-            _ = sdb;
+            sdb.close();
         }
     }.run);
 }
@@ -177,7 +189,6 @@ test "bench: DB schema init" {
 
 test "bench: index 500-symbol file" {
     std.debug.print("\n--- Load Benchmarks ---\n", .{});
-    // Generate a 500-method Ruby file programmatically
     var src_buf: [64 * 1024]u8 = undefined;
     var src_len: usize = 0;
     const header = "class BigModel < ApplicationRecord\n";
@@ -196,16 +207,13 @@ test "bench: index 500-symbol file" {
     defer db.close();
     db.init_schema() catch return;
 
-    timedRun("index 500-method file", 10, struct {
-        fn run() void {}
-    }.run);
-    // Actual indexed run (outside timedRun to avoid closure capture issues)
-    var timer = std.time.Timer.start() catch return;
+    var total_ns: i96 = 0;
     for (0..10) |_| {
-        timer.reset();
+        const t0 = nowNs();
         indexer.indexSource(big_ruby, "big_model.rb", db, std.testing.allocator) catch {};
+        total_ns += nowNs() - t0;
     }
-    const elapsed_us = timer.read() / 1000 / 10;
+    const elapsed_us = @divTrunc(total_ns, 10 * 1000);
     std.debug.print("  index 500-symbol file: ~{d}us avg\n", .{elapsed_us});
 }
 
@@ -214,12 +222,10 @@ test "bench: workspace/symbol search in 5000-symbol DB" {
     defer db.close();
     db.init_schema() catch return;
 
-    // Insert a file record
     const fi_stmt = db.prepare("INSERT INTO files(path, mtime) VALUES('bench.rb', 0)") catch return;
     defer fi_stmt.finalize();
     _ = fi_stmt.step() catch {};
 
-    // Seed 5000 symbols
     for (0..5000) |i| {
         var name_buf: [64]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "symbol_{d}", .{i}) catch continue;
@@ -233,20 +239,19 @@ test "bench: workspace/symbol search in 5000-symbol DB" {
     timedRun("workspace symbol search (5000 symbols)", 200, struct {
         fn run() void {
             const sdb = db_mod.Db.open(":memory:") catch return;
-            defer sdb.close();
-            _ = sdb;
+            sdb.close();
         }
     }.run);
-    // Actual query timing
-    var timer = std.time.Timer.start() catch return;
-    var total: u64 = 0;
+
+    var total_ns: i96 = 0;
     for (0..200) |_| {
-        timer.reset();
+        const t0 = nowNs();
         const stmt = db.prepare("SELECT name, kind FROM symbols WHERE name LIKE ? LIMIT 500") catch continue;
         defer stmt.finalize();
         stmt.bind_text(1, "symbol_1%");
         while (stmt.step() catch false) {}
-        total += timer.read();
+        total_ns += nowNs() - t0;
     }
-    std.debug.print("  workspace symbol search (5K): ~{d}us avg\n", .{total / 1000 / 200});
+    const avg_us = @divTrunc(total_ns, 200 * 1000);
+    std.debug.print("  workspace symbol search (5K): ~{d}us avg\n", .{avg_us});
 }
