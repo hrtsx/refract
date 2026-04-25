@@ -46,18 +46,20 @@ fn lessRanked(_: void, a: RankedSymbol, b: RankedSymbol) bool {
     return std.mem.lessThan(u8, a.sym.name, b.sym.name);
 }
 
-fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]const u8 {
+fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]u8 {
     if (!self.hot_index_enabled.load(.monotonic)) return null;
+    self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer self.hot_mu.unlock(std.Options.debug_io);
     const hot = self.hot.load(.acquire) orelse return null;
     for (hot.lookupName(method_name)) |sym| {
         if (sym.kind != .def) continue;
         const ret = sym.return_type orelse continue;
         if (sym.parent_name) |p| {
-            if (std.mem.eql(u8, p, parent_class)) return ret;
+            if (std.mem.eql(u8, p, parent_class)) return self.alloc.dupe(u8, ret) catch null;
             continue;
         }
         for (hot.classesIn(sym.file_id)) |cls_name| {
-            if (std.mem.eql(u8, cls_name, parent_class)) return ret;
+            if (std.mem.eql(u8, cls_name, parent_class)) return self.alloc.dupe(u8, ret) catch null;
         }
     }
     return null;
@@ -315,7 +317,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             if (outer_type.len > 0) {
                                 const resolved_outer = extractBaseClass(outer_type);
                                 if (hotCrossFileReturnType(self, recv_word, resolved_outer)) |rt| {
-                                    chain_class_buf = try self.alloc.dupe(u8, rt);
+                                    chain_class_buf = rt;
                                 } else {
                                     const ret_stmt = try self.cachedStmt("SELECT return_type FROM symbols WHERE name=?1 AND kind='def' AND return_type IS NOT NULL AND (parent_name=?2 OR (parent_name IS NULL AND file_id IN (SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2))) LIMIT 1");
                                     defer ret_stmt.reset();
@@ -1109,8 +1111,11 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     var first = true;
     var symbol_count: usize = 0;
 
-    const hot_opt = self.hot.load(.acquire);
-    const use_hot = self.hot_index_enabled.load(.monotonic) and hot_opt != null and word.len > 0;
+    const want_hot = self.hot_index_enabled.load(.monotonic) and word.len > 0;
+    if (want_hot) self.hot_mu.lockUncancelable(std.Options.debug_io);
+    defer if (want_hot) self.hot_mu.unlock(std.Options.debug_io);
+    const hot_opt = if (want_hot) self.hot.load(.acquire) else null;
+    const use_hot = hot_opt != null;
     if (use_hot) {
         const hot = hot_opt.?;
         var ranked = std.ArrayList(RankedSymbol).empty;

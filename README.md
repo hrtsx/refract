@@ -21,7 +21,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
 - **AI-native** — `refract --mcp` exposes 34 tools your agent can call directly
 - **Single binary** — drop into Docker, CI, anywhere. No Ruby on the path.
 
-See [`docs/COMPARISON.md`](docs/COMPARISON.md) for an honest comparison with Solargraph, Ruby LSP, and Sorbet, plus when to pick each.
+See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the head-to-head numbers vs Solargraph, Ruby LSP, Sorbet, and Steep — perf, accuracy, DX, RAM — plus when to pick each.
 
 ## Install
 

@@ -5,6 +5,7 @@ const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
 const hot_index_mod = @import("hot_index.zig");
+const literal_receiver = @import("literal_receiver.zig");
 
 fn hoverScore(s: hot_index_mod.HotSymbol, query_name: []const u8, current_path: []const u8, hot: *const hot_index_mod.HotIndex) i64 {
     var v: i64 = 0;
@@ -103,13 +104,13 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
 
     // Check local_vars first for concrete inferred types
     const cursor_line: i64 = @intCast(line + 1);
-    const fstmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer fstmt.finalize();
+    const fstmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer fstmt.reset();
     fstmt.bind_text(1, path);
     if (try fstmt.step()) {
         const fid = fstmt.column_int(0);
-        const lv_stmt = try self.db.prepare("SELECT type_hint, is_block_param FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 10");
-        defer lv_stmt.finalize();
+        const lv_stmt = try self.cachedStmt("SELECT type_hint, is_block_param FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 10");
+        defer lv_stmt.reset();
         lv_stmt.bind_int(1, fid);
         lv_stmt.bind_text(2, lookup_word);
         lv_stmt.bind_int(3, cursor_line);
@@ -161,8 +162,8 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
             };
         }
         // Check for untyped local var
-        const lv_exist = try self.db.prepare("SELECT is_block_param FROM local_vars WHERE file_id=? AND name=? AND line<=? LIMIT 1");
-        defer lv_exist.finalize();
+        const lv_exist = try self.cachedStmt("SELECT is_block_param FROM local_vars WHERE file_id=? AND name=? AND line<=? LIMIT 1");
+        defer lv_exist.reset();
         lv_exist.bind_int(1, fid);
         lv_exist.bind_text(2, lookup_word);
         lv_exist.bind_int(3, cursor_line);
@@ -191,27 +192,27 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
     // Receiver-aware hover: detect receiver.method and look up method on receiver type
     const word_byte_start = @intFromPtr(word.ptr) - @intFromPtr(source.ptr);
     if (word_byte_start > 0 and source[word_byte_start - 1] == '.') {
-        const recv_off = if (word_byte_start >= 2) word_byte_start - 2 else 0;
-        const recv_w = extractWord(source, recv_off);
-        if (recv_w.len > 0) {
-            var recv_type: ?[]const u8 = null;
-            if (std.ascii.isUpper(recv_w[0])) {
-                recv_type = recv_w;
-            } else if (try resolveHoverReceiverType(self, path, recv_w, line)) |rt| {
-                recv_type = rt;
-            }
-            if (recv_type) |rt| {
-                const base_type = if (rt.len > 2 and rt[0] == '[' and rt[rt.len - 1] == ']') rt[1 .. rt.len - 1] else rt;
-                if (try hoverLookupOnClass(self, msg, word, base_type, line, hover_wc16, hover_we16)) |r| return r;
+        var recv_type: ?[]const u8 = null;
+
+        if (literal_receiver.extractLiteralReceiver(source, word_byte_start - 1)) |lit| {
+            recv_type = literal_receiver.classifyLiteralType(lit);
+        }
+
+        if (recv_type == null) {
+            const recv_off = if (word_byte_start >= 2) word_byte_start - 2 else 0;
+            const recv_w = extractWord(source, recv_off);
+            if (recv_w.len > 0) {
+                if (std.ascii.isUpper(recv_w[0])) {
+                    recv_type = recv_w;
+                } else if (try resolveHoverReceiverType(self, path, recv_w, line)) |rt| {
+                    recv_type = rt;
+                }
             }
         }
-    }
 
-    if (self.hot.load(.acquire) == null and !self.bg_indexing_done.load(.acquire)) {
-        var waited_ms: u32 = 0;
-        while (waited_ms < 200) : (waited_ms += 10) {
-            var _sleep_ts: std.c.timespec = .{ .sec = @intCast((10 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((10 * std.time.ns_per_ms) % std.time.ns_per_s) };
-            _ = std.c.nanosleep(&_sleep_ts, null);
+        if (recv_type) |rt| {
+            const base_type = if (rt.len > 2 and rt[0] == '[' and rt[rt.len - 1] == ']') rt[1 .. rt.len - 1] else rt;
+            if (try hoverLookupOnClass(self, msg, word, base_type, line, hover_wc16, hover_we16)) |r| return r;
         }
     }
 
@@ -335,14 +336,14 @@ fn stdlibClassDoc(name: []const u8) ?[]const u8 {
 
 fn resolveHoverReceiverType(self: *Server, path: []const u8, recv_name: []const u8, hover_line: u32) !?[]const u8 {
     const cursor_line: i64 = @intCast(hover_line + 1);
-    const fstmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
-    defer fstmt.finalize();
+    const fstmt = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+    defer fstmt.reset();
     fstmt.bind_text(1, path);
     if (try fstmt.step()) {
         const fid = fstmt.column_int(0);
         // Check local_vars for the receiver (includes @ prefix for instance vars)
-        const lv = try self.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1");
-        defer lv.finalize();
+        const lv = try self.cachedStmt("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1");
+        defer lv.reset();
         lv.bind_int(1, fid);
         lv.bind_text(2, recv_name);
         lv.bind_int(3, cursor_line);
@@ -356,6 +357,9 @@ fn resolveHoverReceiverType(self: *Server, path: []const u8, recv_name: []const 
 
 fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []const u8, class_name: []const u8, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
     if (self.hot_index_enabled.load(.monotonic)) {
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        var hot_lock_held = true;
+        defer if (hot_lock_held) self.hot_mu.unlock(std.Options.debug_io);
         if (self.hot.load(.acquire)) |hot| {
             if (hot.lookupMethodOnClass(class_name, method_name)) |hs| {
                 if (hot.pathFor(hs.file_id)) |sym_path| {
@@ -396,13 +400,16 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
                     }
                     try w.writeAll("\"}");
                     try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
-                    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+                    const raw_resp = try aw.toOwnedSlice();
+                    hot_lock_held = false;
+                    self.hot_mu.unlock(std.Options.debug_io);
+                    return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
                 }
             }
         }
     }
 
-    const stmt = try self.db.prepare(
+    const stmt = try self.cachedStmt(
         \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.parent_name
         \\FROM symbols s JOIN files f ON s.file_id = f.id
         \\WHERE s.name = ?1 AND (s.parent_name = ?2 OR (s.parent_name IS NULL AND s.file_id IN (
@@ -411,7 +418,7 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
         \\ORDER BY (s.parent_name = ?2) DESC, (s.doc IS NOT NULL) DESC
         \\LIMIT 1
     );
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, method_name);
     stmt.bind_text(2, class_name);
     if (!(try stmt.step())) return null;
@@ -427,7 +434,7 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
 
     var param_sig_buf = std.ArrayList(u8).empty;
     defer param_sig_buf.deinit(self.alloc);
-    const ps = self.db.prepare(
+    const ps = self.cachedStmt(
         \\SELECT GROUP_CONCAT(
         \\  CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
         \\  WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
@@ -435,7 +442,7 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
         \\FROM params p WHERE p.symbol_id=? ORDER BY p.position
     ) catch null;
     if (ps) |s| {
-        defer s.finalize();
+        defer s.reset();
         s.bind_int(1, sym_id);
         if (s.step() catch false) {
             const sig = s.column_text(0);
@@ -477,26 +484,26 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
 
 fn writeClassMethodList(self: *Server, w: *std.Io.Writer, class_name: []const u8, kind: []const u8, label: []const u8) !void {
     const method_limit: i64 = 12;
-    const count_stmt = self.db.prepare(
+    const count_stmt = self.cachedStmt(
         \\SELECT COUNT(DISTINCT name) FROM symbols
         \\WHERE parent_name = ? AND kind = ?
         \\  AND (visibility IS NULL OR visibility != 'private')
     ) catch return;
-    defer count_stmt.finalize();
+    defer count_stmt.reset();
     count_stmt.bind_text(1, class_name);
     count_stmt.bind_text(2, kind);
     var total: i64 = 0;
     if (count_stmt.step() catch false) total = count_stmt.column_int(0);
     if (total == 0) return;
 
-    const list_stmt = self.db.prepare(
+    const list_stmt = self.cachedStmt(
         \\SELECT DISTINCT name FROM symbols
         \\WHERE parent_name = ? AND kind = ?
         \\  AND (visibility IS NULL OR visibility != 'private')
         \\ORDER BY (doc IS NOT NULL) DESC, name
         \\LIMIT ?
     ) catch return;
-    defer list_stmt.finalize();
+    defer list_stmt.reset();
     list_stmt.bind_text(1, class_name);
     list_stmt.bind_text(2, kind);
     list_stmt.bind_int(3, method_limit);
@@ -536,10 +543,17 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
     // priority, then fetch metadata via an indexed (file_id, line, name) SELECT.
     var hot_file_id: i64 = 0;
     var hot_line: i64 = 0;
-    var hot_name: []const u8 = "";
+    var hot_name_owned: ?[]u8 = null;
+    defer if (hot_name_owned) |b| self.alloc.free(b);
     var hot_hit = false;
-    var hot_best: ?hot_index_mod.HotSymbol = null;
     if (self.hot_index_enabled.load(.monotonic)) {
+        // Hold hot_mu over the entire hot read + pure-hot render. rebuildHotIndex
+        // destroys the old HotIndex under the same mutex; without this guard the
+        // bg-thread free can race with this read and produce a UAF.
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        var hot_lock_held = true;
+        defer if (hot_lock_held) self.hot_mu.unlock(std.Options.debug_io);
+
         if (self.hot.load(.acquire)) |hot| {
             var best: ?hot_index_mod.HotSymbol = null;
             var best_score: i64 = std.math.minInt(i64);
@@ -561,63 +575,68 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             if (best) |w| {
                 hot_file_id = @intCast(w.file_id);
                 hot_line = @intCast(w.line);
-                hot_name = w.name;
-                hot_hit = true;
-                hot_best = w;
+                hot_name_owned = self.alloc.dupe(u8, w.name) catch null;
+                hot_hit = hot_name_owned != null;
             }
-        }
-    }
 
-    // Pure-hot-index fast path: for def/classdef hits, render the response
-    // directly from HotSymbol without any SQL round-trips. Skips the rich
-    // **Parameters:** section (param descriptions/type hints) and the class
-    // method list — those still go through the SQL path on demand. Trades a
-    // small amount of detail for an order-of-magnitude latency win on the
-    // common case (method hover).
-    if (hot_best) |hs| {
-        if ((hs.kind == .def or hs.kind == .classdef) and self.hot.load(.acquire) != null) {
-            if (self.hot.load(.acquire).?.pathFor(hs.file_id)) |sym_path| {
-                const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
-                var aw = std.Io.Writer.Allocating.init(self.alloc);
-                const w = &aw.writer;
-                try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"*(");
-                try writeEscapedJsonContent(w, kind_label);
-                try w.writeAll(")* `");
-                try writeEscapedJsonContent(w, name);
-                if (hs.params_sig) |sig| {
-                    if (sig.len > 0) {
-                        try w.writeAll("(");
-                        try writeEscapedJsonContent(w, sig);
-                        try w.writeAll(")");
+            // Pure-hot-index fast path: for def/classdef hits, render the response
+            // directly from HotSymbol without any SQL round-trips. Skips the rich
+            // **Parameters:** section (param descriptions/type hints) and the class
+            // method list — those still go through the SQL path on demand. Trades a
+            // small amount of detail for an order-of-magnitude latency win on the
+            // common case (method hover).
+            if (best) |hs| {
+                if (hs.kind == .def or hs.kind == .classdef) {
+                    if (hot.pathFor(hs.file_id)) |sym_path| {
+                        const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
+                        var aw = std.Io.Writer.Allocating.init(self.alloc);
+                        const w = &aw.writer;
+                        try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"*(");
+                        try writeEscapedJsonContent(w, kind_label);
+                        try w.writeAll(")* `");
+                        try writeEscapedJsonContent(w, name);
+                        if (hs.params_sig) |sig| {
+                            if (sig.len > 0) {
+                                try w.writeAll("(");
+                                try writeEscapedJsonContent(w, sig);
+                                try w.writeAll(")");
+                            }
+                        }
+                        try w.writeByte('`');
+                        if (hs.return_type) |rt| {
+                            if (rt.len > 0) {
+                                try w.writeAll(" \\u2192 ");
+                                try writeEscapedJsonContent(w, rt);
+                                if (self.isNilableMethod(name)) try w.writeAll(" | nil");
+                            }
+                        }
+                        try w.writeAll("\\n\\n\\u2192 ");
+                        try writeEscapedJsonContent(w, relPathFor(sym_path, self.root_path));
+                        try w.print(":{d}", .{@as(i64, @intCast(hs.line))});
+                        if (hs.doc) |d| {
+                            if (d.len > 0) {
+                                try w.writeAll("\\n\\n");
+                                try writeEscapedJsonContent(w, d);
+                            }
+                        }
+                        try w.writeAll("\"}");
+                        try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
+                        const raw_resp = try aw.toOwnedSlice();
+                        // Release hot_mu before returning — the response is now in our memory.
+                        hot_lock_held = false;
+                        self.hot_mu.unlock(std.Options.debug_io);
+                        return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
                     }
                 }
-                try w.writeByte('`');
-                if (hs.return_type) |rt| {
-                    if (rt.len > 0) {
-                        try w.writeAll(" \\u2192 ");
-                        try writeEscapedJsonContent(w, rt);
-                        if (self.isNilableMethod(name)) try w.writeAll(" | nil");
-                    }
-                }
-                try w.writeAll("\\n\\n\\u2192 ");
-                try writeEscapedJsonContent(w, relPathFor(sym_path, self.root_path));
-                try w.print(":{d}", .{@as(i64, @intCast(hs.line))});
-                if (hs.doc) |d| {
-                    if (d.len > 0) {
-                        try w.writeAll("\\n\\n");
-                        try writeEscapedJsonContent(w, d);
-                    }
-                }
-                try w.writeAll("\"}");
-                try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
-                return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
             }
         }
+        // Defer releases hot_mu here for non-pure-hot path.
     }
+    const hot_name: []const u8 = if (hot_name_owned) |b| b else "";
 
     const stmt = stmt: {
         if (hot_hit) {
-            const fs = try self.db.prepare(
+            const fs = try self.cachedStmt(
                 \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
                 \\WHERE s.file_id = ? AND s.line = ? AND s.name = ?
@@ -628,7 +647,24 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             fs.bind_text(3, hot_name);
             break :stmt fs;
         }
-        const ss = try self.db.prepare(
+        // When the hot index is loaded, qualified-suffix matches are already
+        // covered in-memory by hot.lookupTail (hover.zig:553). The SQL OR-LIKE
+        // branch is only needed for the early-startup window before warmup
+        // completes, so split into a fast indexable query for the warm case
+        // and a correctness-preserving fallback for the cold case.
+        if (self.hot.load(.acquire) != null) {
+            const ws = try self.cachedStmt(
+                \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
+                \\FROM symbols s JOIN files f ON s.file_id = f.id
+                \\WHERE s.name = ?
+                \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, s.id
+                \\LIMIT 1
+            );
+            ws.bind_text(1, name);
+            ws.bind_text(2, current_path);
+            break :stmt ws;
+        }
+        const ss = try self.cachedStmt(
             \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
             \\FROM symbols s JOIN files f ON s.file_id = f.id
             \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
@@ -641,7 +677,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
         ss.bind_text(4, name);
         break :stmt ss;
     };
-    defer stmt.finalize();
+    defer stmt.reset();
 
     if (!(try stmt.step())) return null;
 
@@ -672,7 +708,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
         param_details.deinit(self.alloc);
     }
     if (std.mem.eql(u8, kind_str, "def") or std.mem.eql(u8, kind_str, "classdef")) {
-        const ps = self.db.prepare(
+        const ps = self.cachedStmt(
             \\SELECT GROUP_CONCAT(
             \\  CASE p.kind
             \\    WHEN 'keyword' THEN p.name || ':' || IIF(p.type_hint IS NOT NULL AND (p.confidence IS NULL OR p.confidence >= 50), ' ' || p.type_hint, '')
@@ -684,7 +720,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             \\FROM params p WHERE p.symbol_id=? ORDER BY p.position
         ) catch null;
         if (ps) |s| {
-            defer s.finalize();
+            defer s.reset();
             s.bind_int(1, sym_id);
             if (s.step() catch false) {
                 const sig = s.column_text(0);
@@ -692,12 +728,12 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             }
         }
         // Fetch individual param details for the Parameters section
-        const pd_stmt = self.db.prepare(
+        const pd_stmt = self.cachedStmt(
             \\SELECT p.name, COALESCE(p.type_hint,''), COALESCE(p.description,''), p.kind
             \\FROM params p WHERE p.symbol_id=? ORDER BY p.position
         ) catch null;
         if (pd_stmt) |pds| {
-            defer pds.finalize();
+            defer pds.reset();
             pds.bind_int(1, sym_id);
             while (pds.step() catch false) {
                 const pd = ParamDetail{
@@ -798,9 +834,9 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             try writeEscapedJsonContent(w, parent_name);
             try w.writeByte('`');
         }
-        const mx_stmt = self.db.prepare("SELECT module_name FROM mixins WHERE class_id = ? AND kind IN ('include','prepend') ORDER BY rowid") catch null;
+        const mx_stmt = self.cachedStmt("SELECT module_name FROM mixins WHERE class_id = ? AND kind IN ('include','prepend') ORDER BY rowid") catch null;
         if (mx_stmt) |ms| {
-            defer ms.finalize();
+            defer ms.reset();
             ms.bind_int(1, sym_id);
             var first_mx = true;
             while (ms.step() catch false) {
@@ -815,9 +851,9 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             }
             if (!first_mx) try w.writeByte('`');
         }
-        const ext_stmt = self.db.prepare("SELECT module_name FROM mixins WHERE class_id = ? AND kind = 'extend' ORDER BY rowid") catch null;
+        const ext_stmt = self.cachedStmt("SELECT module_name FROM mixins WHERE class_id = ? AND kind = 'extend' ORDER BY rowid") catch null;
         if (ext_stmt) |es| {
-            defer es.finalize();
+            defer es.reset();
             es.bind_int(1, sym_id);
             var first_ext = true;
             while (es.step() catch false) {
@@ -860,11 +896,11 @@ pub fn hoverI18n(self: *Server, msg: types.RequestMessage, source: []const u8, o
     }
     const full_key = source[key_start..key_end];
 
-    const stmt = self.db.prepare(
+    const stmt = self.cachedStmt(
         \\SELECT value, locale FROM i18n_keys WHERE key = ?
         \\ORDER BY locale LIMIT 10
     ) catch return null;
-    defer stmt.finalize();
+    defer stmt.reset();
     stmt.bind_text(1, full_key);
 
     var aw = std.Io.Writer.Allocating.init(self.alloc);
