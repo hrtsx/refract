@@ -396,6 +396,25 @@ test "P46 T46.22 MCP find_references finds method references" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
 }
 
+test "P46 T46.24 MCP find_references filters by ref_kind" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p46_t4624";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/mixed.rb", .data = "class Test\n  def foo\n    42\n  end\n  def bar\n    foo\n    foo\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/mixed.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_references\",\"arguments\":{\"name\":\"foo\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"find_references\",\"arguments\":{\"name\":\"foo\",\"ref_kind\":\"call\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
+}
+
 test "P46 T46.23 MCP explain_symbol explains method" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p46_t4623";

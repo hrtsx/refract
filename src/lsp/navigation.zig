@@ -125,7 +125,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                 if (type_resolver.resolve(self.alloc, self.db, recv_w, null, -1)) |hit_const| {
                     var hit = hit_const;
                     defer hit.deinit(self.alloc);
-                    if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                    if (hit.confidence >= self.type_checker_confidence.surface) {
                         sorbet_recv_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
                         if (sorbet_recv_owned) |b| recv_type = b;
                     }
@@ -584,7 +584,7 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
     if (type_resolver.resolve(self.alloc, self.db, word, null, -1)) |hit_const| {
         var hit = hit_const;
         defer hit.deinit(self.alloc);
-        if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+        if (hit.confidence >= self.type_checker_confidence.surface) {
             tn_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
             if (tn_owned) |b| type_name = b;
         }

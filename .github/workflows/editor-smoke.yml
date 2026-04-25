@@ -118,3 +118,86 @@ jobs:
             echo "FAIL: Helix did not pick up refract config"
             exit 1
           fi
+
+  config-only-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        editor: [zed, sublime-lsp, jetbrains, kate]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: Install validators
+        run: sudo apt-get update && sudo apt-get install -y jq libxml2-utils python3
+      - name: Run ${{ matrix.editor }} smoke
+        env:
+          REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
+        run: bash editors/${{ matrix.editor }}/smoke.sh
+
+  neovim-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: Install Neovim
+        run: sudo apt-get update && sudo apt-get install -y neovim
+      - name: Neovim LSP smoke
+        env:
+          REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
+        run: |
+          sudo cp ./zig-out/bin/refract /usr/local/bin/refract
+          mkdir -p /tmp/nvim-ws
+          echo 'class Smoke; def hello; "ok"; end; end' > /tmp/nvim-ws/sample.rb
+          nvim --headless -u editors/neovim/init.lua /tmp/nvim-ws/sample.rb \
+            -c 'lua vim.defer_fn(function() local n=0; for _ in pairs(vim.lsp.get_active_clients()) do n=n+1 end; if n<1 then vim.cmd("cq") else vim.cmd("qa") end end, 3000)' \
+            -c 'sleep 4' || { echo "FAIL: Neovim LSP client did not start"; exit 1; }
+          echo "Neovim LSP smoke OK"
+
+  vscode-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: VSCode extension smoke
+        env:
+          REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
+        run: |
+          sudo cp ./zig-out/bin/refract /usr/local/bin/refract
+          sudo apt-get update && sudo apt-get install -y xvfb
+          cd editors/vscode
+          npm install
+          xvfb-run -a npm test

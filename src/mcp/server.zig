@@ -63,7 +63,7 @@ const schema_concern_usage =
     \\{"type":"object","properties":{"module_name":{"type":"string","description":"Module or concern name to find usages of"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["module_name"]}
 ;
 const schema_find_references =
-    \\{"type":"object","properties":{"name":{"type":"string","description":"Method or symbol name to find references to"},"ref_kind":{"type":"string","description":"Optional kind filter, e.g. 'method_call'"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["name"]}
+    \\{"type":"object","properties":{"name":{"type":"string","description":"Method or symbol name to find references to"},"ref_kind":{"type":"string","description":"Optional kind filter: call, assign, decl, super, yield, alias"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["name"]}
 ;
 const schema_explain_symbol =
     \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Fully qualified class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
@@ -2292,16 +2292,30 @@ pub const Server = struct {
         var offset = getIntArg(args, "offset") orelse 0;
         if (offset < 0) offset = 0;
 
-        _ = ref_kind; // ref_kind filtering not yet supported (refs.kind column planned)
-        const stmt = self.db.prepare(
-            \\SELECT f.path, r.line, r.col FROM refs r
-            \\JOIN files f ON f.id = r.file_id
-            \\WHERE r.name = ?
-            \\ORDER BY f.path, r.line LIMIT 201 OFFSET ?
-        ) catch return self.buildToolError(id, "database error");
+        const stmt = if (ref_kind != null)
+            self.db.prepare(
+                \\SELECT f.path, r.line, r.col FROM refs r
+                \\JOIN files f ON f.id = r.file_id
+                \\WHERE r.name = ? AND r.kind = ?
+                \\ORDER BY f.path, r.line LIMIT 201 OFFSET ?
+            ) catch return self.buildToolError(id, "database error")
+        else
+            self.db.prepare(
+                \\SELECT f.path, r.line, r.col FROM refs r
+                \\JOIN files f ON f.id = r.file_id
+                \\WHERE r.name = ?
+                \\ORDER BY f.path, r.line LIMIT 201 OFFSET ?
+            ) catch return self.buildToolError(id, "database error")
+        ;
         defer stmt.finalize();
-        stmt.bind_text(1, name);
-        stmt.bind_int(2, offset);
+        var param_idx: c_int = 1;
+        stmt.bind_text(param_idx, name);
+        param_idx += 1;
+        if (ref_kind) |kind| {
+            stmt.bind_text(param_idx, kind);
+            param_idx += 1;
+        }
+        stmt.bind_int(param_idx, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();

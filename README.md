@@ -168,6 +168,7 @@ All options are passed via `initializationOptions` and hot-reload via `workspace
 | `maxWorkers` | number | cpu count (max 8) | Parallel indexing threads |
 | `extraExcludeDirs` | string[] | [] | Extra directories to skip during scan |
 | `logLevel` | number | 2 | 1=error 2=warn 3=info 4=debug |
+| `typeCheckerConfidence` | object | `{"surface": 80, "diag": 50}` | Tune precision/recall: surface gates completion/hover; diag gates nil-receiver/wrong-arity diagnostics |
 
 ## CLI
 
@@ -281,3 +282,7 @@ zig build --release=safe
 On `initialized`, refract scans the workspace for `.rb`, `.rbs`, `.rbi`, `.erb`, `.rake`, `.gemspec`, `.ru` files plus `Gemfile`/`Rakefile`, and indexes classes, modules, methods, constants, routes, associations, and i18n keys into a per-project SQLite database. All LSP requests are answered by querying that database. File saves update the index incrementally via `workspace/didChangeWatchedFiles`.
 
 Supports Ruby 2.7 – 3.4 syntax (via Prism 1.9.0). Works with Rails, plain gems, Rack apps, scripts, and monorepos.
+
+## Reproduce benchmarks
+
+Run `./scripts/bench/repro.sh` to clone corpora, build refract in release mode, and run the full benchmark matrix. Results land under `bench-results/realistic/<timestamp>/`.

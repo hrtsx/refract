@@ -36,18 +36,23 @@ pub const RdbgBridge = struct {
         alloc.free(argv);
     }
 
+    pub const Error = error{RdbgNotFound};
+
     pub fn launch(alloc: std.mem.Allocator, program: []const u8, program_args: []const []const u8, cwd: []const u8) !RdbgBridge {
         const argv = try buildArgv(alloc, program, program_args);
         defer freeArgv(alloc, argv);
         const cwd_z = try alloc.dupeZ(u8, cwd);
         defer alloc.free(cwd_z);
-        const child = try std.process.spawn(std.Options.debug_io, .{
+        const child = std.process.spawn(std.Options.debug_io, .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .pipe,
             .cwd = .{ .path = cwd_z },
-        });
+        }) catch |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => return error.RdbgNotFound,
+            else => return err,
+        };
         return RdbgBridge{
             .child = child,
             .alloc = alloc,

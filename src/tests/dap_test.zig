@@ -53,3 +53,26 @@ test "setBreakpoints without bridge returns no debug session error" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"success\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "no debug session") != null);
 }
+
+test "launch with missing rdbg emits output event with install hint before failure response" {
+    const alloc = std.testing.allocator;
+    _ = std.c.setenv("RDBG_BIN", "/nonexistent/refract-test-rdbg-binary", 1);
+    defer _ = std.c.unsetenv("RDBG_BIN");
+
+    var s = dap_server.Server.init(alloc, std.Options.debug_io);
+    var out_bytes: [8192]u8 = undefined;
+    var w = std.Io.Writer.fixed(&out_bytes);
+
+    const req =
+        \\{"seq":3,"type":"request","command":"launch","arguments":{"program":"/bin/true","cwd":"/tmp"}}
+    ;
+    try s.dispatch(req, &w);
+
+    const written = w.buffered();
+    const out_idx = std.mem.indexOf(u8, written, "\"event\":\"output\"") orelse return error.MissingOutputEvent;
+    const hint_idx = std.mem.indexOf(u8, written, "gem install debug") orelse return error.MissingInstallHint;
+    const launch_resp_idx = std.mem.indexOf(u8, written, "\"command\":\"launch\"") orelse return error.MissingLaunchResponse;
+    try std.testing.expect(out_idx < launch_resp_idx);
+    try std.testing.expect(hint_idx < launch_resp_idx);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"success\":false") != null);
+}

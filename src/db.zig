@@ -6,6 +6,8 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
+pub const CURRENT_SCHEMA: u32 = 8;
+
 pub const DbError = error{
     Open,
     Exec,
@@ -245,7 +247,6 @@ pub const Db = struct {
     pub fn init_schema(self: Db) DbError!void {
         const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
         const schema_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
-        const CURRENT_SCHEMA: u32 = 7;
         {
             var needs_reset = false;
             var needs_reindex = false;
@@ -340,7 +341,8 @@ pub const Db = struct {
             \\  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
             \\  name    TEXT NOT NULL,
             \\  line    INTEGER NOT NULL,
-            \\  col     INTEGER NOT NULL
+            \\  col     INTEGER NOT NULL,
+            \\  kind    TEXT
             \\);
             \\CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
             \\CREATE UNIQUE INDEX IF NOT EXISTS idx_refs_unique
@@ -690,9 +692,12 @@ pub const Db = struct {
             \\FROM type_oracle
         );
 
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','7')");
+        // Schema v8: refs.kind column for filtering by reference type
+        self.execMigration("ALTER TABLE refs ADD COLUMN kind TEXT"); // migration guard: column already exists on migrated schemas
+
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','8')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 7) {
+        if (final_ver != 8) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
         if (profiling) {

@@ -29,8 +29,8 @@ pub const TypeResult = struct {
     }
 };
 
-pub const SURFACE_THRESHOLD: u8 = 80;
-pub const DIAG_THRESHOLD: u8 = 50;
+pub const DEFAULT_SURFACE_THRESHOLD: u8 = 80;
+pub const DEFAULT_DIAG_THRESHOLD: u8 = 50;
 
 /// Resolution chain: sorbet (≥0.8) → steep (≥0.8) → type_oracle (any) → rbs param → literal.
 /// Returns first hit. Caller owns result.type_str.

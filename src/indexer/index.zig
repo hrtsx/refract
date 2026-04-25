@@ -2068,7 +2068,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, rn.base.location.start);
             const name = resolveConstant(ctx.parser, rn.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null) catch {
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null, null) catch {
                 ctx.error_count += 1;
             };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
@@ -2152,7 +2152,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sym2: *const prism.SymbolNode = @ptrCast(@alignCast(second));
                             if (sym2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null) catch {
+                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null, "alias") catch {
                                     ctx.error_count += 1;
                                 };
                             }
@@ -2160,7 +2160,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sn2: *const prism.StringNode = @ptrCast(@alignCast(second));
                             if (sn2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null) catch {
+                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null, "alias") catch {
                                     ctx.error_count += 1;
                                 };
                             }
@@ -2648,7 +2648,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const osym: *const prism.SymbolNode = @ptrCast(@alignCast(an.old_name));
                 if (osym.unescaped.source) |src| {
                     const lc = locationLineCol(ctx.parser, an.old_name.*.location.start);
-                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null) catch {
+                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null, "alias") catch {
                         ctx.error_count += 1;
                     };
                 }
@@ -2666,7 +2666,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const lv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, lv.base.location.start);
             const name = resolveConstant(ctx.parser, lv.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id) catch {
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id, null) catch {
                 ctx.error_count += 1;
             };
         },
@@ -2680,7 +2680,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             };
             if (ref_name.len > 0) {
                 const lc = locationLineCol(ctx.parser, pn.base.location.start);
-                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null) catch {
+                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null, null) catch {
                     ctx.error_count += 1;
                 };
             }
@@ -3638,9 +3638,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
     }
 }
 
-fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, scope_id: ?i64) !void {
+fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, scope_id: ?i64, kind: ?[]const u8) !void {
     const stmt = try db.prepare(
-        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id) VALUES (?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind) VALUES (?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
@@ -3648,6 +3648,7 @@ fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32,
     stmt.bind_int(3, line);
     stmt.bind_int(4, @intCast(col));
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
+    if (kind) |k| stmt.bind_text(6, k) else stmt.bind_null(6);
     _ = try stmt.step();
 }
 
@@ -3664,8 +3665,8 @@ fn insertCallRef(
     receiver_type: ?[]const u8,
 ) !void {
     const stmt = try db.prepare(
-        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, arg_count, receiver_type)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, arg_count, receiver_type, kind)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
@@ -3675,6 +3676,7 @@ fn insertCallRef(
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
     stmt.bind_int(6, arg_count);
     if (receiver_type) |rt| stmt.bind_text(7, rt) else stmt.bind_null(7);
+    stmt.bind_text(8, "call");
     _ = try stmt.step();
 }
 
@@ -5919,13 +5921,13 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
 
     // Copy refs
     const sel_r = try mem_db.prepare(
-        \\SELECT name, line, col, scope_id FROM refs WHERE file_id = ?
+        \\SELECT name, line, col, scope_id, kind FROM refs WHERE file_id = ?
     );
     defer sel_r.finalize();
     sel_r.bind_int(1, mem_file_id);
 
     const ins_r = try real_db.prepare(
-        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id) VALUES (?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind) VALUES (?, ?, ?, ?, ?, ?)
     );
     defer ins_r.finalize();
 
@@ -5939,6 +5941,9 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
             const real_scope = id_map.get(sel_r.column_int(3)) orelse 0;
             if (real_scope != 0) ins_r.bind_int(5, real_scope) else ins_r.bind_null(5);
         } else ins_r.bind_null(5);
+        if (sel_r.column_type(4) != 5) {
+            ins_r.bind_text(6, sel_r.column_text(4));
+        } else ins_r.bind_null(6);
         _ = try ins_r.step();
     }
 
