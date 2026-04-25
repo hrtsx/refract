@@ -23,6 +23,7 @@ const editing = @import("editing.zig");
 const rename = @import("rename.zig");
 const hot_index_mod = @import("hot_index.zig");
 const workspace_config = @import("workspace_config.zig");
+const handler_registry = @import("handler_registry.zig");
 
 pub const ruby_block_keywords = [_][]const u8{ "if ", "unless ", "case ", "while ", "until ", "begin", "for " };
 pub const empty_json_array = "[]";
@@ -1103,6 +1104,7 @@ pub const Server = struct {
     env_keys_cache: std.ArrayListUnmanaged([]u8) = .empty,
     env_keys_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     env_keys_mu: std.Io.Mutex = std.Io.Mutex.init,
+    registry: handler_registry.Registry = .{},
 
     pub fn init(io: std.Io, db: db_mod.Db, db_pathz: [:0]const u8, alloc: std.mem.Allocator) !Server {
         var s = Server{
@@ -1149,6 +1151,7 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        self.registry.deinit(self.alloc);
         self.bg_cancelled.store(true, .seq_cst);
         if (self.bg_thread) |t| t.join();
         if (self.warmup_thread) |t| {
@@ -1396,6 +1399,11 @@ pub const Server = struct {
                 return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = null, .@"error" = .{ .code = @intFromEnum(types.ErrorCode.server_not_initialized), .message = "Server not initialized" } };
             }
             return null;
+        }
+        // Pluggable registry — opt-in handlers for extension tracks (DAP, code_lens, etc.).
+        // Checked before legacy if/else chain so tracks can override or add methods without touching dispatch.
+        if (try self.registry.dispatchRequest(@ptrCast(self), msg)) |hit| {
+            return hit.response;
         }
         if (std.mem.eql(u8, msg.method, "initialized")) {
             if (self.bg_started) return null;
@@ -1683,6 +1691,7 @@ pub const Server = struct {
                             break :blk false;
                         };
                         del_stmt.finalize();
+                        workspace_config.removeWorkspace(self, folder_uri);
                         self.db_mutex.unlock(std.Options.debug_io);
                         self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
                         var ip_idx: usize = 0;
@@ -1727,6 +1736,7 @@ pub const Server = struct {
                         if (self.alloc.dupe(u8, folder_path)) |rdup| {
                             self.extra_roots.append(self.alloc, rdup) catch self.alloc.free(rdup);
                         } else |_| {}
+                        _ = workspace_config.recordWorkspace(self, folder_uri, folder_path, false);
                         const new_paths = scanner.scan(folder_path, self.alloc, self.extra_exclude_dirs) catch |e| {
                             var sbuf: [256]u8 = undefined;
                             const sm = std.fmt.bufPrint(&sbuf, "refract: failed to scan folder {s}: {s}", .{ folder_path, @errorName(e) }) catch "refract: folder scan failed";
@@ -2050,6 +2060,33 @@ pub const Server = struct {
                     if (self.root_path) |rp| {
                         _ = workspace_config.loadAndApply(self, rp);
                     }
+                    if (self.root_uri) |primary_uri| {
+                        if (self.root_path) |primary_path| {
+                            _ = workspace_config.recordWorkspace(self, primary_uri, primary_path, true);
+                        }
+                    }
+                    if (obj.get("workspaceFolders")) |wf_all| switch (wf_all) {
+                        .array => |arr2| {
+                            for (arr2.items, 0..) |it, idx| {
+                                if (idx == 0) continue;
+                                const folder = switch (it) {
+                                    .object => |o| o,
+                                    else => continue,
+                                };
+                                const folder_uri = switch (folder.get("uri") orelse continue) {
+                                    .string => |s| s,
+                                    else => continue,
+                                };
+                                const folder_path = uriToPath(self.alloc, folder_uri) catch continue;
+                                defer self.alloc.free(folder_path);
+                                if (self.alloc.dupe(u8, folder_path)) |rdup| {
+                                    self.extra_roots.append(self.alloc, rdup) catch self.alloc.free(rdup);
+                                } else |_| {}
+                                _ = workspace_config.recordWorkspace(self, folder_uri, folder_path, false);
+                            }
+                        },
+                        else => {},
+                    };
                     if (obj.get("initializationOptions")) |opts_val| {
                         if (opts_val == .object) {
                             if (opts_val.object.get("disableGemIndex")) |v| {

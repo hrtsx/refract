@@ -245,7 +245,7 @@ pub const Db = struct {
     pub fn init_schema(self: Db) DbError!void {
         const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
         const schema_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
-        const CURRENT_SCHEMA: u32 = 5;
+        const CURRENT_SCHEMA: u32 = 6;
         {
             var needs_reset = false;
             var needs_reindex = false;
@@ -285,6 +285,13 @@ pub const Db = struct {
                 self.exec("DROP TABLE IF EXISTS routes") catch {};
                 self.exec("DROP TABLE IF EXISTS i18n_keys") catch {};
                 self.exec("DROP TABLE IF EXISTS aliases") catch {};
+                self.exec("DROP TABLE IF EXISTS type_oracle") catch {};
+                self.exec("DROP TABLE IF EXISTS doc_blocks") catch {};
+                self.exec("DROP TABLE IF EXISTS perf_metrics") catch {};
+                self.exec("DROP TABLE IF EXISTS audit_log") catch {};
+                self.exec("DROP TABLE IF EXISTS deprecations") catch {};
+                self.exec("DROP TABLE IF EXISTS gem_versions") catch {};
+                self.exec("DROP TABLE IF EXISTS worktree") catch {};
                 self.exec("DROP TABLE IF EXISTS symbols") catch {};
                 self.exec("DROP TABLE IF EXISTS files") catch {};
                 self.exec("DROP TABLE IF EXISTS meta") catch {};
@@ -457,9 +464,98 @@ pub const Db = struct {
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {}; // migration
         // Phase 4: YARD @param description text (text after [Type] in @param tags)
         self.execMigration("ALTER TABLE params ADD COLUMN description TEXT"); // migration guard: column already exists on migrated schemas
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','5')");
+        // Schema v6: type_oracle, doc_blocks, perf_metrics, audit_log, deprecations, gem_versions, worktree
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS worktree (
+            \\  id            INTEGER PRIMARY KEY,
+            \\  workspace_uri TEXT NOT NULL UNIQUE,
+            \\  root_path     TEXT NOT NULL,
+            \\  gemfile_path  TEXT,
+            \\  ruby_version  TEXT,
+            \\  is_primary    INTEGER NOT NULL DEFAULT 0,
+            \\  created_at    INTEGER NOT NULL DEFAULT 0
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_worktree_root ON worktree(root_path)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS type_oracle (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  fqn         TEXT NOT NULL,
+            \\  method_name TEXT,
+            \\  param_pos   INTEGER NOT NULL DEFAULT -1,
+            \\  type_str    TEXT NOT NULL,
+            \\  source      TEXT NOT NULL,
+            \\  confidence  INTEGER NOT NULL DEFAULT 100
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_type_oracle_fqn ON type_oracle(fqn)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_type_oracle_lookup ON type_oracle(fqn, method_name, param_pos)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS doc_blocks (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+            \\  kind        TEXT NOT NULL,
+            \\  raw         TEXT NOT NULL,
+            \\  rendered    TEXT,
+            \\  params_json TEXT,
+            \\  return_type TEXT,
+            \\  return_desc TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_doc_blocks_symbol ON doc_blocks(symbol_id)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS perf_metrics (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  method       TEXT NOT NULL,
+            \\  p50_us       INTEGER NOT NULL,
+            \\  p95_us       INTEGER NOT NULL,
+            \\  count        INTEGER NOT NULL,
+            \\  window_start INTEGER NOT NULL,
+            \\  window_end   INTEGER NOT NULL
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_perf_metrics_method ON perf_metrics(method, window_end)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS audit_log (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  ts_us       INTEGER NOT NULL,
+            \\  tool_name   TEXT NOT NULL,
+            \\  request_id  TEXT,
+            \\  args_json   TEXT,
+            \\  result_kind TEXT NOT NULL,
+            \\  duration_us INTEGER NOT NULL DEFAULT 0
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts_us)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_audit_log_tool ON audit_log(tool_name, ts_us)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS deprecations (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  gem_name     TEXT NOT NULL,
+            \\  version_spec TEXT NOT NULL,
+            \\  symbol_fqn   TEXT,
+            \\  message      TEXT NOT NULL,
+            \\  replacement  TEXT,
+            \\  cve_id       TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_deprecations_gem ON deprecations(gem_name)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_deprecations_symbol ON deprecations(symbol_fqn)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS gem_versions (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE,
+            \\  gem_name     TEXT NOT NULL,
+            \\  version      TEXT NOT NULL,
+            \\  loaded_at    INTEGER NOT NULL,
+            \\  source       TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_gem_versions_ws_gem ON gem_versions(workspace_id, gem_name)") catch {};
+        self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_gem_versions_unique ON gem_versions(COALESCE(workspace_id,0), gem_name)") catch {};
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','6')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 5) {
+        if (final_ver != 6) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
         if (profiling) {
