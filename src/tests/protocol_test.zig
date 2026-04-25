@@ -152,6 +152,7 @@ test "workspace/symbol returns array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sample.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Test\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -196,6 +197,7 @@ test "hover returns markdown" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hover_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hover_test.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -251,6 +253,7 @@ test "definition returns location" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/def_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/def_test.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -309,6 +312,7 @@ test "documentSymbol returns symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sample.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sample.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -354,8 +358,10 @@ test "delete event removes symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"UniqueDeleteTarget\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_test.rb\",\"type\":3}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"UniqueDeleteTarget\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -456,6 +462,7 @@ test "signatureHelp returns params" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sig_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sig_test.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -501,6 +508,7 @@ test "typeDefinition resolves local var" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/type_def_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/typeDefinition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/type_def_test.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -546,6 +554,7 @@ test "inlayHint shows type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/inlay_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/inlay_test.rb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":5,\"character\":0}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -608,6 +617,7 @@ test "semanticTokens returns data" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sem_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sem_test.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -658,6 +668,7 @@ test "completion respects trigger" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/completion_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_test.rb\"},\"position\":{\"line\":0,\"character\":9}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -724,6 +735,7 @@ test "inlayHint shows literal types" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/literal_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/literal_test.rb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":5,\"character\":0}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -793,6 +805,7 @@ test "hover shows return type for def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/return_type_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/return_type_test.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -848,6 +861,7 @@ test "constant symbol has kind 13" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/const_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MYCONST\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -903,6 +917,7 @@ test "signatureHelp label includes return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sig_ret_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sig_ret_test.rb\"},\"position\":{\"line\":4,\"character\":15}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -963,6 +978,7 @@ test "inlayHint shows ivar type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ivar_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ivar_test.rb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":0}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1018,6 +1034,7 @@ test "inlayHint shows type from erb" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/erb_test.html.erb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/erb_test.html.erb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":2,\"character\":0}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1074,6 +1091,7 @@ test "inlayHint column position uses variable offset not length" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/col_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/col_test.rb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":1,\"character\":0}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1135,6 +1153,7 @@ test "hover shows local var type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hover_lv.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hover_lv.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1190,6 +1209,7 @@ test "completion includes local vars" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/completion_lv.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Trigger completion on "my_s" (character 4)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_lv.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
@@ -1264,6 +1284,7 @@ test "RBS indexing extracts def with return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/types.rbs\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"render\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1319,6 +1340,7 @@ test "hover on non-assignment line returns local var type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hover_nonassign.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hover_nonassign.rb\"},\"position\":{\"line\":1,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1374,6 +1396,7 @@ test "definition jumps to local var assignment" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/def_lv.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/def_lv.rb\"},\"position\":{\"line\":1,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1424,6 +1447,7 @@ test "prepareRename returns word range" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rename_prep.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/prepareRename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rename_prep.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1495,6 +1519,7 @@ test "rename returns workspace edit" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rename_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rename_test.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"hello\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1591,6 +1616,7 @@ test "attr_accessor creates navigable symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/attr_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"name\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1652,6 +1678,7 @@ test "rename renames all local var usages" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lvar_rename_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/lvar_rename_test.rb\"},\"position\":{\"line\":0,\"character\":0},\"newName\":\"y\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1711,6 +1738,7 @@ test "hover shows doc comment" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/doc_hover_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/doc_hover_test.rb\"},\"position\":{\"line\":1,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1766,6 +1794,7 @@ test "rename rejects invalid Ruby identifier" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rename_valid_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rename_valid_test.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"123invalid\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1817,6 +1846,7 @@ test "rename is scope-aware: only renames within same method" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope_rename_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Rename x inside foo (line 1, col 2)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/scope_rename_test.rb\"},\"position\":{\"line\":1,\"character\":2},\"newName\":\"y\"}}");
     try s.send(base_shutdown);
@@ -1878,6 +1908,7 @@ test "documentHighlight returns ranges in file" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/highlight_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentHighlight\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/highlight_test.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -1925,6 +1956,7 @@ test "signatureHelp handles nested parens correctly" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/nested_sig_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Position at the trailing space on line 4 (after the comma, inside outer foo call)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/nested_sig_test.rb\"},\"position\":{\"line\":4,\"character\":15}}}");
     try s.send(base_shutdown);
@@ -1977,6 +2009,7 @@ test "rename local var does not rename def with same name" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rename_shadow.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Rename `foo` at line 3 col 2 (the local var write `foo = 1`)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rename_shadow.rb\"},\"position\":{\"line\":3,\"character\":2},\"newName\":\"bar_foo\"}}");
     try s.send(base_shutdown);
@@ -2060,6 +2093,7 @@ test "references on local var returns only scoped refs" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/refs_scope.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // References on `x` at line 1 col 2 (inside def a)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/refs_scope.rb\"},\"position\":{\"line\":1,\"character\":2},\"context\":{\"includeDeclaration\":true}}}");
     try s.send(base_shutdown);
@@ -2116,6 +2150,7 @@ test "references on a class constant returns cross-file uses" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/account.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/billing.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Cursor on `Account` in user.rb at line 2 col 15 (the `Account.find(1)` use)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/user.rb\"},\"position\":{\"line\":2,\"character\":15},\"context\":{\"includeDeclaration\":false}}}");
     try s.send(base_shutdown);
@@ -2206,6 +2241,7 @@ test "instance var completion returns @-prefixed names" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ivar_completion.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Completion at line 2 col 5 — inside `@name`, triggers @-prefix completion
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ivar_completion.rb\"},\"position\":{\"line\":2,\"character\":5}}}");
     try s.send(base_shutdown);
@@ -2274,6 +2310,7 @@ test "documentHighlight is scope-aware for local vars" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope_highlight.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Highlight `x` at line 1 (0-indexed), character 2
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentHighlight\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/scope_highlight.rb\"},\"position\":{\"line\":1,\"character\":2}}}");
     try s.send(base_shutdown);
@@ -2452,6 +2489,7 @@ test "workspace/didDeleteFiles removes symbol" {
     // No `initialized` → background thread never starts → no race
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_target.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"DeleteTargetUnique7391\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didDeleteFiles\",\"params\":{\"files\":[{\"uri\":\"file://" ++ ws ++ "/delete_target.rb\"}]}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"DeleteTargetUnique7391\"}}");
@@ -2509,6 +2547,7 @@ test "completion no duplicate names" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dedup_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/dedup_test.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -2577,6 +2616,7 @@ test "completion returns prefix matches across files and excludes non-matches" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/use.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/use.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -2884,8 +2924,10 @@ test "watched file delete type=3 uses explicit cascade" {
 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/watched_delete.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"WatchedDeleteTarget6209\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/watched_delete.rb\",\"type\":3}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"WatchedDeleteTarget6209\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3107,6 +3149,7 @@ test "rbi file indexed on watched event" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/typed_sig.rbi\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"RbiClass\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3290,6 +3333,7 @@ test "alias_method creates navigable symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/alias_method_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"display_name\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3351,6 +3395,7 @@ test "def self.method shows 'def self' in hover" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/classdef_hover_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/classdef_hover_test.rb\"},\"position\":{\"line\":1,\"character\":12}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3415,6 +3460,7 @@ test "large file over 8MB skipped without crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/huge.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3458,6 +3504,7 @@ test "class << self methods indexed as classdef" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/singleton_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"build\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/singleton_test.rb\"},\"position\":{\"line\":2,\"character\":8}}}");
     try s.send(base_shutdown);
@@ -3525,6 +3572,7 @@ test "Rakefile task methods indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/Rakefile\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"helper_task\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3569,6 +3617,7 @@ test "completion response is CompletionList not bare array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/compl_list_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/compl_list_test.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3614,6 +3663,7 @@ test "scope indexed as classdef" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"find_active\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3658,6 +3708,7 @@ test "belongs_to and has_many indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/assoc_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"user\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3702,6 +3753,7 @@ test "lambda local var indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lambda_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"my_func\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3746,6 +3798,7 @@ test "insertText snippet in completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/snippet_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/snippet_test.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3812,6 +3865,7 @@ test "MRO grandparent method via DOT completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -3937,11 +3991,13 @@ test "didChangeWatchedFiles modify reindexes" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/modify_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = ws ++ "/modify_test.rb",
         .data = "class ModifiedClass; end\n",
     });
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/modify_test.rb\",\"type\":2}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"ModifiedClass\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4002,7 +4058,9 @@ test "didChangeWatchedFiles delete removes symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_me.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_me.rb\",\"type\":3}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"ToBeDeleted\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4058,6 +4116,7 @@ test "completion items have sortText" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sort_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sort_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4118,6 +4177,7 @@ test "completion defs ranked before classes" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rank_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rank_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4189,6 +4249,7 @@ test "completion method has commitCharacters" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/commit_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/commit_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4347,6 +4408,7 @@ test "documentSymbol returns hierarchy" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4491,7 +4553,9 @@ test "local_vars no duplicates after double reindex" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dup_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dup_test.rb\",\"type\":2}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/dup_test.rb\"},\"position\":{\"line\":1,\"character\":18},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4554,6 +4618,7 @@ test "validates indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/validates_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"validated_name\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4614,6 +4679,7 @@ test "before_action indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/before_action_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"authenticate_user\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4674,6 +4740,7 @@ test "has_and_belongs_to_many indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/habtm_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"habtm_tags\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4734,6 +4801,7 @@ test "define_method indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/define_method_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"dynamic_greet\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4794,6 +4862,7 @@ test "module_function indexed as classdef" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/module_function_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"modfunc_helper\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4894,6 +4963,7 @@ test "window/logMessage on indexing error" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "\",\"type\":3}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -4933,6 +5003,7 @@ test "delegate indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delegate_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"delegated_name\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5023,6 +5094,7 @@ test "completion items include filterText" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/filter_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/filter_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5112,6 +5184,7 @@ test "log_level filters info messages" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/log_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"LogTest\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5200,6 +5273,7 @@ test "max_file_size respected" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"maxFileSizeBytes\":1}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/big_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BigTest\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5336,6 +5410,7 @@ test "rescue_from indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rescue_from_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"handle_not_found\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5379,6 +5454,7 @@ test "helper_method indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/helper_method_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"current_user\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5422,6 +5498,7 @@ test "validates_format_of indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/validates_format_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"email\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5465,6 +5542,7 @@ test "rescue_from with: handler indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rescue_from_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"handle_404\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5508,6 +5586,7 @@ test "define_singleton_method indexed as classdef" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/singleton_method_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"my_singleton_foo\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5551,6 +5630,7 @@ test "RBS interface indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/my_types.rbs\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Serializable\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5637,6 +5717,7 @@ test "didDeleteFiles removes symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delete_p19.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didDeleteFiles\",\"params\":{\"files\":[{\"uri\":\"file://" ++ ws ++ "/delete_p19.rb\"}]}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"p19_delete_target_method\"}}");
     try s.send(base_shutdown);
@@ -5835,6 +5916,7 @@ test "completion documentation field" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/doc_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/doc_test.rb\"},\"position\":{\"line\":4,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5888,6 +5970,7 @@ test "completion textEdit field present" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/textedit_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/textedit_test.rb\"},\"position\":{\"line\":2,\"character\":8}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -5941,6 +6024,7 @@ test "documentSymbol detail shows return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/typed.rbs\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/typed.rbs\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6001,6 +6085,7 @@ test "rename to existing name returns error" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/conflict_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/conflict_test.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"p19_bar_method\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6040,6 +6125,7 @@ test "empty file returns empty symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/empty.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6142,6 +6228,7 @@ test "dot completion includes doc field" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6195,6 +6282,7 @@ test "dot completion includes textEdit" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/textedit_test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/textedit_test.rb\"},\"position\":{\"line\":6,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6280,6 +6368,7 @@ test "workspace symbol empty query returns results" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/symbols.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6471,6 +6560,7 @@ test "foldingRange returns ranges" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/folding.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/folding.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6515,6 +6605,7 @@ test "rangeFormatting returns null" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/test.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rangeFormatting\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/test.rb\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":1,\"character\":0}},\"options\":{\"tabSize\":2,\"insertSpaces\":true}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6592,6 +6683,7 @@ test "class variable indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/classvar.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"@@config\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6636,6 +6728,7 @@ test "delegate DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/delegate.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"bar\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6680,6 +6773,7 @@ test "scope DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"active\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6724,6 +6818,7 @@ test "signatureHelp doc populated" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sig.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sig.rb\"},\"position\":{\"line\":4,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6823,6 +6918,7 @@ test "qualified class name indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qclass.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo::Bar\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6867,6 +6963,7 @@ test "qualified module name indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qmod.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo::Bar\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6911,6 +7008,7 @@ test "hover on qualified name" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qhover.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/qhover.rb\"},\"position\":{\"line\":2,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6951,6 +7049,7 @@ test "definition on qualified name" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qdef.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/qdef.rb\"},\"position\":{\"line\":2,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -6995,6 +7094,7 @@ test "superclass qualified parent_name" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qparent.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7050,6 +7150,7 @@ test "chained dot completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/chain.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/chain.rb\"},\"position\":{\"line\":9,\"character\":16}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7098,6 +7199,7 @@ test "constant_path_write indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/cpwrite.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo::BAR\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7142,6 +7244,7 @@ test "validate DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/validate.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"my_check\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7186,6 +7289,7 @@ test "after_update DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/au.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"refresh_cache\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7230,6 +7334,7 @@ test "before_update DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/bu.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"normalize\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7274,6 +7379,7 @@ test "validates_inclusion_of indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/vinc.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"status\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7318,6 +7424,7 @@ test "validates_with indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/vwith.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MyModel\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7371,6 +7478,7 @@ test "qualified mixin stored" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/qmixin.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Concerns::Searchable\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7415,6 +7523,7 @@ test "after_find DSL indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/af.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"populate_cache\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7459,6 +7568,7 @@ test "validates_exclusion_of indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/vexc.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"age\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7592,6 +7702,7 @@ test "rspec describe indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MyClass\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7627,6 +7738,7 @@ test "rspec it indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"does the thing\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7662,6 +7774,7 @@ test "rspec let indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"foo\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7697,6 +7810,7 @@ test "sinatra get indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"/hello\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7732,6 +7846,7 @@ test "rake task indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/Rakefile\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"build\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7767,6 +7882,7 @@ test "mattr_accessor indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/m.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"setting\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7802,6 +7918,7 @@ test "cattr_accessor indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"config\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7865,6 +7982,7 @@ test "block param inferred from each" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/b.rb\"},\"position\":{\"line\":5,\"character\":3}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -7895,6 +8013,7 @@ test "completion ranked prefix first" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/r.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // flush barrier: workspace/symbol synchronously drains incr_paths before next request
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/r.rb\"},\"position\":{\"line\":2,\"character\":6}}}");
@@ -8041,6 +8160,7 @@ test "callHierarchy incomingCalls" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/inc.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"callHierarchy/incomingCalls\",\"params\":{\"item\":{\"name\":\"target\",\"kind\":6,\"uri\":\"file://" ++ ws ++ "/inc.rb\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"selectionRange\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8106,6 +8226,7 @@ test "sinatra post indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"/submit\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8141,6 +8262,7 @@ test "rspec context indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"when logged in\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8176,6 +8298,7 @@ test "rspec shared_examples_for indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/shared.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"a valid model\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8211,6 +8334,7 @@ test "rake namespace indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/Rakefile\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"test\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8246,6 +8370,7 @@ test "each_with_index second param Integer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ewi.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ewi.rb\"},\"position\":{\"line\":5,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8333,6 +8458,7 @@ test "rspec before indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"each\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8368,6 +8494,7 @@ test "rspec after indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"all\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8403,6 +8530,7 @@ test "mattr_reader indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/m.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"val\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8471,6 +8599,7 @@ test "self completion returns class methods" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/m.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/m.rb\"},\"position\":{\"line\":4,\"character\":9}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8524,6 +8653,7 @@ test "self completion in nested class" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/n.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/n.rb\"},\"position\":{\"line\":5,\"character\":11}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8577,6 +8707,7 @@ test "self completion at top level returns empty" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/t.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/t.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8598,6 +8729,7 @@ test "@ivar completion resolves type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/iv.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/iv.rb\"},\"position\":{\"line\":8,\"character\":11}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8651,6 +8783,7 @@ test "@ivar completion two ivars independent" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/iv2.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/iv2.rb\"},\"position\":{\"line\":12,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8704,6 +8837,7 @@ test "@ivar block param inferred" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ib.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ib.rb\"},\"position\":{\"line\":9,\"character\":11}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8734,6 +8868,7 @@ test "block param from User.all.each" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/bp.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/bp.rb\"},\"position\":{\"line\":4,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8787,6 +8922,7 @@ test "block param from User.where.each" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/bpw.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/bpw.rb\"},\"position\":{\"line\":4,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8840,6 +8976,7 @@ test "ternary same type infers type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/tn.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/tn.rb\"},\"position\":{\"line\":5,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8893,6 +9030,7 @@ test "ternary different types uses then branch" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/td.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/td.rb\"},\"position\":{\"line\":8,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8946,6 +9084,7 @@ test "if-else same branches infers type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ie.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ie.rb\"},\"position\":{\"line\":9,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -8999,6 +9138,7 @@ test "factory :user indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/f.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"user\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9034,6 +9174,7 @@ test "trait :admin indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/tr.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"admin\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9069,6 +9210,7 @@ test "sequence :email indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sq.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"email\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9104,6 +9246,7 @@ test "association :user indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/as.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"author\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9139,6 +9282,7 @@ test "shared_examples plain form indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sh.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"behaves like a record\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9174,6 +9318,7 @@ test "around indexed as def" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ar.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"each\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9209,6 +9354,7 @@ test "included hook indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/inc.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"setup\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -9244,6 +9390,7 @@ test "cancelRequest suppresses completion response" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Cancel id=42 before the request arrives — use an id that doesn't collide with base_shutdown (99)
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":42}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/c.rb\"},\"position\":{\"line\":0,\"character\":3}}}");
@@ -9286,6 +9433,7 @@ test "cancelRequest does not affect other ids" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c2.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":1}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/c2.rb\"},\"position\":{\"line\":0,\"character\":3}}}");
     try s.send(base_shutdown);
@@ -9312,6 +9460,7 @@ test "didRenameFiles updates DB path" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/foo.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didRenameFiles\",\"params\":{\"files\":[{\"oldUri\":\"file://" ++ ws ++ "/foo.rb\",\"newUri\":\"file://" ++ ws ++ "/bar.rb\"}]}}");
     try std.Io.Dir.cwd().copyFile(ws ++ "/foo.rb", std.Io.Dir.cwd(), ws ++ "/bar.rb", std.Options.debug_io, .{});
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/bar.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class RenameMe\\nend\\n\"}}}");
@@ -9467,6 +9616,7 @@ test "scope index speeds scoped rename" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/scope.rb\"},\"position\":{\"line\":201,\"character\":2},\"newName\":\"renamed_var\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -11543,6 +11693,7 @@ test "gitignore comment lines ignored" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Normal\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -11579,6 +11730,7 @@ test "gitignore glob lines ignored" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Normal\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -11614,6 +11766,7 @@ test "workspace symbol fuzzy camel initials" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"UC\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -11665,6 +11818,7 @@ test "workspace symbol fuzzy subsequence" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"usrctrl\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -11716,6 +11870,7 @@ test "workspace symbol exact prefix still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"User\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -12257,6 +12412,7 @@ test "workspace symbol empty query no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -12512,6 +12668,7 @@ test "non-UTF-8 file no crash post T0.1" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -12556,6 +12713,7 @@ test "large workspace fuzzy query fast" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/big.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"UC\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -15950,6 +16108,7 @@ test "P29 T12.18 namespace stack 64 deep no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
@@ -15980,6 +16139,7 @@ test "P29 T12.19 namespace stack 65 deep safely dropped" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.run();
@@ -16008,6 +16168,7 @@ test "P29 T12.20 folding stack 200 deep no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -16052,6 +16213,7 @@ test "P29 T12.21 folding stack 130 deep no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -16087,6 +16249,7 @@ test "P29 T12.22 value_snippet stored for integer constant" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16112,6 +16275,7 @@ test "P29 T12.23 value_snippet stored for string constant" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16137,6 +16301,7 @@ test "P29 T12.24 value_snippet not stored for call constant" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16168,6 +16333,7 @@ test "P29 T12.25 value_snippet capped at 120 chars" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16515,6 +16681,7 @@ test "P29 T12.33 self method confidence 75" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16621,6 +16788,7 @@ test "P29 T12.37 chained inference confidence 55" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16646,6 +16814,7 @@ test "P29 T12.38 numbered param _1 in block" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16671,6 +16840,7 @@ test "P29 T12.39 numbered param _1 gets element type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -16697,6 +16867,7 @@ test "P29 T12.40 numbered param explicit block not affected" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -17284,6 +17455,7 @@ test "P29 T12.51 folding comment block 3 lines" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17334,6 +17506,7 @@ test "P29 T12.52 folding comment block 2 lines no fold" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17380,6 +17553,7 @@ test "P29 T12.53 folding comment block broken by blank line" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17428,6 +17602,7 @@ test "P29 T12.54 folding require block 2 lines" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17478,6 +17653,7 @@ test "P29 T12.55 folding require_relative included" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17529,6 +17705,7 @@ test "P29 T12.56 folding require block broken by non-require" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17574,6 +17751,7 @@ test "P29 T12.57 folding comment and require both present" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17624,6 +17802,7 @@ test "P29 T12.58 signature help keyword active param" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Position at end of "greet(name:" — line 2, char 11
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":11}}}");
     try s.send(base_shutdown);
@@ -17668,6 +17847,7 @@ test "P29 T12.59 signature help keyword partial no false match" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":9}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -17698,6 +17878,7 @@ test "P29 T12.60 signature help keyword at comma boundary" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Position after "subject:" — line 2, char 27
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":27}}}");
     try s.send(base_shutdown);
@@ -18153,6 +18334,7 @@ test "P29 T12.68 while var and global var coexist" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send(base_shutdown);
     try s.send(base_exit);
     const raw = try s.runWithArgs(&.{ "--db-path", db_path });
@@ -18239,6 +18421,7 @@ test "P30 T13.1 Struct.new members in dot completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18265,6 +18448,7 @@ test "P30 T13.2 Struct.new writer methods present" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18291,6 +18475,7 @@ test "P30 T13.3 Data.define reader only no writer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18318,6 +18503,7 @@ test "P30 T13.4 Struct.new kind upgraded to class" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MyPoint\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18344,6 +18530,7 @@ test "P30 T13.5 delegate creates synthetic method" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18370,6 +18557,7 @@ test "P30 T13.6 delegate multiple methods" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18397,6 +18585,7 @@ test "P30 T13.7 def_delegator synthesizes method" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18423,6 +18612,7 @@ test "P30 T13.8 def_delegators synthesizes multiple" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18450,6 +18640,7 @@ test "P30 T13.9 endless def integer return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18476,6 +18667,7 @@ test "P30 T13.10 endless def new-call return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18502,6 +18694,7 @@ test "P30 T13.11 endless def symbol return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18528,6 +18721,7 @@ test "P30 T13.12 YARD union type two types" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18555,6 +18749,7 @@ test "P30 T13.13 YARD union type three types" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18582,6 +18777,7 @@ test "P30 T13.14 YARD single type unchanged regression" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18683,6 +18879,7 @@ test "P30 T13.18 linkedEditingRange local var all occurrences" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/linkedEditingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18709,6 +18906,7 @@ test "P30 T13.19 linkedEditingRange no crash on number position" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/linkedEditingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18734,6 +18932,7 @@ test "P30 T13.20 linkedEditingRange no crash on empty file" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/linkedEditingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18759,6 +18958,7 @@ test "P30 T13.21 executeCommand forceReindex no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/executeCommand\",\"params\":{\"command\":\"refract.forceReindex\",\"arguments\":[]}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
@@ -18837,6 +19037,7 @@ test "P30 T13.24 Symbol to_proc no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18862,6 +19063,7 @@ test "P30 T13.25 Symbol to_proc child nodes still indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18887,6 +19089,7 @@ test "P30 T13.26 2-level chain type inferred" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18913,6 +19116,7 @@ test "P30 T13.27 2-level chain no crash missing mid" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18938,6 +19142,7 @@ test "P30 T13.28 2-level chain no crash missing leaf" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -18963,6 +19168,7 @@ test "P30 T13.29 2-level chain no crash missing root type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19033,6 +19239,7 @@ test "P30 T13.31 parallel indexing symbols from multiple files present" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"classxyz\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19061,7 +19268,9 @@ test "P30 T13.32 reindex same file no duplicate symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Uniquexyzclass\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19094,6 +19303,7 @@ test "P30 T13.33 regression p29 hover completion docSymbol no crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":0}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
@@ -19123,6 +19333,7 @@ test "P30 T13.34 regression 1-level chain confidence 55 still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19149,6 +19360,7 @@ test "P30 T13.35 regression attr_accessor still synthesizes reader writer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19387,6 +19599,7 @@ test "P31 T14.17 textDocument/diagnostic pull model returns full response" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/diagnostic\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19418,6 +19631,7 @@ test "P31 T14.19 textDocument/diagnostic empty items on valid file" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/diagnostic\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19546,6 +19760,7 @@ test "P31 T14.25 didChangeWorkspaceFolders removes folder symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[],\"removed\":[{\"uri\":\"file://" ++ ws ++ "\",\"name\":\"test\"}]}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"FolderClass1425\"}}");
     try s.send(base_shutdown);
@@ -19572,6 +19787,7 @@ test "P31 T14.27 Enumerable synthesis map in dot-completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19598,6 +19814,7 @@ test "P31 T14.28 Enumerable synthesis select in dot-completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19624,6 +19841,7 @@ test "P31 T14.29 Enumerable synthesis any? in dot-completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19650,6 +19868,7 @@ test "P31 T14.30 Comparable synthesis <= in dot-completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19676,6 +19895,7 @@ test "P31 T14.31 lookupStdlibReturn String#upcase returns String type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19702,6 +19922,7 @@ test "P31 T14.32 lookupStdlibReturn String#length returns Integer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19728,6 +19949,7 @@ test "P31 T14.33 lookupStdlibReturn Array#join returns String" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19754,6 +19976,7 @@ test "P31 T14.34 lookupStdlibReturn Integer#to_s returns String" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19780,6 +20003,7 @@ test "P31 T14.35 lookupStdlibReturn Hash#keys returns Array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19806,6 +20030,7 @@ test "P31 T14.36 lookupStdlibReturn chained String#upcase#length returns Integer
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19832,6 +20057,7 @@ test "P31 T14.37 Hanami::Action DSL methods not flagged" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19858,6 +20084,7 @@ test "P31 T14.38 Grape::API route methods recognized" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19884,6 +20111,7 @@ test "P31 T14.39 Roda class recognized" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19910,6 +20138,7 @@ test "P31 T14.40 p31 regression hover still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19935,6 +20164,7 @@ test "P31 T14.41 p31 regression completion still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":3}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19961,6 +20191,7 @@ test "P31 T14.42 p31 regression documentSymbol still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -19987,6 +20218,7 @@ test "P31 T14.43 p31 regression attr_accessor still synthesizes reader writer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20013,6 +20245,7 @@ test "P31 T14.44 p31 regression Struct.new still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20039,6 +20272,7 @@ test "P31 T14.45 p31 regression chained inference still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20066,6 +20300,7 @@ test "P32 T15.1 willRenameFiles updates require_relative stem" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/caller.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/willRenameFiles\",\"params\":{\"files\":[{\"oldUri\":\"file://" ++ ws ++ "/user.rb\",\"newUri\":\"file://" ++ ws ++ "/account.rb\"}]}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20143,6 +20378,7 @@ test "P32 T15.4 willRenameFiles multiple callers updated" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/widget.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/willRenameFiles\",\"params\":{\"files\":[{\"oldUri\":\"file://" ++ ws ++ "/widget.rb\",\"newUri\":\"file://" ++ ws ++ "/component.rb\"}]}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20187,6 +20423,7 @@ test "P32 T15.6 async didChangeWatchedFiles no deadlock" {
     var i: u32 = 0;
     while (i < 5) : (i += 1) {
         try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":2}]}}");
+        try s.waitIdle(100);
     }
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
     try s.send(base_shutdown);
@@ -20213,6 +20450,7 @@ test "P32 T15.7 async didChangeWatchedFiles indexes after change" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Async157\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20239,7 +20477,9 @@ test "P32 T15.8 async delete still removes symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/del158.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/del158.rb\",\"type\":3}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Del158\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20274,6 +20514,7 @@ test "P32 T15.9 safe nav dot completion with typed receiver" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":3}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20324,6 +20565,7 @@ test "P32 T15.11 safe nav type inference user&.name returns String" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20350,6 +20592,7 @@ test "P32 T15.12 safe nav chain completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":15}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20400,6 +20643,7 @@ test "P32 T15.14 blk2 stdlib mid-type chain" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20426,6 +20670,7 @@ test "P32 T15.15 blk2 stdlib leaf-type arr.join.length" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20452,6 +20697,7 @@ test "P32 T15.16 blk2 no false positive for untyped root" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20477,6 +20723,7 @@ test "P32 T15.17 lookupStdlibReturn String#start_with? returns TrueClass" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20503,6 +20750,7 @@ test "P32 T15.18 lookupStdlibReturn String#scan returns Array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20529,6 +20777,7 @@ test "P32 T15.19 lookupStdlibReturn String#reverse returns String" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20555,6 +20804,7 @@ test "P32 T15.20 lookupStdlibReturn Array#tally returns Hash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20581,6 +20831,7 @@ test "P32 T15.21 lookupStdlibReturn Array#filter_map returns Array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20607,6 +20858,7 @@ test "P32 T15.22 lookupStdlibReturn Hash#invert returns Hash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20633,6 +20885,7 @@ test "P32 T15.23 lookupStdlibReturn Hash#except returns Hash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20659,6 +20912,7 @@ test "P32 T15.24 lookupStdlibReturn Symbol#to_s returns String" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20685,6 +20939,7 @@ test "P32 T15.25 lookupStdlibReturn Float#ceil returns Integer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20711,6 +20966,7 @@ test "P32 T15.26 lookupStdlibReturn blank? returns TrueClass" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20737,6 +20993,7 @@ test "P32 T15.27 @type annotation overrides inference" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20763,6 +21020,7 @@ test "P32 T15.28 @type annotation hover shows annotated type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20789,6 +21047,7 @@ test "P32 T15.29 @type with completion uses annotated type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":6,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20815,6 +21074,7 @@ test "P32 T15.30 pattern matching capture binds type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20841,6 +21101,7 @@ test "P32 T15.31 pattern matching Integer binding" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20867,6 +21128,7 @@ test "P32 T15.32 pattern matching completion uses bound type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":8}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20893,6 +21155,7 @@ test "P32 T15.33 ||= infers type from RHS" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20919,6 +21182,7 @@ test "P32 T15.34 ||= doesnt override higher-confidence type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20945,6 +21209,7 @@ test "P32 T15.35 delegate synthesizes method" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20971,6 +21236,7 @@ test "P32 T15.36 delegate method in completion" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -20997,6 +21263,7 @@ test "P32 T15.37 delegate return type preserved" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21023,6 +21290,7 @@ test "P32 T15.38 AR where returns collection type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21049,6 +21317,7 @@ test "P32 T15.39 AR where.first returns single instance type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21075,6 +21344,7 @@ test "P32 T15.40 AR chained order still collection" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21102,7 +21372,9 @@ test "P32 T15.41 content_hash skips reindex on same content" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Skip1541\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21130,8 +21402,10 @@ test "P32 T15.42 content_hash reindexes on content change despite same mtime" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class After1542\nend\n" });
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":2}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"After1542\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21174,6 +21448,7 @@ test "P32 T15.44 p32 regression hover still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21200,6 +21475,7 @@ test "P32 T15.45 p32 regression completion still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21226,6 +21502,7 @@ test "P32 T15.46 p32 regression rename still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"rnm1546_new\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21251,6 +21528,7 @@ test "P32 T15.47 p32 regression signatureHelp still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":8}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21276,6 +21554,7 @@ test "P32 T15.48 p32 regression AR .new still works" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21371,6 +21650,7 @@ test "P33 T16.3 workspace/symbol excludes gem symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"WorkspaceClass163\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21397,6 +21677,7 @@ test "P34 T17.1 negative line position returns null not panic" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/neg.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/neg.rb\"},\"position\":{\"line\":-1,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21427,6 +21708,7 @@ test "P35 T18.1 Unicode identifiers no crash on hover" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/unicode.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/unicode.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21460,6 +21742,7 @@ test "P35 T18.2 excludeDirs option skips excluded directory" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"excludeDirs\":[\"vendor\"]}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib/alpha.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"LibAlpha182\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"VendorBeta182\"}}");
     try s.send(base_shutdown);
@@ -21583,6 +21866,7 @@ test "T1 syntax error ruby no crash on hover" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/broken.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/broken.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21785,6 +22069,7 @@ test "T_CRLF position accuracy for CRLF files" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/crlf.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/crlf.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21909,6 +22194,7 @@ test "T_ALIAS alias_method second arg cross-ref" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/alias.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"baz\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -21929,6 +22215,7 @@ test "T_DOCCHANGES rename uses documentChanges when advertised" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{\"workspace\":{\"workspaceEdit\":{\"documentChanges\":true}}},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rename.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rename.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"bar\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22042,6 +22329,7 @@ test "T_INTERP completion inside #{} interpolation fires normally" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/interp.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/interp.rb\"},\"position\":{\"line\":1,\"character\":14}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22082,6 +22370,7 @@ test "T_PREPARE prepareRename includes placeholder field" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/prep.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/prepareRename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/prep.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22122,6 +22411,7 @@ test "T_UTF8_IDENT non-ASCII identifier hover does not crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/utf8.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/utf8.rb\"},\"position\":{\"line\":0,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22412,6 +22702,7 @@ test "T_VALID_IDENT_RENAME_UTF8 rename to non-ASCII identifier succeeds" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ren.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ren.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"caf\xc3\xa9\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22443,6 +22734,7 @@ test "T_FOLDING_RANGE foldingRange returns array for file with class structure" 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/fold.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/fold.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22643,6 +22935,7 @@ test "T_LARGE_FILE file above max_file_size not indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ large_path ++ "\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"refract_unique_sym_xyz123_large_file_method\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22752,6 +23045,7 @@ test "T_MULTIROOT added workspace folder outside primary root is accessible" {
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[{\"uri\":\"file://" ++ ws2 ++ "\",\"name\":\"extra\"}],\"removed\":[]}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws2 ++ "/extra.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"refract_multiroot_unique_sym_abc987\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22788,6 +23082,7 @@ test "T_CALL_HIERARCHY callHierarchyPrepare returns array" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ch.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/prepareCallHierarchy\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ch.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -22969,6 +23264,7 @@ test "T_ENDLESS_METHOD endless method def is indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/endless.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"double\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -23026,6 +23322,7 @@ test "T_ALIAS_SYMBOL alias creates navigable symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/alias.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"baz\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -23407,6 +23704,7 @@ test "T_CROSS_FILE_RENAME rename in multi-file workspace returns workspace edit 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/user.rb\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"hello\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"shutdown\",\"params\":null}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -23718,6 +24016,7 @@ test "P19 T19.4 semantic tokens delta no deleteCount:0 when prev blob missing" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // workspace/symbol triggers flushIncrPaths so file is indexed before delta request
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"x\"}}");
     // Send delta with a stale previousResultId (simulating editor surviving a DB wipe)
@@ -23749,6 +24048,7 @@ test "P20 T20.1 semantic tokens UTF-16 converter produces valid token stream" {
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"# café\\nclass Foo\\nend\\n\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Foo\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
@@ -23843,6 +24143,7 @@ test "P20 T20.3 documentSymbol selectionRange is not 999" {
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class UserAuthentication\\n  def process; end\\nend\\n\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"UserAuthentication\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/c.rb\"}}}");
     try s.send(base_shutdown);
@@ -23923,6 +24224,7 @@ test "P20 T20.4 hover response includes range field" {
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/d.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Util\\n  def self.parse(x); x; end\\nend\\n\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/d.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"parse\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/d.rb\"},\"position\":{\"line\":1,\"character\":13}}}");
     try s.send(base_shutdown);
@@ -23975,6 +24277,7 @@ test "P21 T21.1 UTF-8 BOM stripped from source" {
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/bom.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"\xEF\xBB\xBFclass BomTest\\nend\\n\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/bom.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BomTest\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24019,6 +24322,7 @@ test "P21 T21.2 codeLens returns 250+ symbols" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/big.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"m\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/codeLens\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/big.rb\"}}}");
     try s.send(base_shutdown);
@@ -24064,6 +24368,7 @@ test "P21 T21.3 workspace symbol returns 250+ matches" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ws.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BigWs\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"mws\"}}");
     try s.send(base_shutdown);
@@ -24100,6 +24405,7 @@ test "P21 T21.4 method_missing in documentSymbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/proxy.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Proxy\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/proxy.rb\"}}}");
     try s.send(base_shutdown);
@@ -24170,6 +24476,7 @@ test "P21 T21.5 respond_to_missing? in documentSymbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/proxy2.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Proxy2\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/proxy2.rb\"}}}");
     try s.send(base_shutdown);
@@ -24241,6 +24548,7 @@ test "P21 T21.6 require_relative definition jump" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Bee\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":19}}}");
     try s.send(base_shutdown);
@@ -24310,6 +24618,7 @@ test "P21 T21.7 gitignore negation respected" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/vendor/keep/g.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"GoodOne\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BadOne\"}}");
     try s.send(base_shutdown);
@@ -24456,6 +24765,7 @@ test "P22 T22.3 alias keyword new name in documentSymbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/foo.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/foo.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24520,6 +24830,7 @@ test "P22 T22.4 alias keyword new name in workspace symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/foo.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"hello\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24566,6 +24877,7 @@ test "P22 T22.5 keyword param completion includes colon suffix" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // "configure(t" is 12 chars; position is line=1, char=12 (0-indexed: line 1 = "end", but source is line 0)
     // Actually source line 0 is "def configure(timeout: 30, retries: 3)"
     // Completion inside "configure(t" means line=0, char=12 is after "configure(t"
@@ -24637,6 +24949,7 @@ test "P22 T22.6 hover on class shows superclass" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dog.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/dog.rb\"},\"position\":{\"line\":1,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24682,6 +24995,7 @@ test "P22 T22.7 hover on class shows included module" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dog.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/dog.rb\"},\"position\":{\"line\":1,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24820,6 +25134,7 @@ test "P22 T22.10 alias_method and bare alias coexist in documentSymbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/proxy.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/proxy.rb\"}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"kw_alias\"}}");
     try s.send(base_shutdown);
@@ -24906,6 +25221,7 @@ test "P23 T23.1 incomingCalls from.name is caller method name not file path" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"callHierarchy/incomingCalls\",\"params\":{\"item\":{\"name\":\"greet\",\"kind\":12,\"uri\":\"file://" ++ ws ++ "/a.rb\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":5}},\"selectionRange\":{\"start\":{\"line\":0,\"character\":4},\"end\":{\"line\":0,\"character\":9}}}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -24961,6 +25277,7 @@ test "P23 T23.2 private def inline does not leak visibility to subsequent method
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25026,6 +25343,7 @@ test "P23 T23.3 nested constant has correct parent_name in workspace symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"TIMEOUT\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25074,6 +25392,7 @@ test "P24 T24.1 ivar or-write indexed for hover and workspace symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25107,6 +25426,7 @@ test "P24 T24.2 constant or-write indexed with containerName in workspace symbol
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"TIMEOUT\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25154,6 +25474,7 @@ test "P24 T24.3 class variable or-write indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25186,6 +25507,7 @@ test "P24 T24.4 non-self singleton class methods are indexed" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25239,6 +25561,7 @@ test "P24 T24.5 hover on whitespace returns empty result not crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Hover on line 1 (blank line with only spaces)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
     try s.send(base_shutdown);
@@ -25272,6 +25595,7 @@ test "P24 T24.6 completion on empty file returns empty array not crash" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25315,6 +25639,7 @@ test "P24 T24.7 definition with linkSupport emits LocationLink with originSelect
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{\"textDocument\":{\"definition\":{\"linkSupport\":true}}},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/b.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Go-to-definition on the require_relative string (char 18 = inside "b")
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":18}}}");
     try s.send(base_shutdown);
@@ -25360,6 +25685,7 @@ test "P25 T25.1 enum keyword-hash style values indexed in workspace/symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/post.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"draft\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"status\"}}");
     try s.send(base_shutdown);
@@ -25412,6 +25738,7 @@ test "P25 T25.2 enum hash style values indexed in workspace/symbol" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"admin\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25451,6 +25778,7 @@ test "P25 T25.3 constant-receiver dot completion traverses full MRO (cls_stmt bu
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Completion on "Dog." — should surface inherited class method "create"
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
     try s.send(base_shutdown);
@@ -25489,6 +25817,7 @@ test "P27 T27.1 gvar completion returns matching results" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/g.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Completion at line 0, char 2 — inside "$c", triggers $-prefix completion
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/g.rb\"},\"position\":{\"line\":0,\"character\":2}}}");
     try s.send(base_shutdown);
@@ -25547,6 +25876,7 @@ test "P27 T27.2 bundleExecTimeoutSecs accepted in initializationOptions" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"bundleExecTimeoutSecs\":5}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"A\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25642,6 +25972,7 @@ test "P28 T28.1 workspace/symbol gvar query returns global variable" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/g.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"$config\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25694,6 +26025,7 @@ test "P28 T28.2 workspace/symbol prefix-first ordering" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/o.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Order\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25746,6 +26078,7 @@ test "P28 T28.3 gvar completion item has sortText field" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/g.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/g.rb\"},\"position\":{\"line\":0,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -25867,9 +26200,11 @@ test "P36 T4A.1 didChangeWorkspaceFolders add folder B remove folder A: A symbol
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws_a ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws_a ++ "/alpha.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"AlphaClassOnly\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[{\"uri\":\"file://" ++ ws_b ++ "\",\"name\":\"b\"}],\"removed\":[{\"uri\":\"file://" ++ ws_a ++ "\",\"name\":\"a\"}]}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws_b ++ "/beta.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"AlphaClassOnly\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BetaClassOnly\"}}");
     try s.send(base_shutdown);
@@ -26037,6 +26372,7 @@ test "P36 T4C.1 file exceeding maxFileSizeBytes is not indexed but diagnostics s
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"maxFileSizeBytes\":100}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/big.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/small.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BigFileSentinel\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"SmallOk\"}}");
     try s.send(base_shutdown);
@@ -26287,6 +26623,7 @@ test "P37 T4.1 maxFileSizeMb hot-reload via didChangeConfiguration excludes larg
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"SmallMbSentinel\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeConfiguration\",\"params\":{\"settings\":{\"refract\":{\"maxFileSize\":10}}}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/big.rb\",\"type\":2},{\"uri\":\"file://" ++ ws ++ "/big.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"BigMbSentinel\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26360,6 +26697,7 @@ test "completion on Time.cu filters to receiver methods (no global leak)" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/noise.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/target.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/target.rb\"},\"position\":{\"line\":0,\"character\":7}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26428,6 +26766,7 @@ test "hover on Time shows class methods section" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/time_ref.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Hover cursor at position of "T" in "Time"
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/time_ref.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
     try s.send(base_shutdown);
@@ -26498,6 +26837,7 @@ test "T-MF1 cross-file definition: definition in other file is found" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Request workspace/symbol for "greet" — should find the definition in user.rb
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"greet\"}}");
     try s.send(base_shutdown);
@@ -26559,6 +26899,7 @@ test "T-MF2 cross-file rename: workspace edit covers all files" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{\"textDocument\":{\"rename\":{\"prepareSupport\":true}}}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/caller.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // Rename "foo" at line 2 col 6 in user.rb
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/user.rb\"},\"position\":{\"line\":1,\"character\":6},\"newName\":\"bar\"}}");
     try s.send(base_shutdown);
@@ -26606,6 +26947,7 @@ test "T-MF3 through: association surfaced in association_graph" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // value_snippet for "posts" association should be "through:user_posts"
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"posts\"}}");
     try s.send(base_shutdown);
@@ -26662,6 +27004,7 @@ test "T-MF4 schema.rb columns indexed as model defs" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/db/schema.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     // "email" column should be indexed as a def on "User"
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"email\"}}");
     try s.send(base_shutdown);
@@ -26704,6 +27047,7 @@ test "P33 T33.1 has_one_attached synthesizes attachment and blob accessors" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"avatar\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26726,6 +27070,7 @@ test "P33 T33.2 has_many_attached synthesizes plural attachment and blob accesso
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/post.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"photos\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26748,6 +27093,7 @@ test "P33 T33.3 has_rich_text synthesizes reader, writer, and predicate" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/article.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"content\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26769,6 +27115,7 @@ test "P33 T33.4 has_secure_password synthesizes digest and authenticate" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"password\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"authenticate\"}}");
     try s.send(base_shutdown);
@@ -26793,6 +27140,7 @@ test "P33 T33.5 has_secure_token synthesizes token and regenerate" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"auth_token\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"regenerate\"}}");
     try s.send(base_shutdown);
@@ -26816,6 +27164,7 @@ test "P33 T33.6 attribute synthesizes typed reader, writer, predicate" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"age\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26838,6 +27187,7 @@ test "P33 T33.7 delegated_type synthesizes type, id, class accessors" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/entry.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"entryable\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26861,6 +27211,7 @@ test "P33 T33.8 composed_of synthesizes accessor with class_name return type" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/account.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"balance\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26882,6 +27233,7 @@ test "P33 T33.9 store_accessor synthesizes individual accessors" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"timezone\"}}");
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"locale\"}}");
     try s.send(base_shutdown);
@@ -26905,6 +27257,7 @@ test "P33 T33.10 accepts_nested_attributes_for synthesizes attributes= writer" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/author.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"posts_attributes\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26926,6 +27279,7 @@ test "P33 T33.11 encrypts indexes attribute name with validation kind" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"ssn\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26947,6 +27301,7 @@ test "P33 T33.13 class_methods do block promotes inner defs to class-level" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/searchable.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"search_by_title\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26969,6 +27324,7 @@ test "P33 T33.14 polymorphic belongs_to indexes association without static retur
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/comment.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"commentable\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -26990,6 +27346,7 @@ test "P33 T33.12 normalizes indexes attribute name" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"email\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
@@ -27083,6 +27440,7 @@ test "parallel reindex computes correct symbol and ref counts" {
         "{\"uri\":\"file://" ++ ws ++ "/book.rb\",\"type\":1}," ++
         "{\"uri\":\"file://" ++ ws ++ "/reader.rb\",\"type\":1}" ++
         "]}}");
+    try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
