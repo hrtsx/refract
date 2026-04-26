@@ -739,18 +739,30 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             ws.bind_text(2, current_path);
             break :stmt ws;
         }
-        const ss = try self.cachedStmt(
+        const ss_exact = try self.cachedStmt(
             \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
             \\FROM symbols s JOIN files f ON s.file_id = f.id
-            \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
-            \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, CASE WHEN s.name = ? THEN 0 ELSE 1 END, s.id
+            \\WHERE s.name = ?
+            \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, s.id
             \\LIMIT 1
         );
-        ss.bind_text(1, name);
-        ss.bind_text(2, name);
-        ss.bind_text(3, current_path);
-        ss.bind_text(4, name);
-        break :stmt ss;
+        ss_exact.bind_text(1, name);
+        ss_exact.bind_text(2, current_path);
+        if (try ss_exact.step()) {
+            break :stmt ss_exact;
+        }
+        ss_exact.reset();
+
+        const ss_qualified = try self.cachedStmt(
+            \\SELECT s.kind, s.line, s.return_type, s.doc, f.path, s.id, s.value_snippet, s.parent_name
+            \\FROM symbols s JOIN files f ON s.file_id = f.id
+            \\WHERE s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback')
+            \\ORDER BY CASE WHEN f.path = ? THEN 0 ELSE 1 END, s.id
+            \\LIMIT 1
+        );
+        ss_qualified.bind_text(1, name);
+        ss_qualified.bind_text(2, current_path);
+        break :stmt ss_qualified;
     };
     defer stmt.reset();
 

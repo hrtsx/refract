@@ -800,30 +800,23 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
     const hot_hits = tryEmitFromHotIndex(self, w, name, found_any, frc, origin) catch 0;
     if (hot_hits > 0) return;
 
-    const stmt = try self.cachedStmt(
+    const stmt_exact = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ? OR (s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback'))
-        \\UNION
-        \\SELECT s2.name, s2.line, s2.col, f2.path
-        \\FROM symbols s2 JOIN files f2 ON s2.file_id = f2.id
-        \\JOIN mixins m ON s2.file_id IN (
-        \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=m.module_name
-        \\)
-        \\WHERE s2.name = ? AND s2.kind = 'def'
-        \\LIMIT 10
+        \\WHERE s.name = ?
     );
-    defer stmt.reset();
-    stmt.bind_text(1, name);
-    stmt.bind_text(2, name);
-    stmt.bind_text(3, name);
-    while (try stmt.step()) {
+    defer stmt_exact.reset();
+    stmt_exact.bind_text(1, name);
+
+    var found_count: usize = 0;
+    while (try stmt_exact.step()) {
         if (found_any.*) try w.writeByte(',');
         found_any.* = true;
-        const sym_name = stmt.column_text(0);
-        const sym_line = stmt.column_int(1);
-        const sym_col = stmt.column_int(2);
-        const sym_path = stmt.column_text(3);
+        found_count += 1;
+        const sym_name = stmt_exact.column_text(0);
+        const sym_line = stmt_exact.column_int(1);
+        const sym_col = stmt_exact.column_int(2);
+        const sym_path = stmt_exact.column_text(3);
         const start_char = self.toClientColFromPath(frc, sym_path, sym_line - 1, sym_col);
         if (self.client_caps_def_link) {
             // LocationLink format (LSP 3.14+)
@@ -854,6 +847,109 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
             try w.writeAll(",\"character\":");
             try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
             try w.writeAll("}}}");
+        }
+    }
+
+    if (found_count == 0) {
+        const stmt_qualified = try self.cachedStmt(
+            \\SELECT s.name, s.line, s.col, f.path
+            \\FROM symbols s JOIN files f ON s.file_id = f.id
+            \\WHERE s.name LIKE '%::' || ? AND s.kind IN ('class','module','association','scope','validation','callback')
+            \\LIMIT 10
+        );
+        defer stmt_qualified.reset();
+        stmt_qualified.bind_text(1, name);
+        while (try stmt_qualified.step()) {
+            if (found_any.*) try w.writeByte(',');
+            found_any.* = true;
+            found_count += 1;
+            if (found_count > 10) break;
+            const sym_name = stmt_qualified.column_text(0);
+            const sym_line = stmt_qualified.column_int(1);
+            const sym_col = stmt_qualified.column_int(2);
+            const sym_path = stmt_qualified.column_text(3);
+            const start_char = self.toClientColFromPath(frc, sym_path, sym_line - 1, sym_col);
+            if (self.client_caps_def_link) {
+                try w.writeAll("{\"targetUri\":\"file://");
+                try writePathAsUri(w, sym_path);
+                try w.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                    sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                });
+                try w.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                    sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                });
+                if (origin) |orig| {
+                    try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                        orig.line, orig.start_char, orig.line, orig.end_char,
+                    });
+                }
+                try w.writeByte('}');
+            } else {
+                try w.writeAll("{\"uri\":\"file://");
+                try writePathAsUri(w, sym_path);
+                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+                try w.print("{d}", .{sym_line - 1});
+                try w.writeAll(",\"character\":");
+                try w.print("{d}", .{start_char});
+                try w.writeAll("},\"end\":{\"line\":");
+                try w.print("{d}", .{sym_line - 1});
+                try w.writeAll(",\"character\":");
+                try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
+                try w.writeAll("}}}");
+            }
+        }
+
+        if (found_count < 10) {
+            const stmt_mixins = try self.cachedStmt(
+                \\SELECT s2.name, s2.line, s2.col, f2.path
+                \\FROM symbols s2 JOIN files f2 ON s2.file_id = f2.id
+                \\JOIN mixins m ON s2.file_id IN (
+                \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=m.module_name
+                \\)
+                \\WHERE s2.name = ? AND s2.kind = 'def'
+                \\LIMIT 10
+            );
+            defer stmt_mixins.reset();
+            stmt_mixins.bind_text(1, name);
+            while (try stmt_mixins.step()) {
+                if (found_any.*) try w.writeByte(',');
+                found_any.* = true;
+                found_count += 1;
+                if (found_count > 10) break;
+                const sym_name = stmt_mixins.column_text(0);
+                const sym_line = stmt_mixins.column_int(1);
+                const sym_col = stmt_mixins.column_int(2);
+                const sym_path = stmt_mixins.column_text(3);
+                const start_char = self.toClientColFromPath(frc, sym_path, sym_line - 1, sym_col);
+                if (self.client_caps_def_link) {
+                    try w.writeAll("{\"targetUri\":\"file://");
+                    try writePathAsUri(w, sym_path);
+                    try w.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                        sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                    });
+                    try w.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                        sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                    });
+                    if (origin) |orig| {
+                        try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                            orig.line, orig.start_char, orig.line, orig.end_char,
+                        });
+                    }
+                    try w.writeByte('}');
+                } else {
+                    try w.writeAll("{\"uri\":\"file://");
+                    try writePathAsUri(w, sym_path);
+                    try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+                    try w.print("{d}", .{sym_line - 1});
+                    try w.writeAll(",\"character\":");
+                    try w.print("{d}", .{start_char});
+                    try w.writeAll("},\"end\":{\"line\":");
+                    try w.print("{d}", .{sym_line - 1});
+                    try w.writeAll(",\"character\":");
+                    try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
+                    try w.writeAll("}}}");
+                }
+            }
         }
     }
 }
