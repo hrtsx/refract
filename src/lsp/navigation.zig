@@ -7,6 +7,7 @@ const erb_mapping = @import("erb_mapping.zig");
 const editing = @import("editing.zig");
 const hot_index_mod = @import("hot_index.zig");
 const literal_receiver = @import("literal_receiver.zig");
+const type_resolver = @import("type_resolver.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -112,6 +113,24 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
             const recv_off = if (word_start_offset >= 2) word_start_offset - 2 else 0;
             const recv_w = extractWord(source, recv_off);
             if (recv_w.len > 0 and std.ascii.isUpper(recv_w[0])) recv_type = recv_w;
+        }
+        // Sorbet/Steep receiver fallback: when no literal/constant detected,
+        // ask the type bridge for the receiver word's class.
+        var sorbet_recv_owned: ?[]u8 = null;
+        defer if (sorbet_recv_owned) |b| self.alloc.free(b);
+        if (recv_type == null) {
+            const recv_off = if (word_start_offset >= 2) word_start_offset - 2 else 0;
+            const recv_w = extractWord(source, recv_off);
+            if (recv_w.len > 0) {
+                if (type_resolver.resolve(self.alloc, self.db, recv_w, null, -1)) |hit_const| {
+                    var hit = hit_const;
+                    defer hit.deinit(self.alloc);
+                    if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                        sorbet_recv_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
+                        if (sorbet_recv_owned) |b| recv_type = b;
+                    }
+                }
+            }
         }
         if (recv_type) |rt| {
             try emitDefinitionOnClass(self, w, word, rt, &found_any, &frc_def, def_origin);
@@ -461,7 +480,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                 \\  WHERE s.file_id = r.file_id
                 \\    AND s.name = r.name
                 \\    AND s.line = r.line
-                \\    AND s.col = r.col
+                \\    AND (s.col = r.col OR s.kind IN ('class','module'))
                 \\)
             );
         defer stmt.reset();
@@ -557,17 +576,34 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
 
     var type_name: ?[]const u8 = null;
 
-    const lv_stmt = try self.cachedStmt(
-        \\SELECT type_hint FROM local_vars
-        \\WHERE file_id = ? AND name = ? AND line <= ? AND type_hint IS NOT NULL
-        \\ORDER BY line DESC LIMIT 1
-    );
-    defer lv_stmt.reset();
-    lv_stmt.bind_int(1, file_id);
-    lv_stmt.bind_text(2, word);
-    lv_stmt.bind_int(3, cursor_line);
-    if (try lv_stmt.step()) {
-        type_name = lv_stmt.column_text(0);
+    // Type-bridge resolution wins when Sorbet/Steep has a high-confidence
+    // type for `word`. Owned buffer freed at the end of this function via
+    // `tn_owned`.
+    var tn_owned: ?[]u8 = null;
+    defer if (tn_owned) |b| self.alloc.free(b);
+    if (type_resolver.resolve(self.alloc, self.db, word, null, -1)) |hit_const| {
+        var hit = hit_const;
+        defer hit.deinit(self.alloc);
+        if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+            tn_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
+            if (tn_owned) |b| type_name = b;
+        }
+    }
+
+    if (type_name == null) {
+        const lv_stmt = try self.cachedStmt(
+            \\SELECT type_hint FROM local_vars
+            \\WHERE file_id = ? AND name = ? AND line <= ? AND type_hint IS NOT NULL
+            \\ORDER BY line DESC LIMIT 1
+        );
+        defer lv_stmt.reset();
+        lv_stmt.bind_int(1, file_id);
+        lv_stmt.bind_text(2, word);
+        lv_stmt.bind_int(3, cursor_line);
+        if (try lv_stmt.step()) {
+            tn_owned = try self.alloc.dupe(u8, lv_stmt.column_text(0));
+            type_name = tn_owned;
+        }
     }
 
     // If no local var, check if word is itself a class/module
@@ -1364,4 +1400,11 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
     try w.writeAll("]");
 
     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
+}
+
+test "navigation typeDef uses type_resolver.stripWrapper indirectly" {
+    const alloc = std.testing.allocator;
+    const s = try type_resolver.stripWrapper(alloc, "Class<User>");
+    defer alloc.free(s);
+    try std.testing.expectEqualStrings("User", s);
 }

@@ -1,0 +1,27 @@
+<idea-plugin>
+  <id>dev.refract.lsp</id>
+  <name>Refract Ruby LSP</name>
+  <vendor>Refract contributors</vendor>
+  <description><![CDATA[
+    Ruby language server backed by Refract — fast hover, definition,
+    completion, references, rename, type-checking, debugger, and
+    refactor support across Ruby, Rails, Sorbet, and Steep workspaces.
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.redhat.devtools.lsp4ij</depends>
+
+  <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+    <server id="refract"
+            name="Refract"
+            factoryClass="dev.refract.RefractServerFactory"/>
+
+    <languageMapping language="ruby" serverId="refract"/>
+    <languageMapping language="erb" serverId="refract"/>
+  </extensions>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <fileType name="Ruby" extensions="rb;rake;gemspec;ru;builder;jbuilder"/>
+    <fileType name="ERB" extensions="erb"/>
+  </extensions>
+</idea-plugin>

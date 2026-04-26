@@ -100,10 +100,12 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(exe_tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
+    const test_unit_step = b.step("test:unit", "Run unit tests reachable from main.zig only (no subprocess protocol tests)");
+    test_unit_step.dependOn(&run_tests.step);
 
     // Benchmarks — linked against source, not subprocess
     const bench_mod = b.createModule(.{
-        .root_source_file = b.path("src/tests/bench.zig"),
+        .root_source_file = b.path("src/bench.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -121,9 +123,8 @@ pub fn build(b: *std.Build) void {
     const bench_lsp_step = b.step("bench-lsp", "Run head-to-head LSP benchmark vs solargraph + ruby-lsp");
     bench_lsp_step.dependOn(&bench_lsp_cmd.step);
 
-    // Fuzz harness — linked against source
     const fuzz_mod = b.createModule(.{
-        .root_source_file = b.path("src/tests/fuzz.zig"),
+        .root_source_file = b.path("src/fuzz.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -132,6 +133,42 @@ pub fn build(b: *std.Build) void {
     const run_fuzz = b.addRunArtifact(fuzz_tests);
     const fuzz_step = b.step("fuzz", "Run fuzz tests");
     fuzz_step.dependOn(&run_fuzz.step);
+
+    const fuzz_bin_mod = b.createModule(.{
+        .root_source_file = b.path("src/libfuzzer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addVendorDeps(b, fuzz_bin_mod);
+    const fuzz_bin = b.addExecutable(.{
+        .name = "refract-fuzz",
+        .root_module = fuzz_bin_mod,
+    });
+    const install_fuzz_bin = b.addInstallArtifact(fuzz_bin, .{});
+    const fuzz_bin_step = b.step("fuzz-bin", "Build the libFuzzer-style entry binary (refract-fuzz)");
+    fuzz_bin_step.dependOn(&install_fuzz_bin.step);
+
+    const fuzz_corpus_step = b.step("fuzz-corpus", "Drive refract-fuzz against every file under fuzzing/");
+    const corpus_dirs = [_][]const u8{
+        "fuzzing/parser",
+        "fuzzing/indexer",
+        "fuzzing/transport",
+        "fuzzing/typewalker",
+    };
+    const build_io = b.graph.io;
+    for (corpus_dirs) |dir_rel| {
+        var dir = b.build_root.handle.openDir(build_io, dir_rel, .{ .iterate = true }) catch continue;
+        defer dir.close(build_io);
+        var it = dir.iterate();
+        while (it.next(build_io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            const file_rel = b.fmt("{s}/{s}", .{ dir_rel, entry.name });
+            const run = b.addRunArtifact(fuzz_bin);
+            run.setStdIn(.{ .lazy_path = b.path(file_rel) });
+            run.expectExitCode(0);
+            fuzz_corpus_step.dependOn(&run.step);
+        }
+    }
 
     // Protocol integration tests — spawn the built binary via subprocess
     const proto_opts = b.addOptions();
@@ -150,6 +187,7 @@ pub fn build(b: *std.Build) void {
         .{ "src/tests/protocol_test.zig", "test:lsp" },
         .{ "src/tests/mcp_test.zig", "test:mcp" },
         .{ "src/tests/edge_case_test.zig", "test:edge" },
+        .{ "src/tests/navigation_hierarchy_test.zig", "test:nav" },
     };
 
     inline for (proto_test_files) |entry| {

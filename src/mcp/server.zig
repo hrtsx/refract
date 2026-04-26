@@ -154,6 +154,7 @@ pub const Server = struct {
     alloc: std.mem.Allocator,
     request_count: u32 = 0,
     request_window_ms: i64 = 0,
+    audit_lock_err_logged: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn init(db: db_mod.Db, alloc: std.mem.Allocator) Server {
         return .{ .db = db, .alloc = alloc };
@@ -736,14 +737,15 @@ pub const Server = struct {
             method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
             class_name = getStrArg(args, "class_name");
         }
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const stmt = self.db.prepare(
             \\SELECT f.path, r.line, r.col
             \\FROM refs r JOIN files f ON f.id = r.file_id
             \\WHERE r.name = ?
             \\ORDER BY f.path, r.line
-            \\LIMIT 200 OFFSET ?
+            \\LIMIT 201 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, method_name);
@@ -772,6 +774,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 200) break;
             const fpath = stmt.column_text(0);
             const fline = stmt.column_int(1);
             const fcol = stmt.column_int(2);
@@ -788,7 +791,8 @@ pub const Server = struct {
             }
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 200) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -796,13 +800,14 @@ pub const Server = struct {
 
     fn toolFindImplementations(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name'");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const stmt = self.db.prepare(
             \\SELECT DISTINCT COALESCE(s.parent_name, '<top-level>'), f.path, s.line, s.return_type
             \\FROM symbols s JOIN files f ON f.id = s.file_id
             \\WHERE s.name = ? AND s.kind IN ('def','classdef')
-            \\ORDER BY COALESCE(s.parent_name, '<top-level>'), f.path LIMIT 100 OFFSET ?
+            \\ORDER BY COALESCE(s.parent_name, '<top-level>'), f.path LIMIT 101 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, method_name);
@@ -817,6 +822,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const iclass = stmt.column_text(0);
@@ -831,7 +837,8 @@ pub const Server = struct {
             if (iret.len > 0) try writeJsonStr(w, iret) else try w.writeAll("null");
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -840,7 +847,8 @@ pub const Server = struct {
     fn toolWorkspaceSymbols(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const query = getStrArg(args, "query") orelse return self.buildToolError(id, "missing 'query'");
         const kind_filter = getStrArg(args, "kind");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const like_pat = std.fmt.allocPrint(self.alloc, "%{s}%", .{query}) catch return self.buildToolError(id, "OOM");
         defer self.alloc.free(like_pat);
@@ -849,7 +857,7 @@ pub const Server = struct {
             \\SELECT s.name, s.kind, s.parent_name, s.return_type, f.path, s.line
             \\FROM symbols s JOIN files f ON f.id = s.file_id
             \\WHERE s.name LIKE ? AND (? IS NULL OR s.kind = ?)
-            \\ORDER BY s.name LIMIT 500 OFFSET ?
+            \\ORDER BY s.name LIMIT 501 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, like_pat);
@@ -869,6 +877,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 500) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const sname = stmt.column_text(0);
@@ -889,7 +898,8 @@ pub const Server = struct {
             try writeJsonStr(w, spath);
             try w.print(",\"line\":{d}}}", .{sline});
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 500) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -897,8 +907,10 @@ pub const Server = struct {
 
     fn toolTypeHierarchy(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name'");
-        const ancestors_offset = getIntArg(args, "ancestors_offset") orelse 0;
-        const descendants_offset = getIntArg(args, "descendants_offset") orelse 0;
+        var ancestors_offset = getIntArg(args, "ancestors_offset") orelse 0;
+        var descendants_offset = getIntArg(args, "descendants_offset") orelse 0;
+        if (ancestors_offset < 0) ancestors_offset = 0;
+        if (descendants_offset < 0) descendants_offset = 0;
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -922,7 +934,7 @@ pub const Server = struct {
             \\  WHERE anc.depth < 20
             \\)
             \\SELECT cn, MIN(depth) as depth FROM anc WHERE depth > 0
-            \\GROUP BY cn ORDER BY depth, cn LIMIT 50 OFFSET ?
+            \\GROUP BY cn ORDER BY depth, cn LIMIT 51 OFFSET ?
         ) catch {
             try w.writeAll("],\"descendants\":[]}");
             const text = try aw.toOwnedSlice();
@@ -935,6 +947,7 @@ pub const Server = struct {
 
         var anc_count: usize = 0;
         while (anc_stmt.step() catch |e| stepLog(e)) {
+            if (anc_count >= 50) break;
             if (anc_count > 0) try w.writeByte(',');
             anc_count += 1;
             const cn = anc_stmt.column_text(0);
@@ -943,14 +956,15 @@ pub const Server = struct {
             try writeJsonStr(w, cn);
             try w.print(",\"depth\":{d}}}", .{depth});
         }
-        try w.print("],\"ancestors_has_more\":{s},\"ancestors_offset\":{d},\"descendants\":[", .{ if (anc_count >= 50) "true" else "false", ancestors_offset });
+        const anc_has_more = anc_stmt.step() catch false;
+        try w.print("],\"ancestors_has_more\":{s},\"ancestors_offset\":{d},\"descendants\":[", .{ if (anc_has_more) "true" else "false", ancestors_offset });
 
         // Find classes that include this class/module
         const desc_stmt = self.db.prepare(
             \\SELECT DISTINCT s.name FROM symbols s
             \\JOIN mixins m ON m.class_id = s.id
             \\WHERE m.module_name = ? AND s.kind IN ('class','module')
-            \\ORDER BY s.name LIMIT 50 OFFSET ?
+            \\ORDER BY s.name LIMIT 51 OFFSET ?
         ) catch {
             try w.writeAll("]}");
             const text = try aw.toOwnedSlice();
@@ -963,11 +977,13 @@ pub const Server = struct {
 
         var desc_count: usize = 0;
         while (desc_stmt.step() catch |e| stepLog(e)) {
+            if (desc_count >= 50) break;
             if (desc_count > 0) try w.writeByte(',');
             desc_count += 1;
             try writeJsonStr(w, desc_stmt.column_text(0));
         }
-        try w.print("],\"descendants_has_more\":{s},\"descendants_offset\":{d}}}", .{ if (desc_count >= 50) "true" else "false", descendants_offset });
+        const desc_has_more = desc_stmt.step() catch false;
+        try w.print("],\"descendants_has_more\":{s},\"descendants_offset\":{d}}}", .{ if (desc_has_more) "true" else "false", descendants_offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -975,12 +991,13 @@ pub const Server = struct {
 
     fn toolAssociationGraph(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name'");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const stmt = self.db.prepare(
             \\SELECT name, kind, return_type, doc, value_snippet FROM symbols
             \\WHERE parent_name = ? AND kind IN ('association','scope')
-            \\ORDER BY name LIMIT 100 OFFSET ?
+            \\ORDER BY name LIMIT 101 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, class_name);
@@ -995,6 +1012,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const aname = stmt.column_text(0);
@@ -1018,7 +1036,8 @@ pub const Server = struct {
         if (row_count == 0) {
             try w.writeAll(",\"note\":\"No associations detected. Supported: ActiveRecord (has_many, belongs_to, has_one), Sequel (one_to_many, many_to_one, many_to_many, one_to_one).\"");
         }
-        try w.print(",\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print(",\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -1026,7 +1045,8 @@ pub const Server = struct {
 
     fn toolRouteMap(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const prefix = getStrArg(args, "prefix");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         var like_buf: [256]u8 = undefined;
         const like_pat: []const u8 = if (prefix) |p|
@@ -1037,7 +1057,7 @@ pub const Server = struct {
         const stmt = self.db.prepare(
             \\SELECT name, doc, return_type FROM symbols
             \\WHERE kind = 'route_helper' AND name LIKE ?
-            \\ORDER BY name LIMIT 200 OFFSET ?
+            \\ORDER BY name LIMIT 201 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, like_pat);
@@ -1050,6 +1070,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 200) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const rname = stmt.column_text(0);
@@ -1063,7 +1084,8 @@ pub const Server = struct {
             if (rret.len > 0) try writeJsonStr(w, rret) else try w.writeAll("null");
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 200) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -1071,7 +1093,8 @@ pub const Server = struct {
 
     fn toolDiagnostics(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const file = getStrArg(args, "file");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -1113,7 +1136,7 @@ pub const Server = struct {
                 \\FROM diagnostics d JOIN files f ON f.id = d.file_id
                 \\WHERE f.is_gem = 0
                 \\ORDER BY f.path, d.line
-                \\LIMIT 2000 OFFSET ?
+                \\LIMIT 2001 OFFSET ?
             ) catch {
                 try w.writeAll("{\"files\":[]}");
                 const text = try aw.toOwnedSlice();
@@ -1129,6 +1152,7 @@ pub const Server = struct {
             var in_file = false;
             var row_count: usize = 0;
             while (wstmt.step() catch |e| stepLog(e)) {
+                if (row_count >= 2000) break;
                 row_count += 1;
                 const rpath = wstmt.column_text(0);
                 const rline = wstmt.column_int(1);
@@ -1152,7 +1176,8 @@ pub const Server = struct {
                 try w.print(",\"severity\":{d}}}", .{rsev});
             }
             if (in_file) try w.writeAll("]}");
-            try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 2000) "true" else "false", offset });
+            const has_more = wstmt.step() catch false;
+            try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         }
 
         const text = try aw.toOwnedSlice();
@@ -1503,13 +1528,21 @@ pub const Server = struct {
         const query = getStrArg(args, "query") orelse return self.buildToolError(id, "missing 'query'");
         if (query.len == 0) return self.buildToolError(id, "'query' must be non-empty");
         const file_pattern = getStrArg(args, "file_pattern");
+        if (file_pattern) |fp| {
+            if (validateGlobPattern(fp)) |err_reason| {
+                const err_msg = try std.fmt.allocPrint(self.alloc, "invalid file_pattern: {s}", .{err_reason});
+                defer self.alloc.free(err_msg);
+                return self.buildToolError(id, err_msg);
+            }
+        }
         const ctx_n: usize = @intCast(@min(getIntArg(args, "context_lines") orelse 1, 5));
         const use_regex = if (args) |a| if (a.get("use_regex")) |v| switch (v) {
             .bool => |b| b,
             else => false,
         } else false else false;
-        const offset_raw = getIntArg(args, "offset") orelse 0;
-        const offset: usize = if (offset_raw > 0) @intCast(offset_raw) else 0;
+        var offset_raw = getIntArg(args, "offset") orelse 0;
+        if (offset_raw < 0) offset_raw = 0;
+        const offset: usize = @intCast(offset_raw);
 
         const query_lower = try self.alloc.alloc(u8, query.len);
         defer self.alloc.free(query_lower);
@@ -1633,12 +1666,13 @@ pub const Server = struct {
 
     fn toolI18nLookup(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const query = getStrArg(args, "query") orelse return self.buildToolError(id, "missing 'query'");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
         const like_pat = std.fmt.allocPrint(self.alloc, "%{s}%", .{query}) catch return self.buildToolError(id, "OOM");
         defer self.alloc.free(like_pat);
 
         const stmt = self.db.prepare(
-            \\SELECT key, value, locale FROM i18n_keys WHERE key LIKE ? ORDER BY key LIMIT 100 OFFSET ?
+            \\SELECT key, value, locale FROM i18n_keys WHERE key LIKE ? ORDER BY key LIMIT 101 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, like_pat);
@@ -1651,6 +1685,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const key = stmt.column_text(0);
@@ -1664,7 +1699,8 @@ pub const Server = struct {
             try writeJsonStr(w, locale);
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -1673,7 +1709,8 @@ pub const Server = struct {
     fn toolListByKind(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const kind = getStrArg(args, "kind") orelse return self.buildToolError(id, "missing 'kind'");
         const name_filter = getStrArg(args, "name_filter");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const like_pat: ?[]u8 = if (name_filter) |nf|
             std.fmt.allocPrint(self.alloc, "{s}%", .{nf}) catch null
@@ -1685,7 +1722,7 @@ pub const Server = struct {
             \\SELECT DISTINCT s.name, f.path, s.line
             \\FROM symbols s JOIN files f ON f.id = s.file_id
             \\WHERE s.kind = ? AND (? IS NULL OR s.name LIKE ?) AND f.is_gem = 0
-            \\ORDER BY s.name LIMIT 200 OFFSET ?
+            \\ORDER BY s.name LIMIT 201 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, kind);
@@ -1707,6 +1744,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 200) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const sname = stmt.column_text(0);
@@ -1718,7 +1756,8 @@ pub const Server = struct {
             try writeJsonStr(w, spath);
             try w.print(",\"line\":{d}}}", .{sline});
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 200) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2151,13 +2190,14 @@ pub const Server = struct {
     fn toolListCallbacks(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const class_name = getStrArg(args, "class_name") orelse return self.buildToolError(id, "missing 'class_name'");
         const callback_type = getStrArg(args, "callback_type");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const stmt = self.db.prepare(
             \\SELECT name, doc, line FROM symbols
             \\WHERE parent_name = ? AND kind = 'callback'
             \\  AND (? IS NULL OR name = ?)
-            \\ORDER BY line LIMIT 100 OFFSET ?
+            \\ORDER BY line LIMIT 101 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, class_name);
@@ -2179,6 +2219,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const cname = stmt.column_text(0);
@@ -2190,7 +2231,8 @@ pub const Server = struct {
             if (cdoc.len > 0) try writeJsonStr(w, cdoc) else try w.writeAll("null");
             try w.print(",\"line\":{d}}}", .{cline});
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2198,7 +2240,8 @@ pub const Server = struct {
 
     fn toolConcernUsage(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const module_name = getStrArg(args, "module_name") orelse return self.buildToolError(id, "missing 'module_name'");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         const stmt = self.db.prepare(
             \\SELECT s.name, f.path, m.kind FROM symbols s
@@ -2206,7 +2249,7 @@ pub const Server = struct {
             \\JOIN mixins m ON m.class_id = s.id
             \\WHERE (m.module_name = ? OR m.module_name LIKE '%::' || ?)
             \\  AND m.kind IN ('include','prepend','extend')
-            \\ORDER BY s.name LIMIT 100 OFFSET ?
+            \\ORDER BY s.name LIMIT 101 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, module_name);
@@ -2222,6 +2265,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const sname = stmt.column_text(0);
@@ -2235,7 +2279,8 @@ pub const Server = struct {
             try writeJsonStr(w, mkind);
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 100) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2244,14 +2289,15 @@ pub const Server = struct {
     fn toolFindReferences(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const name = getStrArg(args, "name") orelse return self.buildToolError(id, "missing 'name'");
         const ref_kind = getStrArg(args, "ref_kind");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
 
         _ = ref_kind; // ref_kind filtering not yet supported (refs.kind column planned)
         const stmt = self.db.prepare(
             \\SELECT f.path, r.line, r.col FROM refs r
             \\JOIN files f ON f.id = r.file_id
             \\WHERE r.name = ?
-            \\ORDER BY f.path, r.line LIMIT 200 OFFSET ?
+            \\ORDER BY f.path, r.line LIMIT 201 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, name);
@@ -2276,6 +2322,7 @@ pub const Server = struct {
 
         var row_count: usize = 0;
         while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 200) break;
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
             const fpath = stmt.column_text(0);
@@ -2292,7 +2339,8 @@ pub const Server = struct {
             }
             try w.writeByte('}');
         }
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (row_count >= 200) "true" else "false", offset });
+        const has_more = stmt.step() catch false;
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2653,7 +2701,8 @@ pub const Server = struct {
 
     fn toolListRoutes(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const prefix = getStrArg(args, "prefix");
-        const offset = getIntArg(args, "offset") orelse 0;
+        var offset = getIntArg(args, "offset") orelse 0;
+        if (offset < 0) offset = 0;
         const limit: i64 = 100;
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
@@ -2661,6 +2710,7 @@ pub const Server = struct {
         const w = &aw.writer;
         try w.writeAll("{\"routes\":[");
 
+        var has_more = false;
         if (prefix) |pfx| {
             var pat_buf: [256]u8 = undefined;
             const pat_len = @min(pfx.len, pat_buf.len - 2);
@@ -2675,13 +2725,19 @@ pub const Server = struct {
             ) catch return self.buildToolError(id, "database error");
             defer stmt.finalize();
             stmt.bind_text(1, pattern);
-            stmt.bind_int(2, limit);
+            stmt.bind_int(2, limit + 1);
             stmt.bind_int(3, offset);
 
+            var row_count: usize = 0;
             var first = true;
             while (stmt.step() catch |e| stepLog(e)) {
+                if (row_count >= limit) {
+                    has_more = true;
+                    break;
+                }
                 if (!first) try w.writeByte(',');
                 first = false;
+                row_count += 1;
                 try w.writeAll("{\"helper\":");
                 try writeJsonStr(w, stmt.column_text(0));
                 const method = stmt.column_text(1);
@@ -2707,13 +2763,19 @@ pub const Server = struct {
                 \\FROM routes r ORDER BY r.helper_name LIMIT ? OFFSET ?
             ) catch return self.buildToolError(id, "database error");
             defer stmt.finalize();
-            stmt.bind_int(1, limit);
+            stmt.bind_int(1, limit + 1);
             stmt.bind_int(2, offset);
 
+            var row_count: usize = 0;
             var first = true;
             while (stmt.step() catch |e| stepLog(e)) {
+                if (row_count >= limit) {
+                    has_more = true;
+                    break;
+                }
                 if (!first) try w.writeByte(',');
                 first = false;
+                row_count += 1;
                 try w.writeAll("{\"helper\":");
                 try writeJsonStr(w, stmt.column_text(0));
                 const method = stmt.column_text(1);
@@ -2735,7 +2797,7 @@ pub const Server = struct {
             }
         }
 
-        try w.writeAll("]}");
+        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
         const txt = try aw.toOwnedSlice();
         defer self.alloc.free(txt);
         return self.buildToolResult(id, txt);
@@ -3258,4 +3320,38 @@ fn regexMatchLine(line: []const u8, pattern: []const u8) bool {
         if (regexAt(line, i, pattern, 0)) return true;
     }
     return false;
+}
+
+fn validateGlobPattern(pattern: []const u8) ?[]const u8 {
+    for (pattern) |ch| {
+        switch (ch) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '/', '.', '*', '?', '[', ']', '!' => {},
+            else => {
+                return "contains invalid character";
+            }
+        }
+    }
+    return null;
+}
+
+fn logAuditDbError(self: *Server) void {
+    if (self.audit_lock_err_logged.cmpxchgStrong(false, true, .acquire, .monotonic) == null) {
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("refract: audit_log database write failed (locked or unavailable)\n", .{}) catch {};
+    }
+}
+
+test "validateGlobPattern" {
+    try std.testing.expect(validateGlobPattern("*.rb") == null);
+    try std.testing.expect(validateGlobPattern("models/*.rb") == null);
+    try std.testing.expect(validateGlobPattern("app/[mc]*/**.rb") == null);
+    try std.testing.expect(validateGlobPattern("test-*.rb") == null);
+    try std.testing.expect(validateGlobPattern("lib_name.rb") == null);
+    try std.testing.expect(validateGlobPattern("path/!-name") == null);
+
+    try std.testing.expect(validateGlobPattern("*.rb;malware") != null);
+    try std.testing.expect(validateGlobPattern("$(touch file)") != null);
+    try std.testing.expect(validateGlobPattern("path&other") != null);
+    try std.testing.expect(validateGlobPattern("cmd|pipe") != null);
+    try std.testing.expect(validateGlobPattern("`backtick`") != null);
 }

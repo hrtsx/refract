@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "ruby": {
+      "command": ["refract", "--stdio"],
+      "rootIndicationFileNames": ["Gemfile", ".ruby-version", ".tool-versions"],
+      "url": "https://github.com/refract-lsp/refract",
+      "highlightingModeRegex": "^(Ruby|Ruby/Rails/Database SQL|Ruby/Rails/Rake)$"
+    },
+    "ruby-erb": {
+      "use": "ruby"
+    }
+  }
+}

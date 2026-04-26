@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+$stdout.sync = true
+
+def read_message(io)
+  headers = {}
+  loop do
+    line = io.gets
+    return nil if line.nil?
+    line = line.chomp("\r\n")
+    break if line.empty?
+    key, val = line.split(": ", 2)
+    headers[key.downcase] = val
+  end
+  len = headers["content-length"]&.to_i
+  return nil unless len && len > 0
+  body = io.read(len)
+  JSON.parse(body)
+end
+
+def send_message(io, payload)
+  body = JSON.generate(payload)
+  io.write("Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+  io.flush
+end
+
+initialized = false
+
+loop do
+  msg = read_message($stdin)
+  break if msg.nil?
+
+  method = msg["method"]
+  id = msg["id"]
+
+  case method
+  when "initialize"
+    initialized = true
+    send_message($stdout, {
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => {
+        "capabilities" => {
+          "lsp_requests" => ["refract.hello.echo"]
+        }
+      }
+    })
+  when "refract.hello.echo"
+    arg = msg.dig("params", "value") || ""
+    send_message($stdout, {
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => { "echoed" => arg, "from" => "hello-plugin" }
+    })
+  when "shutdown"
+    send_message($stdout, { "jsonrpc" => "2.0", "id" => id, "result" => nil })
+  when "exit"
+    break
+  else
+    if id
+      send_message($stdout, {
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "error" => { "code" => -32601, "message" => "method not found: #{method}" }
+      })
+    end
+  end
+end

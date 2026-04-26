@@ -245,7 +245,7 @@ pub const Db = struct {
     pub fn init_schema(self: Db) DbError!void {
         const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
         const schema_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
-        const CURRENT_SCHEMA: u32 = 6;
+        const CURRENT_SCHEMA: u32 = 7;
         {
             var needs_reset = false;
             var needs_reindex = false;
@@ -292,6 +292,13 @@ pub const Db = struct {
                 self.exec("DROP TABLE IF EXISTS deprecations") catch {};
                 self.exec("DROP TABLE IF EXISTS gem_versions") catch {};
                 self.exec("DROP TABLE IF EXISTS worktree") catch {};
+                self.exec("DROP TABLE IF EXISTS sorbet_results") catch {};
+                self.exec("DROP TABLE IF EXISTS steep_results") catch {};
+                self.exec("DROP TABLE IF EXISTS coverage_lines") catch {};
+                self.exec("DROP TABLE IF EXISTS brakeman_findings") catch {};
+                self.exec("DROP TABLE IF EXISTS semgrep_findings") catch {};
+                self.exec("DROP TABLE IF EXISTS plugin_state") catch {};
+                self.exec("DROP TABLE IF EXISTS runs") catch {};
                 self.exec("DROP TABLE IF EXISTS symbols") catch {};
                 self.exec("DROP TABLE IF EXISTS files") catch {};
                 self.exec("DROP TABLE IF EXISTS meta") catch {};
@@ -553,9 +560,139 @@ pub const Db = struct {
         );
         self.exec("CREATE INDEX IF NOT EXISTS idx_gem_versions_ws_gem ON gem_versions(workspace_id, gem_name)") catch {};
         self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_gem_versions_unique ON gem_versions(COALESCE(workspace_id,0), gem_name)") catch {};
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','6')");
+
+        // Schema v7: type-bridge results, coverage, security/lint findings, plugin state, subprocess runs
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS runs (
+            \\  run_id      INTEGER PRIMARY KEY,
+            \\  kind        TEXT NOT NULL,
+            \\  started_at  INTEGER NOT NULL,
+            \\  ended_at    INTEGER,
+            \\  exit_code   INTEGER,
+            \\  stderr_tail TEXT
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_runs_kind_started ON runs(kind, started_at)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS sorbet_results (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE,
+            \\  symbol_id    INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+            \\  fqn          TEXT,
+            \\  kind         TEXT NOT NULL,
+            \\  type_str     TEXT NOT NULL,
+            \\  source       TEXT NOT NULL,
+            \\  confidence   INTEGER NOT NULL DEFAULT 100,
+            \\  run_id       INTEGER REFERENCES runs(run_id) ON DELETE SET NULL,
+            \\  ts_us        INTEGER NOT NULL
+            \\)
+        );
+        self.execMigration("ALTER TABLE sorbet_results ADD COLUMN workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_symbol ON sorbet_results(symbol_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_fqn ON sorbet_results(fqn)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_ws ON sorbet_results(workspace_id, fqn)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS steep_results (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE,
+            \\  symbol_id    INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+            \\  fqn          TEXT,
+            \\  kind         TEXT NOT NULL,
+            \\  type_str     TEXT NOT NULL,
+            \\  source       TEXT NOT NULL,
+            \\  confidence   INTEGER NOT NULL DEFAULT 100,
+            \\  run_id       INTEGER REFERENCES runs(run_id) ON DELETE SET NULL,
+            \\  ts_us        INTEGER NOT NULL
+            \\)
+        );
+        self.execMigration("ALTER TABLE steep_results ADD COLUMN workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_symbol ON steep_results(symbol_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_fqn ON steep_results(fqn)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_ws ON steep_results(workspace_id, fqn)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS coverage_lines (
+            \\  id           INTEGER PRIMARY KEY,
+            \\  workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE,
+            \\  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  line         INTEGER NOT NULL,
+            \\  hits         INTEGER NOT NULL,
+            \\  run_id       INTEGER REFERENCES runs(run_id) ON DELETE SET NULL,
+            \\  ts_us        INTEGER NOT NULL
+            \\)
+        );
+        self.execMigration("ALTER TABLE coverage_lines ADD COLUMN workspace_id INTEGER REFERENCES worktree(id) ON DELETE CASCADE");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_coverage_lines_file ON coverage_lines(file_id, line)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_coverage_lines_ws ON coverage_lines(workspace_id, file_id)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS brakeman_findings (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  line        INTEGER NOT NULL,
+            \\  code        TEXT NOT NULL,
+            \\  severity    INTEGER NOT NULL,
+            \\  message     TEXT NOT NULL,
+            \\  fingerprint TEXT,
+            \\  run_id      INTEGER REFERENCES runs(run_id) ON DELETE SET NULL,
+            \\  ts_us       INTEGER NOT NULL
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_brakeman_file ON brakeman_findings(file_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_brakeman_fingerprint ON brakeman_findings(fingerprint)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS semgrep_findings (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            \\  line        INTEGER NOT NULL,
+            \\  rule_id     TEXT NOT NULL,
+            \\  severity    INTEGER NOT NULL,
+            \\  message     TEXT NOT NULL,
+            \\  fingerprint TEXT,
+            \\  run_id      INTEGER REFERENCES runs(run_id) ON DELETE SET NULL,
+            \\  ts_us       INTEGER NOT NULL
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_semgrep_file ON semgrep_findings(file_id)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_semgrep_fingerprint ON semgrep_findings(fingerprint)") catch {};
+
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS plugin_state (
+            \\  id        INTEGER PRIMARY KEY,
+            \\  plugin_id TEXT NOT NULL,
+            \\  key       TEXT NOT NULL,
+            \\  value     TEXT,
+            \\  ts_us     INTEGER NOT NULL
+            \\)
+        );
+        self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_state_unique ON plugin_state(plugin_id, key)") catch {};
+
+        // Wave-3 unified type-resolution view. Merges sorbet_results,
+        // steep_results, and type_oracle behind a single relation tagged with
+        // `source` and `confidence`. The reader queries this view instead of
+        // each table individually.
+        self.exec("DROP VIEW IF EXISTS type_resolution") catch {};
+        try self.exec(
+            \\CREATE VIEW type_resolution AS
+            \\SELECT workspace_id, fqn, NULL AS method_name, -1 AS param_pos,
+            \\       type_str, 'sorbet' AS source, confidence, ts_us
+            \\FROM sorbet_results
+            \\UNION ALL
+            \\SELECT workspace_id, fqn, NULL, -1, type_str, 'steep',
+            \\       confidence, ts_us
+            \\FROM steep_results
+            \\UNION ALL
+            \\SELECT NULL AS workspace_id, fqn, method_name, param_pos,
+            \\       type_str, source, confidence, 0 AS ts_us
+            \\FROM type_oracle
+        );
+
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','7')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 6) {
+        if (final_ver != 7) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
         if (profiling) {
@@ -658,7 +795,101 @@ test "getSchemaVersion returns current version" {
     defer db.close();
     try db.init_schema();
     const ver = db.getSchemaVersion() orelse 0;
-    try std.testing.expectEqual(@as(i64, 5), ver);
+    try std.testing.expectEqual(@as(i64, 7), ver);
+}
+
+test "schema v7 idempotent: init twice does not error" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.init_schema();
+    const ver = db.getSchemaVersion() orelse 0;
+    try std.testing.expectEqual(@as(i64, 7), ver);
+}
+
+test "schema v7 tables present" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    const tables = [_][]const u8{
+        "sorbet_results",
+        "steep_results",
+        "coverage_lines",
+        "brakeman_findings",
+        "semgrep_findings",
+        "plugin_state",
+        "runs",
+    };
+    for (tables) |t| {
+        const stmt = try db.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?");
+        defer stmt.finalize();
+        stmt.bind_text(1, t);
+        try std.testing.expect(try stmt.step());
+        try std.testing.expectEqual(@as(i64, 1), stmt.column_int(0));
+    }
+}
+
+test "schema v7 runs/sorbet round-trip" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO runs(kind, started_at, ended_at, exit_code) VALUES('sorbet', 1000, 2000, 0)");
+    const run_id = db.last_insert_rowid();
+    try std.testing.expect(run_id > 0);
+    const ins = try db.prepare(
+        "INSERT INTO sorbet_results(symbol_id, fqn, kind, type_str, source, confidence, run_id, ts_us) VALUES(NULL, ?, 'method', ?, 'sorbet', 100, ?, 3000)",
+    );
+    defer ins.finalize();
+    ins.bind_text(1, "Foo#bar");
+    ins.bind_text(2, "Integer");
+    ins.bind_int(3, run_id);
+    try std.testing.expect(!(try ins.step()));
+    const sel = try db.prepare("SELECT type_str FROM sorbet_results WHERE fqn=?");
+    defer sel.finalize();
+    sel.bind_text(1, "Foo#bar");
+    try std.testing.expect(try sel.step());
+    try std.testing.expectEqualStrings("Integer", sel.column_text(0));
+}
+
+test "schema v7 type_resolution view unifies bridge + oracle rows" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+
+    try db.exec("INSERT INTO sorbet_results(fqn, kind, type_str, source, confidence, ts_us) VALUES('Foo','class','User','sorbet:hover',95,100)");
+    try db.exec("INSERT INTO steep_results(fqn, kind, type_str, source, confidence, ts_us) VALUES('Bar','class','Order','steep',90,200)");
+    try db.exec("INSERT INTO type_oracle(fqn, type_str, source, confidence) VALUES('Baz','Item','rbs',70)");
+
+    const stmt = try db.prepare("SELECT source, type_str, confidence FROM type_resolution WHERE fqn = ?");
+    defer stmt.finalize();
+
+    stmt.bind_text(1, "Foo");
+    try std.testing.expect(try stmt.step());
+    try std.testing.expectEqualStrings("sorbet", stmt.column_text(0));
+    try std.testing.expectEqualStrings("User", stmt.column_text(1));
+    try std.testing.expectEqual(@as(i64, 95), stmt.column_int(2));
+    stmt.reset();
+
+    stmt.bind_text(1, "Bar");
+    try std.testing.expect(try stmt.step());
+    try std.testing.expectEqualStrings("steep", stmt.column_text(0));
+    stmt.reset();
+
+    stmt.bind_text(1, "Baz");
+    try std.testing.expect(try stmt.step());
+    try std.testing.expectEqualStrings("rbs", stmt.column_text(0));
+}
+
+test "schema v7 plugin_state unique key per plugin" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+    try db.exec("INSERT INTO plugin_state(plugin_id, key, value, ts_us) VALUES('hello','greeting','hi',1000)");
+    try db.exec("INSERT OR REPLACE INTO plugin_state(plugin_id, key, value, ts_us) VALUES('hello','greeting','bonjour',2000)");
+    const sel = try db.prepare("SELECT value FROM plugin_state WHERE plugin_id='hello' AND key='greeting'");
+    defer sel.finalize();
+    try std.testing.expect(try sel.step());
+    try std.testing.expectEqualStrings("bonjour", sel.column_text(0));
 }
 
 test "runOptimize and runVacuum do not crash" {

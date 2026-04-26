@@ -60,6 +60,44 @@
         "title": "Refract: Run Doctor (Diagnostic Report)"
       }
     ],
+    "breakpoints": [
+      { "language": "ruby" }
+    ],
+    "debuggers": [
+      {
+        "type": "refract",
+        "label": "Refract (rdbg)",
+        "languages": ["ruby"],
+        "program": "refract",
+        "args": ["--dap"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": { "type": "string", "description": "Ruby program to debug" },
+              "cwd": { "type": "string", "default": "${workspaceFolder}" },
+              "args": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "env": { "type": "object", "default": {} }
+            }
+          },
+          "attach": {
+            "required": ["pid"],
+            "properties": {
+              "pid": { "type": "number", "description": "PID to attach to" }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "refract",
+            "request": "launch",
+            "name": "Refract: Launch current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}"
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "Refract",
       "properties": {

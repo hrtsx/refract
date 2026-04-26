@@ -1,0 +1,56 @@
+site_name: Refract
+site_description: Fast Ruby LSP, type-aware, debugger-equipped.
+site_url: https://refract.dev/docs
+repo_url: https://github.com/refract-lsp/refract
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Architecture: architecture.md
+  - Benchmark: BENCHMARK.md
+  - LSP capabilities: lsp_capabilities.md
+  - MCP tools: mcp_tools.md
+  - Configure:
+      - Multi-Ruby: configure/multi_ruby.md
+      - AI / LLM: configure/llm.md
+      - Telemetry: configure/telemetry.md
+  - Migrate:
+      - From ruby-lsp: migrate/from-ruby-lsp.md
+      - From Solargraph: migrate/from-solargraph.md
+      - From RubyMine: migrate/from-rubymine.md
+      - From Sorbet (alone): migrate/from-sorbet.md
+      - From Steep (alone): migrate/from-steep.md
+  - Extensions:
+      - Authoring guide: extensions/AUTHORING.md
+      - Protocol: extensions/PROTOCOL.md

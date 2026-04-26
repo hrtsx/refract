@@ -135,15 +135,25 @@ pub const HotIndex = struct {
         // Single match: return immediately without scoring
         if (count == 1) return first_match;
 
-        // Multiple matches with no receiver type: return first non-bundled, else first.
-        // This preserves precedence from rowid order, avoiding unnecessary scoring calls.
+        // Multiple matches with no receiver type: prefer non-bundled with doc,
+        // then any non-bundled, then bundled with doc, then first.
         if (query.receiver_type == null) {
+            var first_nonbundled: ?HotSymbol = null;
             for (candidates) |s| {
                 if (!std.mem.eql(u8, s.name, method_name)) continue;
                 if (s.kind != .def and s.kind != .classdef) continue;
-                if (!s.is_bundled) return s;
+                if (!s.is_bundled) {
+                    if (s.doc != null) return s;
+                    if (first_nonbundled == null) first_nonbundled = s;
+                }
             }
-            // All are bundled; return the first one
+            if (first_nonbundled) |s| return s;
+            // All are bundled — prefer one with doc, fall back to first.
+            for (candidates) |s| {
+                if (!std.mem.eql(u8, s.name, method_name)) continue;
+                if (s.kind != .def and s.kind != .classdef) continue;
+                if (s.doc != null) return s;
+            }
             return first_match;
         }
 

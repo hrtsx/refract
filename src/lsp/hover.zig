@@ -6,6 +6,7 @@ const db_mod = @import("../db.zig");
 const erb_mapping = @import("erb_mapping.zig");
 const hot_index_mod = @import("hot_index.zig");
 const literal_receiver = @import("literal_receiver.zig");
+const type_resolver = @import("type_resolver.zig");
 
 fn hoverScore(s: hot_index_mod.HotSymbol, query_name: []const u8, current_path: []const u8, hot: *const hot_index_mod.HotIndex) i64 {
     var v: i64 = 0;
@@ -101,6 +102,32 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
         0;
     const hover_wc16 = self.toClientCol(hover_line_src, sigil_col_byte);
     const hover_we16 = utf8ColToUtf16(hover_line_src, @min(sigil_col_byte + lookup_word.len, hover_line_src.len));
+
+    // Type-bridge resolution: Sorbet/Steep results take priority over the
+    // local_vars / RBS / literal chain below. Falls through silently when
+    // no high-confidence type is available.
+    if (type_resolver.resolve(self.alloc, self.db, lookup_word, null, -1)) |hit_const| {
+        var hit = hit_const;
+        defer hit.deinit(self.alloc);
+        if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+            var aw = std.Io.Writer.Allocating.init(self.alloc);
+            const w = &aw.writer;
+            try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"`");
+            try writeEscapedJsonContent(w, lookup_word);
+            try w.writeAll("`: ");
+            try writeEscapedJsonContent(w, hit.type_str);
+            try w.writeAll("\\n\\n*via ");
+            try writeEscapedJsonContent(w, hit.source.label());
+            try w.writeAll("*\"}");
+            try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ line, hover_wc16, line, hover_we16 });
+            return types.ResponseMessage{
+                .id = msg.id,
+                .result = null,
+                .raw_result = try aw.toOwnedSlice(),
+                .@"error" = null,
+            };
+        }
+    }
 
     // Check local_vars first for concrete inferred types
     const cursor_line: i64 = @intCast(line + 1);
@@ -210,8 +237,56 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
             }
         }
 
+        // Sorbet/Steep-backed receiver resolution: when literal/constant/local-var
+        // detection produced nothing, ask the type bridge for the receiver's class.
+        var sorbet_recv_owned: ?[]u8 = null;
+        defer if (sorbet_recv_owned) |b| self.alloc.free(b);
+        if (recv_type == null) {
+            const recv_off2 = if (word_byte_start >= 2) word_byte_start - 2 else 0;
+            const recv_w2 = extractWord(source, recv_off2);
+            if (recv_w2.len > 0) {
+                if (type_resolver.resolve(self.alloc, self.db, recv_w2, null, -1)) |hit_const| {
+                    var hit = hit_const;
+                    defer hit.deinit(self.alloc);
+                    if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                        sorbet_recv_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
+                        if (sorbet_recv_owned) |b| recv_type = b;
+                    }
+                }
+            }
+        }
+
         if (recv_type) |rt| {
             const base_type = if (rt.len > 2 and rt[0] == '[' and rt[rt.len - 1] == ']') rt[1 .. rt.len - 1] else rt;
+
+            // Type-bridge method resolution: ask sorbet/steep for `Class#method`
+            // before the legacy hot-index path. Surfaces only at high confidence;
+            // otherwise the existing chain runs.
+            if (type_resolver.resolve(self.alloc, self.db, base_type, word, -1)) |hit_const| {
+                var hit = hit_const;
+                defer hit.deinit(self.alloc);
+                if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                    var aw_m = std.Io.Writer.Allocating.init(self.alloc);
+                    const w_m = &aw_m.writer;
+                    try w_m.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"`");
+                    try writeEscapedJsonContent(w_m, base_type);
+                    try w_m.writeAll("#");
+                    try writeEscapedJsonContent(w_m, word);
+                    try w_m.writeAll("` → ");
+                    try writeEscapedJsonContent(w_m, hit.type_str);
+                    try w_m.writeAll("\\n\\n*via ");
+                    try writeEscapedJsonContent(w_m, hit.source.label());
+                    try w_m.writeAll("*\"}");
+                    try w_m.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ line, hover_wc16, line, hover_we16 });
+                    return types.ResponseMessage{
+                        .id = msg.id,
+                        .result = null,
+                        .raw_result = try aw_m.toOwnedSlice(),
+                        .@"error" = null,
+                    };
+                }
+            }
+
             if (try hoverLookupOnClass(self, msg, word, base_type, line, hover_wc16, hover_we16)) |r| return r;
         }
     }

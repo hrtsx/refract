@@ -1,0 +1,3 @@
+s = <<~EOS
+  hello
+EOS
