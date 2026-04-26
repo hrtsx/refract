@@ -47,27 +47,27 @@ QUERIES = [
   ["stdlib chained String#upcase",         "accuracy_main.rb", 11, 13, "(stdlib)", nil],
 
   # B1: Block return types
-  ["block map returns array",              "accuracy_block_return.rb", 4, 21, "(stdlib)", nil],
-  ["block tap returns receiver",           "accuracy_block_return.rb", 8, 18, "(stdlib)", nil],
-  ["block then returns block result",      "accuracy_block_return.rb", 12, 15, "(stdlib)", nil],
-  ["block each_with_object returns obj",   "accuracy_block_return.rb", 16, 26, "(stdlib)", nil],
-  ["block lazy map force returns array",   "accuracy_block_return.rb", 20, 31, "(stdlib)", nil],
-  ["symbol to_proc map",                   "accuracy_block_return.rb", 24, 26, "(stdlib)", nil],
+  ["block return type .map",               "accuracy_block_return.rb", 3, 14, "(stdlib)", nil],
+  ["block return type .tap",               "accuracy_block_return.rb", 7, 11, "(stdlib)", nil],
+  ["block return type .then",              "accuracy_block_return.rb", 11, 8, "(stdlib)", nil],
+  ["block return type .each_with_object",  "accuracy_block_return.rb", 15, 14, "(stdlib)", nil],
+  ["symbol to_proc &:to_s",                "accuracy_block_return.rb", 23, 14, "(stdlib)", nil],
+  ["symbol to_proc &:upcase",              "accuracy_block_return.rb", 27, 17, "(stdlib)", nil],
 
   # B2: Rails associations
-  ["assoc has_one resolve",                "accuracy_rails_assoc.rb", 25, 17, "accuracy_rails_assoc.rb", 2],
-  ["assoc has_many resolve",               "accuracy_rails_assoc.rb", 26, 18, "accuracy_rails_assoc.rb", 2],
-  ["assoc through source",                 "accuracy_rails_assoc.rb", 27, 22, "accuracy_rails_assoc.rb", 8],
-  ["assoc polymorphic type union",         "accuracy_rails_assoc.rb", 28, 17, "accuracy_rails_assoc.rb", 10],
+  ["association has_one author",           "accuracy_rails_assoc.rb", 24, 13, "accuracy_rails_assoc.rb", 2],
+  ["association has_many comments",        "accuracy_rails_assoc.rb", 25, 13, "accuracy_rails_assoc.rb", 2],
+  ["association through source",           "accuracy_rails_assoc.rb", 26, 13, "accuracy_rails_assoc.rb", 8],
+  ["association polymorphic user",         "accuracy_rails_assoc.rb", 27, 13, "accuracy_rails_assoc.rb", 10],
 
   # B2: Pattern matching
-  ["pattern match case in Foo",            "accuracy_pattern_match.rb", 8, 11, "(stdlib)", nil],
-  ["pattern match case in hash",           "accuracy_pattern_match.rb", 10, 15, "(stdlib)", nil],
-  ["pattern match case in array",          "accuracy_pattern_match.rb", 12, 13, "(stdlib)", nil],
+  ["pattern match capture",                "accuracy_pattern_match.rb", 7, 14, "accuracy_pattern_match.rb", 12],
+  ["pattern match hash destructure",       "accuracy_pattern_match.rb", 9, 14, "accuracy_pattern_match.rb", 12],
+  ["pattern match array destructure",      "accuracy_pattern_match.rb", 11, 14, "accuracy_pattern_match.rb", 12],
 
   # B2: Concerning
-  ["concern included block",               "accuracy_concern.rb", 5, 20, "accuracy_concern.rb", 5],
-  ["concern instance method",              "accuracy_concern.rb", 31, 18, "accuracy_concern.rb", 8],
+  ["concern module mixin",                 "accuracy_concern.rb", 22, 19, "accuracy_concern.rb", 2],
+  ["concern instance method call",         "accuracy_concern.rb", 28, 13, "accuracy_concern.rb", 9],
 ]
 
 def basename_of(uri)
