@@ -289,7 +289,8 @@ pub fn main(init: std.process.Init) !void {
             .repair = flag_repair,
             .no_color = no_color,
         };
-        try doctor.runDoctor(io, db_path, cwd, opts, alloc);
+        const had_fail = try doctor.runDoctor(io, db_path, cwd, opts, alloc);
+        if (had_fail) return error.DoctorFailed;
         return;
     }
 
@@ -549,10 +550,16 @@ pub fn main(init: std.process.Init) !void {
             if (try stmt.step()) gem_files = stmt.column_int(0);
         } else |_| {}
 
+        var schema_buf: [32]u8 = undefined;
         var schema_ver: []const u8 = "unknown";
         if (info_db.prepare("SELECT value FROM meta WHERE key='schema_version'")) |stmt| {
             defer stmt.finalize();
-            if (try stmt.step()) schema_ver = stmt.column_text(0);
+            if (try stmt.step()) {
+                const src = stmt.column_text(0);
+                const n = @min(src.len, schema_buf.len);
+                @memcpy(schema_buf[0..n], src[0..n]);
+                schema_ver = schema_buf[0..n];
+            }
         } else |_| {}
 
         const stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, db_path, .{}) catch {
@@ -709,6 +716,7 @@ pub fn main(init: std.process.Init) !void {
         // Index stdlib RBS if not already done
         indexStdlibRbs(io, db, cwd, alloc);
         var mcp_server = mcp.Server.init(db, alloc);
+        defer mcp_server.deinit();
         var file_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buf);
         var file_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buf);
         const reader = &file_reader.interface;

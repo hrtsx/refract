@@ -25,6 +25,8 @@ See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the head-to-head numbers vs Sol
 
 ## Install
 
+> **Platform support:** Linux (x86_64 / aarch64, glibc and musl) and macOS (x86_64 / aarch64). Windows is not supported in 0.1.0.
+
 **macOS (Homebrew):**
 
 ```sh
@@ -168,7 +170,7 @@ All options are passed via `initializationOptions` and hot-reload via `workspace
 | `maxWorkers` | number | cpu count (max 8) | Parallel indexing threads |
 | `extraExcludeDirs` | string[] | [] | Extra directories to skip during scan |
 | `logLevel` | number | 2 | 1=error 2=warn 3=info 4=debug |
-| `typeCheckerConfidence` | object | `{"surface": 80, "diag": 50}` | Tune precision/recall: surface gates completion/hover; diag gates nil-receiver/wrong-arity diagnostics |
+| `typeCheckerConfidence` | object | `{"surface": 80}` | Minimum confidence (0–100) to surface a resolved type in completion/hover/inlay/navigation. Lower = more inferred guesses surfaced |
 
 ## CLI
 

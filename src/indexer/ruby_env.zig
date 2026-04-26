@@ -11,6 +11,7 @@ pub const RubyEnv = struct {
         mise_toml,
         env_rbenv,
         env_chruby,
+        mise_global, // mise installed but no workspace config
         path_default, // first `ruby` on PATH
 
         pub fn label(self: Source) []const u8 {
@@ -20,6 +21,7 @@ pub const RubyEnv = struct {
                 .mise_toml => "mise.toml",
                 .env_rbenv => "$RBENV_VERSION",
                 .env_chruby => "$CHRUBY_VERSION",
+                .mise_global => "mise (global)",
                 .path_default => "PATH",
             };
         }
@@ -58,7 +60,66 @@ pub fn detect(alloc: std.mem.Allocator, workspace_root: []const u8) !RubyEnv {
         const v = try alloc.dupe(u8, std.mem.span(p));
         return RubyEnv{ .version = v, .source = .env_chruby, .ruby_path = null };
     }
+    if (try detectMiseGlobal(alloc)) |v| {
+        return RubyEnv{ .version = v, .source = .mise_global, .ruby_path = null };
+    }
     return RubyEnv{ .version = null, .source = .path_default, .ruby_path = null };
+}
+
+/// Probe mise's global install dir for an installed ruby version. Picks the
+/// highest version directory found under $MISE_DATA_DIR or
+/// $XDG_DATA_HOME/mise or $HOME/.local/share/mise — whichever exists.
+fn detectMiseGlobal(alloc: std.mem.Allocator) !?[]u8 {
+    var base_buf: [4096]u8 = undefined;
+    const base: []const u8 = blk: {
+        if (std.c.getenv("MISE_DATA_DIR")) |p| break :blk std.mem.span(p);
+        if (std.c.getenv("XDG_DATA_HOME")) |p| {
+            const xdg = std.mem.span(p);
+            const n = (std.fmt.bufPrint(&base_buf, "{s}/mise", .{xdg}) catch return null).len;
+            break :blk base_buf[0..n];
+        }
+        if (std.c.getenv("HOME")) |p| {
+            const home = std.mem.span(p);
+            const n = (std.fmt.bufPrint(&base_buf, "{s}/.local/share/mise", .{home}) catch return null).len;
+            break :blk base_buf[0..n];
+        }
+        return null;
+    };
+    const ruby_dir = try std.fmt.allocPrint(alloc, "{s}/installs/ruby", .{base});
+    defer alloc.free(ruby_dir);
+    var dir = std.Io.Dir.cwd().openDir(std.Options.debug_io, ruby_dir, .{ .iterate = true }) catch return null;
+    defer dir.close(std.Options.debug_io);
+    var it = dir.iterate();
+    var best: ?[]u8 = null;
+    errdefer if (best) |b| alloc.free(b);
+    while (it.next(std.Options.debug_io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        const name = entry.name;
+        if (name.len == 0 or name[0] == '.') continue;
+        if (best) |b| {
+            if (compareSemver(b, name) == .lt) {
+                alloc.free(b);
+                best = try alloc.dupe(u8, name);
+            }
+        } else {
+            best = try alloc.dupe(u8, name);
+        }
+    }
+    return best;
+}
+
+fn compareSemver(a: []const u8, b: []const u8) std.math.Order {
+    var ai = std.mem.splitScalar(u8, a, '.');
+    var bi = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const ap = ai.next();
+        const bp = bi.next();
+        if (ap == null and bp == null) return .eq;
+        const an = if (ap) |s| std.fmt.parseInt(u32, s, 10) catch 0 else 0;
+        const bn = if (bp) |s| std.fmt.parseInt(u32, s, 10) catch 0 else 0;
+        if (an < bn) return .lt;
+        if (an > bn) return .gt;
+    }
 }
 
 fn readFileBytes(alloc: std.mem.Allocator, path: []const u8) !?[]u8 {

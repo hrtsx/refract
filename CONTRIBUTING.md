@@ -5,8 +5,9 @@ Thank you for your interest in contributing to Refract! This guide will help you
 ## Development Setup
 
 ### Prerequisites
-- Zig 0.15.2 or later
+- Zig 0.16.0 (exact — CI pins this version)
 - Ruby (for testing integration)
+- Supported platforms: Linux (x86_64 / aarch64) and macOS (x86_64 / aarch64). Windows is not supported in 0.1.0.
 
 ### Build from Source
 

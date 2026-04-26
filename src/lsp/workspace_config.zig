@@ -3,8 +3,9 @@ const std = @import("std");
 const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 pub const TypeCheckerConfidence = struct {
+    /// Minimum confidence to surface a resolved type in completion/hover/inlay/navigation.
+    /// 80 = RBS sigs, YARD, narrowing. Drop to 50 to surface chain-inferred guesses.
     surface: u8 = 80,
-    diag: u8 = 50,
 };
 
 pub const ApplyResult = struct {
@@ -136,9 +137,6 @@ pub fn loadAndApply(server: anytype, root_path: []const u8) ApplyResult {
         var tcc = TypeCheckerConfidence{};
         if (v.object.get("surface")) |sv| if (sv == .integer and sv.integer >= 0 and sv.integer <= 100) {
             tcc.surface = @intCast(sv.integer);
-        };
-        if (v.object.get("diag")) |dv| if (dv == .integer and dv.integer >= 0 and dv.integer <= 100) {
-            tcc.diag = @intCast(dv.integer);
         };
         server.type_checker_confidence = tcc;
         applied += 1;

@@ -20,7 +20,7 @@
 - `textDocument/signatureHelp`
 - `callHierarchy/incomingCalls` and `outgoingCalls`
 - `typeHierarchy/supertypes` and `subtypes`
-- `workspace/executeCommand` — `refract.restartIndexer`, `refract.forceReindex`, `refract.toggleGemIndex`, `refract.showReferences`, `refract.runTest`, `refract.recheckRubocop`
+- `workspace/executeCommand` — `refract.restartIndexer`, `refract.forceReindex`, `refract.toggleGemIndex`, `refract.showReferences`, `refract.runTest`, `refract.debugTest`, `refract.recheckRubocop`, `refract.disableDiagnostic`
 - `$/progress` live indexing notifications (begin / report every 25 files with current directory / end)
 - JSON-RPC parse-error response (code −32700) on malformed input
 
@@ -69,7 +69,7 @@
 - `**Extends:**` section alongside `**Includes:**` in class/module hover
 - Block parameters labeled `*(block param)*` instead of `*(local variable)*`
 
-### MCP Server (35 tools)
+### MCP Server (34 tools)
 
 Code intelligence (`resolve_type`, `class_summary`, `method_signature`, `explain_symbol`, `explain_type_chain`, `suggest_types`, `type_coverage`), symbol search (`workspace_symbols`, `list_by_kind`, `get_file_overview`, `find_unused`, `find_similar`), call graph (`find_callers`, `find_implementations`, `find_references`, `type_hierarchy`), source access (`get_symbol_source`, `grep_source`), Rails (`association_graph`, `route_map`, `i18n_lookup`, `list_validations`, `list_callbacks`, `concern_usage`), diagnostics (`diagnostics`, `diagnostic_summary`), workspace (`workspace_health`, `batch_resolve`), code actions (`refactor`, `available_code_actions`), testing (`test_summary`).
 
@@ -99,7 +99,7 @@ Via `initializationOptions` and `workspace/didChangeConfiguration` (all options 
 
 `maxFileSizeMb` (default 8), `rubocopTimeoutSecs`, `rubocopDebounceMs`, `disableRubocop`, `disableGemIndex`, `maxWorkers`, `bundleExecTimeoutSecs`, `extraExcludeDirs`, `logLevel` (1 error · 2 warn · 3 info · 4 debug)
 
-Per-project `.refractrc.json` adds: `disableTypeChecker`, `typeCheckerSeverity` (`error`/`warning`/`info`), `diagnosticsSuppressions` (codes to ignore), `indexBudget.fileSizeMb`, `indexBudget.excludeDirs`, and `typeCheckerConfidence: { surface: u8, diag: u8 }` (defaults `{ surface: 80, diag: 50 }`) to tune precision/recall for `refract/nil-receiver` and `refract/wrong-arity`.
+Per-project `.refractrc.json` adds: `disableTypeChecker`, `typeCheckerSeverity` (`error`/`warning`/`info`), `diagnosticsSuppressions` (codes to ignore), `indexBudget.fileSizeMb`, `indexBudget.excludeDirs`, and `typeCheckerConfidence: { surface: u8 }` (default `{ surface: 80 }`) — minimum confidence to surface a resolved type in completion/hover/inlay/navigation.
 
 ### Editor Integrations
 

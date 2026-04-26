@@ -1661,7 +1661,9 @@ pub const Server = struct {
             const t0 = std.Io.Timestamp.now(self.io, .real);
             const result = try navigation.handleDefinition(self, msg);
             const t1 = std.Io.Timestamp.now(self.io, .real);
-            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            const ta_ns = t0.toNanoseconds();
+            const tb_ns = t1.toNanoseconds();
+            const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
             if (self.recorder) |*rec| rec.recordRequest("textDocument/definition", dt_ns);
             return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/implementation")) {
@@ -1674,14 +1676,18 @@ pub const Server = struct {
             const t0 = std.Io.Timestamp.now(self.io, .real);
             const result = try hover.handleHover(self, msg);
             const t1 = std.Io.Timestamp.now(self.io, .real);
-            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            const ta_ns = t0.toNanoseconds();
+            const tb_ns = t1.toNanoseconds();
+            const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
             if (self.recorder) |*rec| rec.recordRequest("textDocument/hover", dt_ns);
             return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/completion")) {
             const t0 = std.Io.Timestamp.now(self.io, .real);
             const result = try completion.handleCompletion(self, msg);
             const t1 = std.Io.Timestamp.now(self.io, .real);
-            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            const ta_ns = t0.toNanoseconds();
+            const tb_ns = t1.toNanoseconds();
+            const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
             if (self.recorder) |*rec| rec.recordRequest("textDocument/completion", dt_ns);
             return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/inlineCompletion")) {
@@ -1692,7 +1698,9 @@ pub const Server = struct {
             const t0 = std.Io.Timestamp.now(self.io, .real);
             const result = try navigation.handleReferences(self, msg);
             const t1 = std.Io.Timestamp.now(self.io, .real);
-            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            const ta_ns = t0.toNanoseconds();
+            const tb_ns = t1.toNanoseconds();
+            const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
             if (self.recorder) |*rec| rec.recordRequest("textDocument/references", dt_ns);
             return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/signatureHelp")) {
@@ -1715,7 +1723,9 @@ pub const Server = struct {
             const t0 = std.Io.Timestamp.now(self.io, .real);
             const result = try rename.handleRename(self, msg);
             const t1 = std.Io.Timestamp.now(self.io, .real);
-            const ta_ns = t0.toNanoseconds(); const tb_ns = t1.toNanoseconds(); const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
+            const ta_ns = t0.toNanoseconds();
+            const tb_ns = t1.toNanoseconds();
+            const dt_ns: u64 = if (tb_ns > ta_ns) @intCast(tb_ns - ta_ns) else 0;
             if (self.recorder) |*rec| rec.recordRequest("textDocument/rename", dt_ns);
             return result;
         } else if (std.mem.eql(u8, msg.method, "textDocument/formatting")) {

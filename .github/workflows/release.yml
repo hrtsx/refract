@@ -47,34 +47,38 @@ jobs:
   publish-vscode:
     needs: release
     runs-on: ubuntu-latest
-    if: ${{ secrets.VSCE_PAT != '' }}
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
+        if: env.VSCE_PAT != ''
       - uses: actions/setup-node@v4
+        if: env.VSCE_PAT != ''
         with:
           node-version: 20
       - name: Build and publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
         working-directory: editors/vscode
         run: |
           npm install
           npm run build
           npx -y @vscode/vsce@latest publish -p "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: Publish to OpenVSX
-        if: ${{ secrets.OVSX_PAT != '' }}
+        if: env.OVSX_PAT != ''
         working-directory: editors/vscode
         run: npx -y ovsx@latest publish -p "$OVSX_PAT"
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
   bump-brew-formula:
     needs: release
     runs-on: ubuntu-latest
-    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        if: env.HOMEBREW_TAP_TOKEN != ''
       - name: Compute SHAs from release artifacts
+        if: env.HOMEBREW_TAP_TOKEN != ''
         id: shas
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
@@ -86,6 +90,7 @@ jobs:
           done
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
       - name: Rewrite formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           ./scripts/bump-formula.sh \
             "${{ steps.shas.outputs.version }}" \
@@ -96,8 +101,9 @@ jobs:
             > /tmp/refract.rb.new
           mv /tmp/refract.rb.new packaging/homebrew/refract.rb
       - name: Open PR against homebrew-refract tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ env.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.shas.outputs.version }}"
           TAP_DIR=/tmp/homebrew-refract

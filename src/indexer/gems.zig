@@ -153,9 +153,13 @@ pub fn findRbsStdlibPaths(io: std.Io, root_path: []const u8, alloc: std.mem.Allo
             const trimmed2 = std.mem.trim(u8, fline, " \t\r");
             if (trimmed2.len == 0) continue;
             if (!std.fs.path.isAbsolute(trimmed2)) continue;
-            // Look for an rbs/ subdirectory adjacent to rubylibdir
-            const rbs_dir = std.fmt.allocPrint(alloc, "{s}/../rbs", .{trimmed2}) catch continue;
+            // Look for an rbs/ subdirectory adjacent to rubylibdir. Use
+            // std.fs.path.resolve to collapse ".." safely; reject if the
+            // resolved path does not stay rooted under the trimmed2 parent.
+            const parent = std.fs.path.dirname(trimmed2) orelse continue;
+            const rbs_dir = std.fs.path.resolve(alloc, &.{ parent, "rbs" }) catch continue;
             defer alloc.free(rbs_dir);
+            if (!std.mem.startsWith(u8, rbs_dir, parent)) continue;
             std.Io.Dir.cwd().access(std.Options.debug_io, rbs_dir, .{}) catch continue;
             const dir_paths2 = scanner.scan(rbs_dir, alloc, &.{".rbs"}) catch continue;
             for (dir_paths2) |p| rbs_paths2.append(alloc, p) catch continue;

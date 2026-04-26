@@ -114,7 +114,7 @@ pub const RdbgBridge = struct {
 
 test "buildArgv assembles rdbg invocation" {
     const alloc = std.testing.allocator;
-    const args = [_][]const u8{ "spec/foo_spec.rb" };
+    const args = [_][]const u8{"spec/foo_spec.rb"};
     const argv = try RdbgBridge.buildArgv(alloc, "bundle exec rspec", &args);
     defer RdbgBridge.freeArgv(alloc, argv);
 

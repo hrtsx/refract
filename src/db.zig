@@ -800,19 +800,19 @@ test "getSchemaVersion returns current version" {
     defer db.close();
     try db.init_schema();
     const ver = db.getSchemaVersion() orelse 0;
-    try std.testing.expectEqual(@as(i64, 7), ver);
+    try std.testing.expectEqual(@as(i64, 8), ver);
 }
 
-test "schema v7 idempotent: init twice does not error" {
+test "schema v8 idempotent: init twice does not error" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
     try db.init_schema();
     const ver = db.getSchemaVersion() orelse 0;
-    try std.testing.expectEqual(@as(i64, 7), ver);
+    try std.testing.expectEqual(@as(i64, 8), ver);
 }
 
-test "schema v7 tables present" {
+test "schema v8 tables present" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
@@ -834,7 +834,7 @@ test "schema v7 tables present" {
     }
 }
 
-test "schema v7 runs/sorbet round-trip" {
+test "schema v8 runs/sorbet round-trip" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
@@ -856,7 +856,7 @@ test "schema v7 runs/sorbet round-trip" {
     try std.testing.expectEqualStrings("Integer", sel.column_text(0));
 }
 
-test "schema v7 type_resolution view unifies bridge + oracle rows" {
+test "schema v8 type_resolution view unifies bridge + oracle rows" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();

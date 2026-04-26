@@ -1,6 +1,9 @@
 const std = @import("std");
 const dap_server = @import("../dap/server.zig");
 const transport = @import("../lsp/transport.zig");
+const c = @cImport({
+    @cInclude("stdlib.h");
+});
 
 test "dispatch unknown command returns success:false with correct format" {
     const alloc = std.testing.allocator;
@@ -56,8 +59,8 @@ test "setBreakpoints without bridge returns no debug session error" {
 
 test "launch with missing rdbg emits output event with install hint before failure response" {
     const alloc = std.testing.allocator;
-    _ = std.c.setenv("RDBG_BIN", "/nonexistent/refract-test-rdbg-binary", 1);
-    defer _ = std.c.unsetenv("RDBG_BIN");
+    _ = c.setenv("RDBG_BIN", "/nonexistent/refract-test-rdbg-binary", 1);
+    defer _ = c.unsetenv("RDBG_BIN");
 
     var s = dap_server.Server.init(alloc, std.Options.debug_io);
     var out_bytes: [8192]u8 = undefined;

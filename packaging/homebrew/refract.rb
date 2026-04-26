@@ -1,7 +1,10 @@
 class Refract < Formula
   desc "Fast Ruby language server backed by SQLite"
   homepage "https://github.com/hrtsx/refract"
-  version "0.3.0"
+  # NOTE: SHA256 values are placeholders. Regenerate after building release
+  # artifacts via `scripts/bump-formula.sh 0.1.0 <sha-aarch64-macos> <sha-x86_64-macos>
+  # <sha-aarch64-linux> <sha-x86_64-linux>`.
+  version "0.1.0"
   license "MIT"
 
   on_macos do

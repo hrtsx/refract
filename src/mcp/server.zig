@@ -15,7 +15,7 @@ const schema_method_signature =
     \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
 ;
 const schema_find_callers =
-    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' or bare method name (preferred)"},"class_name":{"type":"string","description":"Receiver class name (optional filter, legacy)"},"method_name":{"type":"string","description":"Method name to find callers of (legacy, use 'symbol' instead)"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":[]}
+    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' or bare method name (preferred)"},"class_name":{"type":"string","description":"Receiver class name (optional filter, legacy)"},"method_name":{"type":"string","description":"Method name to find callers of (legacy, use 'symbol' instead)"},"ref_kind":{"type":"string","description":"Optional kind filter: call, assign, decl, super, yield, alias"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":[]}
 ;
 const schema_find_implementations =
     \\{"type":"object","properties":{"method_name":{"type":"string","description":"Method name to find implementations of"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["method_name"]}
@@ -155,9 +155,33 @@ pub const Server = struct {
     request_count: u32 = 0,
     request_window_ms: i64 = 0,
     audit_lock_err_logged: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Real (symlink-resolved) absolute path of the workspace root. Used to
+    /// containment-check fpaths read by grep_source / get_symbol_source.
+    workspace_root: ?[]u8 = null,
 
     pub fn init(db: db_mod.Db, alloc: std.mem.Allocator) Server {
-        return .{ .db = db, .alloc = alloc };
+        var s = Server{ .db = db, .alloc = alloc };
+        // Resolve cwd's realpath once. Stored for containment checks; freed in deinit().
+        if (std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", alloc)) |root| {
+            s.workspace_root = root;
+        } else |_| {}
+        return s;
+    }
+
+    pub fn deinit(self: *Server) void {
+        if (self.workspace_root) |r| self.alloc.free(r);
+        self.workspace_root = null;
+    }
+
+    /// Returns true if `fpath` (after symlink resolution) lies under the
+    /// workspace root. Always returns true if workspace_root could not be
+    /// resolved (fail-open for compatibility — server still relies on indexer
+    /// to populate only safe paths).
+    fn pathInWorkspace(self: *Server, fpath: []const u8) bool {
+        const root = self.workspace_root orelse return true;
+        const real = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, fpath, self.alloc) catch return false;
+        defer self.alloc.free(real);
+        return std.mem.startsWith(u8, real, root);
     }
 
     pub fn run(self: *Server, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
@@ -737,19 +761,35 @@ pub const Server = struct {
             method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
             class_name = getStrArg(args, "class_name");
         }
+        const ref_kind = getStrArg(args, "ref_kind");
         var offset = getIntArg(args, "offset") orelse 0;
         if (offset < 0) offset = 0;
 
-        const stmt = self.db.prepare(
-            \\SELECT f.path, r.line, r.col
-            \\FROM refs r JOIN files f ON f.id = r.file_id
-            \\WHERE r.name = ?
-            \\ORDER BY f.path, r.line
-            \\LIMIT 201 OFFSET ?
-        ) catch return self.buildToolError(id, "database error");
+        const stmt = if (ref_kind != null)
+            self.db.prepare(
+                \\SELECT f.path, r.line, r.col
+                \\FROM refs r JOIN files f ON f.id = r.file_id
+                \\WHERE r.name = ? AND r.kind = ?
+                \\ORDER BY f.path, r.line
+                \\LIMIT 201 OFFSET ?
+            ) catch return self.buildToolError(id, "database error")
+        else
+            self.db.prepare(
+                \\SELECT f.path, r.line, r.col
+                \\FROM refs r JOIN files f ON f.id = r.file_id
+                \\WHERE r.name = ?
+                \\ORDER BY f.path, r.line
+                \\LIMIT 201 OFFSET ?
+            ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, method_name);
-        stmt.bind_int(2, offset);
+        var param_idx: c_int = 1;
+        stmt.bind_text(param_idx, method_name);
+        param_idx += 1;
+        if (ref_kind) |kind| {
+            stmt.bind_text(param_idx, kind);
+            param_idx += 1;
+        }
+        stmt.bind_int(param_idx, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -1582,6 +1622,7 @@ pub const Server = struct {
                 };
                 if (!matched) continue;
             }
+            if (!self.pathInWorkspace(fpath)) continue;
             const raw = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(8 * 1024 * 1024)) catch continue;
             defer self.alloc.free(raw);
 
@@ -1708,6 +1749,15 @@ pub const Server = struct {
 
     fn toolListByKind(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const kind = getStrArg(args, "kind") orelse return self.buildToolError(id, "missing 'kind'");
+        const allowed_kinds = [_][]const u8{ "class", "module", "def", "constant", "association", "route_helper" };
+        var kind_ok = false;
+        for (allowed_kinds) |k| {
+            if (std.mem.eql(u8, kind, k)) {
+                kind_ok = true;
+                break;
+            }
+        }
+        if (!kind_ok) return self.buildToolError(id, "invalid 'kind' (expected class|module|def|constant|association|route_helper)");
         const name_filter = getStrArg(args, "name_filter");
         var offset = getIntArg(args, "offset") orelse 0;
         if (offset < 0) offset = 0;
@@ -2305,8 +2355,7 @@ pub const Server = struct {
                 \\JOIN files f ON f.id = r.file_id
                 \\WHERE r.name = ?
                 \\ORDER BY f.path, r.line LIMIT 201 OFFSET ?
-            ) catch return self.buildToolError(id, "database error")
-        ;
+            ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         var param_idx: c_int = 1;
         stmt.bind_text(param_idx, name);
@@ -2527,6 +2576,7 @@ pub const Server = struct {
             .array => |a| a,
             else => return self.buildToolError(id, "'positions' must be array"),
         };
+        if (positions.items.len > 20) return self.buildToolError(id, "too many positions (max 20)");
 
         const stmt = self.db.prepare(
             \\SELECT lv.name, lv.type_hint, lv.confidence
@@ -2541,8 +2591,7 @@ pub const Server = struct {
         const w = &aw.writer;
         try w.writeAll("{\"results\":[");
 
-        const limit = @min(positions.items.len, 20);
-        for (positions.items[0..limit], 0..) |pos_val, pi| {
+        for (positions.items, 0..) |pos_val, pi| {
             if (pi > 0) try w.writeByte(',');
             const pos = switch (pos_val) {
                 .object => |o| o,
@@ -3342,7 +3391,7 @@ fn validateGlobPattern(pattern: []const u8) ?[]const u8 {
             'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '/', '.', '*', '?', '[', ']', '!' => {},
             else => {
                 return "contains invalid character";
-            }
+            },
         }
     }
     return null;

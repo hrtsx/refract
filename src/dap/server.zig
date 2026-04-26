@@ -185,15 +185,22 @@ pub const Server = struct {
     }
 
     fn handleAttach(self: *Server, request_seq: i64, obj: std.json.ObjectMap, writer: *std.Io.Writer) !void {
-        const args = obj.get("arguments") orelse {
-            try self.sendResponse(request_seq, "attach", false, "{\"error\":{\"id\":1,\"format\":\"missing arguments\"}}", writer);
-            return;
-        };
-        if (args != .object) {
-            try self.sendResponse(request_seq, "attach", false, "{\"error\":{\"id\":1,\"format\":\"arguments must be an object\"}}", writer);
-            return;
-        }
-        try self.sendResponse(request_seq, "attach", true, "{}", writer);
+        _ = obj;
+        // 0.1.0: refract --dap supports `launch` only. `attach` requires rdbg's TCP/UDS
+        // attach mode (e.g. `rdbg --attach --port=12345`) which refract does not yet
+        // proxy. Reject explicitly with a usage hint instead of silently succeeding.
+        try self.sendEvent(
+            "output",
+            "{\"category\":\"important\",\"output\":\"refract --dap does not support attach in 0.1.0; use launch, or attach directly with `rdbg --attach`.\\n\"}",
+            writer,
+        );
+        try self.sendResponse(
+            request_seq,
+            "attach",
+            false,
+            "{\"error\":{\"id\":3,\"format\":\"attach not supported in refract 0.1.0; use launch, or run `rdbg --attach` directly\"}}",
+            writer,
+        );
     }
 
     fn handleDisconnect(self: *Server, request_seq: i64, writer: *std.Io.Writer) !void {

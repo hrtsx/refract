@@ -1,7 +1,7 @@
 site_name: Refract
 site_description: Fast Ruby LSP, type-aware, debugger-equipped.
 site_url: https://refract.dev/docs
-repo_url: https://github.com/refract-lsp/refract
+repo_url: https://github.com/hrtsx/refract
 edit_uri: edit/main/docs/
 
 theme:

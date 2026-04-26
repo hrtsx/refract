@@ -183,8 +183,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
         // Relevance-aware ORDER BY: exact match → prefix match → rest, then length, then name.
         var sql_buf: [1024]u8 = undefined;
         const sql = if (query.len > 0) blk: {
-            if (lsp_kind_filter) |kf| {
-                _ = kf;
+            if (lsp_kind_filter) |_| {
                 break :blk try std.fmt.bufPrintZ(&sql_buf, "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND s.kind = ? AND f.is_gem = 0 ORDER BY CASE WHEN lower(s.name)=lower(?) THEN 0 WHEN s.name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, length(s.name), s.name LIMIT 500", .{});
             } else {
                 break :blk try std.fmt.bufPrintZ(&sql_buf, "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND f.is_gem = 0 ORDER BY CASE WHEN lower(s.name)=lower(?) THEN 0 WHEN s.name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, length(s.name), s.name LIMIT 500", .{});

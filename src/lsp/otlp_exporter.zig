@@ -67,7 +67,8 @@ pub fn buildPayload(
     errdefer out.deinit(alloc);
 
     {
-        const head = try std.fmt.allocPrint(alloc,
+        const head = try std.fmt.allocPrint(
+            alloc,
             "{{\"resourceMetrics\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"refract\"}}}},{{\"key\":\"workspace.label\",\"value\":{{\"stringValue\":\"{s}\"}}}}]}},\"scopeMetrics\":[{{\"scope\":{{\"name\":\"refract.lsp\"}},\"metrics\":[",
             .{workspace_label},
         );
@@ -94,7 +95,8 @@ pub fn buildPayload(
         first = false;
         const wstart_ns: i64 = wstart * std.time.ns_per_us;
         const wend_ns: i64 = wend * std.time.ns_per_us;
-        const m = try std.fmt.allocPrint(alloc,
+        const m = try std.fmt.allocPrint(
+            alloc,
             "{{\"name\":\"refract.lsp.duration_us.p50\",\"unit\":\"us\",\"gauge\":{{\"dataPoints\":[{{\"asInt\":{d},\"timeUnixNano\":\"{d}\",\"startTimeUnixNano\":\"{d}\",\"attributes\":[{{\"key\":\"method\",\"value\":{{\"stringValue\":\"{s}\"}}}}]}}]}}}},{{\"name\":\"refract.lsp.duration_us.p95\",\"unit\":\"us\",\"gauge\":{{\"dataPoints\":[{{\"asInt\":{d},\"timeUnixNano\":\"{d}\",\"startTimeUnixNano\":\"{d}\",\"attributes\":[{{\"key\":\"method\",\"value\":{{\"stringValue\":\"{s}\"}}}}]}}]}}}},{{\"name\":\"refract.lsp.requests\",\"unit\":\"1\",\"sum\":{{\"isMonotonic\":true,\"aggregationTemporality\":2,\"dataPoints\":[{{\"asInt\":{d},\"timeUnixNano\":\"{d}\",\"startTimeUnixNano\":\"{d}\",\"attributes\":[{{\"key\":\"method\",\"value\":{{\"stringValue\":\"{s}\"}}}}]}}]}}}}",
             .{ p50, wend_ns, wstart_ns, method, p95, wend_ns, wstart_ns, method, count, wend_ns, wstart_ns, method },
         );
@@ -226,13 +228,15 @@ fn doHttpSend(
 }
 
 fn buildUrl(alloc: std.mem.Allocator, endpoint: []const u8) ![]const u8 {
+    // If user already supplied a metrics endpoint (with or without trailing slash),
+    // don't double-append the path. Strip a known trailing /v1/metrics first.
+    var base = endpoint;
+    if (std.mem.endsWith(u8, base, "/")) base = base[0 .. base.len - 1];
+    if (std.mem.endsWith(u8, base, "/v1/metrics")) base = base[0 .. base.len - "/v1/metrics".len];
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
-    try buf.appendSlice(alloc, endpoint);
-    if (!std.mem.endsWith(u8, endpoint, "/")) {
-        try buf.append(alloc, '/');
-    }
-    try buf.appendSlice(alloc, "v1/metrics");
+    try buf.appendSlice(alloc, base);
+    try buf.appendSlice(alloc, "/v1/metrics");
     return try buf.toOwnedSlice(alloc);
 }
 

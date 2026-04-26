@@ -200,21 +200,20 @@ pub fn parseGitignoreNegations(root: []const u8, alloc: std.mem.Allocator) ![][]
     defer alloc.free(gi_path);
     const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, gi_path, alloc, std.Io.Limit.limited(64 * 1024)) catch return results.toOwnedSlice(alloc);
     defer alloc.free(content);
-    var saw_exclude = false;
+    // Gitignore semantics: `!pat` re-includes a previously excluded path.
+    // Honour negation independently of prior exclude — the consumer of this
+    // list is the scanner skip-filter which already applies excludes first.
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \r\t");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '!') {
-            if (!saw_exclude) continue;
             const name = parsePattern(line[1..]) orelse continue;
             const duped = alloc.dupe(u8, name) catch continue;
             results.append(alloc, duped) catch {
                 alloc.free(duped);
                 continue;
             };
-        } else {
-            if (parsePattern(raw) != null) saw_exclude = true;
         }
     }
     return results.toOwnedSlice(alloc);

@@ -24,13 +24,15 @@ pub const DoctorOptions = struct {
     no_color: bool = false,
 };
 
+/// Returns true if any check has status `.fail`. Callers use this to surface
+/// non-zero process exit so doctor can be scripted (`if refract --doctor; then ...`).
 pub fn runDoctor(
     io: std.Io,
     db_path: []const u8,
     cwd: []const u8,
     opts: DoctorOptions,
     alloc: std.mem.Allocator,
-) !void {
+) !bool {
     var checks = std.ArrayList(Check).empty;
     defer {
         for (checks.items) |c| {
@@ -60,6 +62,14 @@ pub fn runDoctor(
     } else {
         try outputFormatted(io, checks.items, opts.no_color);
     }
+    var had_fail = false;
+    for (checks.items) |c| {
+        if (c.status == .fail) {
+            had_fail = true;
+            break;
+        }
+    }
+    return had_fail;
 }
 
 fn checkBasics(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {

@@ -316,3 +316,79 @@ test "P50 T50.7 Edge case: pattern matching Ruby 3.0" {
     defer alloc.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "check") != null);
 }
+
+test "P51 T51.1 .refractrc.json typeCheckerConfidence.surface accepted (no parse error)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p51_t511";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/.refractrc.json",
+        .data = "{\"typeCheckerConfidence\":{\"surface\":95}}",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/probe.rb",
+        .data = "class Probe\n  def hello; 'ok'; end\nend\n",
+    });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/probe.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/probe.rb\"}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    // Custom surface=95 must NOT crash startup or produce a parse error
+    try std.testing.expect(std.mem.indexOf(u8, raw, "Probe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"error\":{\"code\":-32700") == null);
+}
+
+test "P51 T51.2 .refractrc.json with no typeCheckerConfidence still loads cleanly (default)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p51_t512";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/.refractrc.json",
+        .data = "{\"disableTypeChecker\":false}",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/probe.rb",
+        .data = "class Probe\n  def hello; 'ok'; end\nend\n",
+    });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/probe.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/probe.rb\"}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "Probe") != null);
+}
+
+test "P52 T52.1 refract --doctor green from cwd != repo root" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p52_t521_outside";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    const cwd_z = try alloc.dupeZ(u8, ws);
+    defer alloc.free(cwd_z);
+
+    const result = try std.process.run(alloc, std.testing.io, .{
+        .argv = &.{ harness.refract_bin, "--doctor", "--no-color" },
+        .cwd = .{ .path = cwd_z },
+    });
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+
+    // Prism vendor must report ✓ (with byte-count detail), never ✗ "missing or empty"
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Prism vendor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "missing or empty") == null);
+    // Database schema version must match the binary's expected schema (no "expected v" mismatch line)
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "expected v") == null);
+}
