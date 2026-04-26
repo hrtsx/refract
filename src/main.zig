@@ -10,6 +10,7 @@ const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
 const crash = @import("lsp/crash.zig");
 const doctor = @import("cli/doctor.zig");
+const sorbet_harness = @import("tests/sorbet_harness.zig");
 
 pub const Panic = crash.Panic;
 
@@ -60,6 +61,8 @@ pub fn main(init: std.process.Init) !void {
     var flag_last_crash: bool = false;
     var flag_doctor: bool = false;
     var flag_repair: bool = false;
+    var bench_sorbet_root: ?[]const u8 = null;
+    var bench_steep_root: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -158,6 +161,20 @@ pub fn main(init: std.process.Init) !void {
             flag_doctor = true;
         } else if (std.mem.eql(u8, arg, "--repair")) {
             flag_repair = true;
+        } else if (std.mem.eql(u8, arg, "--bench-sorbet")) {
+            if (i + 1 >= args.len) {
+                try std.Io.File.stderr().writeStreamingAll(io, "refract: --bench-sorbet requires a project root path\n");
+                return error.InvalidArgument;
+            }
+            i += 1;
+            bench_sorbet_root = args[i];
+        } else if (std.mem.eql(u8, arg, "--bench-steep")) {
+            if (i + 1 >= args.len) {
+                try std.Io.File.stderr().writeStreamingAll(io, "refract: --bench-steep requires a project root path\n");
+                return error.InvalidArgument;
+            }
+            i += 1;
+            bench_steep_root = args[i];
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -248,6 +265,11 @@ pub fn main(init: std.process.Init) !void {
             .no_color = no_color,
         };
         try doctor.runDoctor(io, db_path, cwd, opts, alloc);
+        return;
+    }
+
+    if (bench_sorbet_root != null or bench_steep_root != null) {
+        try runBenchSorbetSteep(io, alloc, bench_sorbet_root, bench_steep_root);
         return;
     }
 
@@ -850,9 +872,46 @@ fn indexStdlibRbs(io: std.Io, db: db_mod.Db, cwd_path: []const u8, alloc: std.me
     std.debug.print("{s}", .{smsg});
 }
 
+fn runBenchSorbetSteep(io: std.Io, alloc: std.mem.Allocator, sorbet_root: ?[]const u8, steep_root: ?[]const u8) !void {
+    var stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, "server,method,iter,latency_us\n");
+    if (sorbet_root) |root| {
+        runOneServer(io, alloc, .sorbet, root, &stdout) catch |err| {
+            var ebuf: [256]u8 = undefined;
+            const m = std.fmt.bufPrint(&ebuf, "refract: sorbet bench failed: {s}\n", .{@errorName(err)}) catch "refract: sorbet bench failed\n";
+            try std.Io.File.stderr().writeStreamingAll(io, m);
+        };
+    }
+    if (steep_root) |root| {
+        runOneServer(io, alloc, .steep, root, &stdout) catch |err| {
+            var ebuf: [256]u8 = undefined;
+            const m = std.fmt.bufPrint(&ebuf, "refract: steep bench failed: {s}\n", .{@errorName(err)}) catch "refract: steep bench failed\n";
+            try std.Io.File.stderr().writeStreamingAll(io, m);
+        };
+    }
+}
+
+fn runOneServer(io: std.Io, alloc: std.mem.Allocator, kind: sorbet_harness.ServerKind, root: []const u8, stdout: *std.Io.File) !void {
+    var h = try sorbet_harness.Harness.launch(kind, root, alloc);
+    defer h.deinit();
+    var uri_buf: [1024]u8 = undefined;
+    const root_uri = try std.fmt.bufPrint(&uri_buf, "file://{s}", .{root});
+    try h.sendInitialize(root_uri);
+    const probe_count: u32 = 10;
+    var i: u32 = 0;
+    while (i < probe_count) : (i += 1) {
+        const us = h.measureRequest("textDocument/hover", "{}") catch 0;
+        var lbuf: [128]u8 = undefined;
+        const line = try std.fmt.bufPrint(&lbuf, "{s},hover,{d},{d}\n", .{ @tagName(kind), i, us });
+        try stdout.writeStreamingAll(io, line);
+    }
+    h.sendShutdown() catch {};
+}
+
 test {
     _ = @import("lsp/transport.zig");
     _ = @import("db.zig");
     _ = @import("indexer/index.zig");
     _ = @import("lsp/hot_index.zig");
+    _ = @import("tests/sorbet_harness.zig");
 }
