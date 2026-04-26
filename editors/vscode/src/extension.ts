@@ -1,10 +1,14 @@
 import {
+  Diagnostic,
+  DiagnosticSeverity,
   ExtensionContext,
   StatusBarAlignment,
   commands,
+  languages,
   window,
   workspace,
 } from "vscode";
+import { execFile } from "child_process";
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -104,6 +108,12 @@ export async function activate(context: ExtensionContext) {
       }
     });
 
+    // Route window/logMessage to the Refract output channel (used by runTest streaming)
+    client.onNotification("window/logMessage", (params: { type: number; message: string }) => {
+      getOutputChannel().appendLine(params.message);
+      if (params.type === 4) getOutputChannel().show(true);
+    });
+
     // Commands advertised by the server's executeCommandProvider
     const serverCommands: Array<[string, string]> = [
       ["refract.recheckRubocop",  "refract.recheckRubocop"],
@@ -120,6 +130,43 @@ export async function activate(context: ExtensionContext) {
         )
       );
     }
+
+    // refract.runDoctor — runs `<binary> --doctor` and opens output in untitled buffer
+    context.subscriptions.push(
+      commands.registerCommand("refract.runDoctor", async () => {
+        await new Promise<void>((resolve) => {
+          execFile(command, ["--doctor"], { timeout: 5000 }, async (err, stdout, stderr) => {
+            const body = (stdout || "") + (stderr ? "\nstderr:\n" + stderr : "") +
+              (err ? "\nerror: " + err.message : "");
+            const doc = await workspace.openTextDocument({ content: body, language: "markdown" });
+            await window.showTextDocument(doc);
+            resolve();
+          });
+        });
+      })
+    );
+
+    // Error count badge — counts errors across all refract diagnostics
+    function updateErrorCount() {
+      let n = 0;
+      for (const [, diags] of languages.getDiagnostics()) {
+        for (const d of diags as Diagnostic[]) {
+          if (d.severity === DiagnosticSeverity.Error && (d.source ?? "").includes("refract")) {
+            n++;
+          }
+        }
+      }
+      if (n > 0) {
+        bar.text = `$(error) Refract: ${n}`;
+        bar.command = "workbench.actions.view.problems";
+      } else if (!bar.text.includes("indexing")) {
+        bar.text = "$(ruby) Refract";
+        bar.command = undefined;
+      }
+    }
+    context.subscriptions.push(
+      languages.onDidChangeDiagnostics(() => updateErrorCount())
+    );
 
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
