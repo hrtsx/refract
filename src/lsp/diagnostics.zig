@@ -4,6 +4,7 @@ const Server = S.Server;
 const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const indexer = @import("../indexer/index.zig");
+const disabled_codes = @import("disabled_codes.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const emptyResult = S.emptyResult;
@@ -20,7 +21,23 @@ pub fn writeDiagItems(
     diag_source: ?[]const u8,
     first_ptr: *bool,
 ) void {
+    var disabled_set_opt: ?disabled_codes.DisabledSet = null;
+    defer if (disabled_set_opt) |*s| s.deinit();
+    var has_refract_code = false;
     for (diags) |d| {
+        if (std.mem.startsWith(u8, d.code, "refract/")) {
+            has_refract_code = true;
+            break;
+        }
+    }
+    if (has_refract_code) {
+        if (self.root_path) |rp| disabled_set_opt = disabled_codes.loadFromWorkspace(self.alloc, rp);
+    }
+
+    for (diags) |d| {
+        if (disabled_set_opt) |*set| {
+            if (std.mem.startsWith(u8, d.code, "refract/") and set.contains(d.code)) continue;
+        }
         if (!first_ptr.*) w.writeByte(',') catch return;
         first_ptr.* = false;
         const l: i64 = if (d.line > 0) d.line - 1 else 0;
@@ -33,7 +50,11 @@ pub fn writeDiagItems(
         if (d.code.len > 0) {
             w.writeAll(",\"code\":") catch return;
             writeEscapedJson(w, d.code) catch return;
-            if (!std.mem.startsWith(u8, d.code, "refract/")) {
+            if (std.mem.startsWith(u8, d.code, "refract/")) {
+                w.writeAll(",\"codeDescription\":{\"href\":\"https://github.com/hrtsx/refract/blob/main/docs/diagnostics/") catch return;
+                for (d.code) |ch| w.writeByte(if (ch == '/') '-' else ch) catch return;
+                w.writeAll(".md\"}") catch return;
+            } else {
                 const slash = std.mem.indexOfScalar(u8, d.code, '/') orelse d.code.len;
                 w.writeAll(",\"codeDescription\":{\"href\":\"https://docs.rubocop.org/rubocop/cops_") catch return;
                 for (d.code[0..slash]) |ch| w.writeByte(std.ascii.toLower(ch)) catch return;
