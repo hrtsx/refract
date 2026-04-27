@@ -116,9 +116,11 @@ pub const CachedStmt = struct {
 
 pub const Db = struct {
     raw: *c.sqlite3,
+    was_self_healed: bool = false,
 
     pub fn open(path: [:0]const u8) DbError!Db {
         var attempt: u8 = 0;
+        var healed = false;
         while (attempt < 2) : (attempt += 1) {
             var db: ?*c.sqlite3 = null;
             const rc = c.sqlite3_open(path.ptr, &db);
@@ -133,7 +135,7 @@ pub const Db = struct {
             if (prc == c.SQLITE_OK) {
                 _ = c.sqlite3_step(stmt);
                 _ = c.sqlite3_finalize(stmt);
-                return Db{ .raw = db.? };
+                return Db{ .raw = db.?, .was_self_healed = healed };
             }
 
             _ = c.sqlite3_close(db.?);
@@ -149,6 +151,7 @@ pub const Db = struct {
                 if (std.fmt.bufPrint(&buf, "{s}-shm", .{path})) |shm| {
                     std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, shm) catch {};
                 } else |_| {}
+                healed = true;
                 continue;
             }
             return DbError.Open;

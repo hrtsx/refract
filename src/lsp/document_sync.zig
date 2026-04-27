@@ -287,8 +287,9 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
                 self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
-            const del = self.db.prepare("DELETE FROM files WHERE path = ?") catch {
-                self.db.rollback() catch {}; // cleanup — ignore error
+            const del = self.db.prepare("DELETE FROM files WHERE path = ?") catch |e| {
+                self.logErr("delete file prepare", e);
+                self.db.rollback() catch |re| self.logErr("rollback after prepare failure", re);
                 self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
@@ -296,14 +297,14 @@ pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) voi
             _ = del.step() catch |e| {
                 self.logErr("delete file step", e);
                 del.finalize();
-                self.db.rollback() catch {}; // cleanup — ignore error
+                self.db.rollback() catch |re| self.logErr("rollback after step failure", re);
                 self.db_mutex.unlock(std.Options.debug_io);
                 continue;
             };
             del.finalize();
             self.db.commit() catch |e| {
                 self.logErr("delete file commit", e);
-                self.db.rollback() catch {}; // cleanup — ignore error
+                self.db.rollback() catch |re| self.logErr("rollback after commit failure", re);
             };
             self.db_mutex.unlock(std.Options.debug_io);
         } else {
