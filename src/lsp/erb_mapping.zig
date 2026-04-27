@@ -16,18 +16,36 @@ pub const ErbMap = struct {
     }
 
     pub fn erbToRuby(self: *const ErbMap, erb_offset: u32) ?u32 {
-        for (self.spans) |span| {
-            if (erb_offset >= span.erb_start and erb_offset < span.erb_end) {
-                return span.ruby_start + (erb_offset - span.erb_start);
+        // Spans are appended in source order, so erb_start is monotonic — bisect.
+        var lo: usize = 0;
+        var hi: usize = self.spans.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const s = self.spans[mid];
+            if (erb_offset < s.erb_start) {
+                hi = mid;
+            } else if (erb_offset >= s.erb_end) {
+                lo = mid + 1;
+            } else {
+                return s.ruby_start + (erb_offset - s.erb_start);
             }
         }
         return null;
     }
 
     pub fn rubyToErb(self: *const ErbMap, ruby_offset: u32) ?u32 {
-        for (self.spans) |span| {
-            if (ruby_offset >= span.ruby_start and ruby_offset < span.ruby_end) {
-                return span.erb_start + (ruby_offset - span.ruby_start);
+        // ruby_start is also monotonic since we count it forward through the source.
+        var lo: usize = 0;
+        var hi: usize = self.spans.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const s = self.spans[mid];
+            if (ruby_offset < s.ruby_start) {
+                hi = mid;
+            } else if (ruby_offset >= s.ruby_end) {
+                lo = mid + 1;
+            } else {
+                return s.erb_start + (ruby_offset - s.ruby_start);
             }
         }
         return null;
@@ -41,6 +59,9 @@ pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
     var in_ruby = false;
     var is_comment = false;
     var erb_code_start: u32 = 0;
+    // String-literal awareness inside <% ... %>: `"..."` and `'...'` may legitimately contain `%>`
+    // (e.g. `<%= "a %> b" %>`). Without tracking this state, the closer terminates early.
+    var in_string: enum { none, dq, sq } = .none;
 
     while (i < source.len) {
         if (!in_ruby) {
@@ -58,7 +79,16 @@ pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                         skip += 1;
                         i += 1;
                     },
-                    '=', '-' => {
+                    '=' => {
+                        skip += 1;
+                        i += 1;
+                        // <%==  unescaped output (Rails) — consume the second '='
+                        if (i < source.len and source[i] == '=') {
+                            skip += 1;
+                            i += 1;
+                        }
+                    },
+                    '-' => {
                         skip += 1;
                         i += 1;
                     },
@@ -67,16 +97,45 @@ pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                 ruby_offset += skip;
                 erb_code_start = @intCast(i);
                 in_ruby = true;
+                in_string = .none;
                 continue;
             }
-            if (source[i] == '\n') {
-                ruby_offset += 1;
-            } else {
-                ruby_offset += 1;
-            }
+            ruby_offset += 1;
             i += 1;
         } else {
-            if (i + 1 < source.len and source[i] == '%' and source[i + 1] == '>') {
+            // String tracking: only honored when not in comment; comments swallow until %>.
+            if (!is_comment) {
+                switch (in_string) {
+                    .none => {
+                        if (source[i] == '"') {
+                            in_string = .dq;
+                            ruby_offset += 1;
+                            i += 1;
+                            continue;
+                        }
+                        if (source[i] == '\'') {
+                            in_string = .sq;
+                            ruby_offset += 1;
+                            i += 1;
+                            continue;
+                        }
+                    },
+                    .dq, .sq => {
+                        // Backslash escape: skip both bytes.
+                        if (source[i] == '\\' and i + 1 < source.len) {
+                            ruby_offset += 2;
+                            i += 2;
+                            continue;
+                        }
+                        if (in_string == .dq and source[i] == '"') in_string = .none;
+                        if (in_string == .sq and source[i] == '\'') in_string = .none;
+                        ruby_offset += 1;
+                        i += 1;
+                        continue;
+                    },
+                }
+            }
+            if (in_string == .none and i + 1 < source.len and source[i] == '%' and source[i + 1] == '>') {
                 if (!is_comment) {
                     const erb_end: u32 = @intCast(i);
                     const code_len = erb_end - erb_code_start;
@@ -99,11 +158,7 @@ pub fn buildMap(alloc: std.mem.Allocator, source: []const u8) !ErbMap {
                 is_comment = false;
                 continue;
             }
-            if (is_comment) {
-                ruby_offset += 1;
-            } else {
-                ruby_offset += 1;
-            }
+            ruby_offset += 1;
             i += 1;
         }
     }
@@ -651,6 +706,45 @@ test "erb escaped tag produces no spans" {
     var map = try buildMap(alloc, src);
     defer map.deinit();
     try std.testing.expectEqual(@as(usize, 0), map.spans.len);
+}
+
+test "erb string with %> inside double quotes does not close the tag" {
+    const alloc = std.testing.allocator;
+    // Without string-awareness, the '%>' inside the string would have terminated the tag at offset 6,
+    // producing a 1-byte span. With the fix it should produce a single span covering the whole body.
+    const src = "<%= \"a %> b\" %>";
+    var map = try buildMap(alloc, src);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), map.spans.len);
+    try std.testing.expect(map.spans[0].erb_end - map.spans[0].erb_start >= 10);
+}
+
+test "erb string with %> inside single quotes does not close the tag" {
+    const alloc = std.testing.allocator;
+    const src = "<% s = 'a %> b' %>";
+    var map = try buildMap(alloc, src);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), map.spans.len);
+    try std.testing.expect(map.spans[0].erb_end - map.spans[0].erb_start >= 12);
+}
+
+test "erb unescaped output tag <%==%> produces a span without dropping a byte" {
+    const alloc = std.testing.allocator;
+    const src = "<%== unsafe_html %>";
+    var map = try buildMap(alloc, src);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), map.spans.len);
+    // The body starts after the four-byte prefix `<%==`, so erb_start should be 4.
+    try std.testing.expectEqual(@as(u32, 4), map.spans[0].erb_start);
+}
+
+test "erb backslash-escape inside string preserves the closing quote" {
+    const alloc = std.testing.allocator;
+    // The `\"` must not be treated as the string terminator.
+    const src = "<%= \"a\\\"b\" %>";
+    var map = try buildMap(alloc, src);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), map.spans.len);
 }
 
 test "erbToRuby returns null for html offsets" {
