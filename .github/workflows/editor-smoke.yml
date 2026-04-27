@@ -1,0 +1,120 @@
+on: [push, pull_request]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lsp-protocol-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: LSP initialize handshake smoke
+        run: |
+          mkdir -p /tmp/smoke-ws
+          cat > /tmp/smoke-ws/sample.rb <<'RB'
+          class Smoke
+            def hello(name); puts name; end
+          end
+          RB
+          cat > /tmp/init.json <<'JSON'
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp/smoke-ws","capabilities":{},"initializationOptions":{"disableGemIndex":true,"disableRubocop":true}}}
+          JSON
+          LEN=$(wc -c < /tmp/init.json)
+          { printf "Content-Length: %d\r\n\r\n" "$LEN"; cat /tmp/init.json; } | timeout 10 ./zig-out/bin/refract --db-path /tmp/smoke.db > /tmp/smoke.out 2>/tmp/smoke.err
+          if grep -q '"capabilities"' /tmp/smoke.out; then
+            echo "LSP initialize handshake OK"
+          else
+            echo "FAIL: no capabilities in response"
+            echo "--- stdout ---"; cat /tmp/smoke.out
+            echo "--- stderr ---"; cat /tmp/smoke.err
+            exit 1
+          fi
+
+  emacs-eglot-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - run: sudo apt-get update && sudo apt-get install -y emacs-nox
+      - name: Emacs eglot smoke
+        run: |
+          mkdir -p /tmp/emacs-ws
+          cat > /tmp/emacs-ws/sample.rb <<'RB'
+          class Smoke
+            def hello; "ok"; end
+          end
+          RB
+          cp ./zig-out/bin/refract /usr/local/bin/refract
+          emacs --batch --eval "
+          (progn
+            (require 'eglot)
+            (add-to-list 'eglot-server-programs '(ruby-mode . (\"refract\")))
+            (find-file \"/tmp/emacs-ws/sample.rb\")
+            (ruby-mode)
+            (let ((eglot-sync-connect 5)) (eglot-ensure))
+            (sit-for 8)
+            (if (eglot-current-server)
+                (progn (message \"eglot OK\") (kill-emacs 0))
+              (progn (message \"eglot FAIL — no server attached\") (kill-emacs 1))))"
+
+  helix-config-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: Install Helix
+        run: |
+          curl -sL https://github.com/helix-editor/helix/releases/download/24.07/helix-24.07-x86_64-linux.tar.xz -o helix.tar.xz
+          tar -xJf helix.tar.xz
+          sudo cp helix-24.07-x86_64-linux/hx /usr/local/bin/hx
+          sudo cp ./zig-out/bin/refract /usr/local/bin/refract
+      - name: Helix config + health check
+        run: |
+          mkdir -p ~/.config/helix
+          cat > ~/.config/helix/languages.toml <<'TOML'
+          [language-server.refract]
+          command = "refract"
+
+          [[language]]
+          name = "ruby"
+          language-servers = ["refract"]
+          TOML
+          hx --health ruby > /tmp/helix-health.out 2>&1 || true
+          cat /tmp/helix-health.out
+          if grep -q "Configured language servers:" /tmp/helix-health.out && grep -q "refract" /tmp/helix-health.out; then
+            echo "Helix LSP config OK"
+          else
+            echo "FAIL: Helix did not pick up refract config"
+            exit 1
+          fi
