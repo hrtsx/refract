@@ -464,7 +464,21 @@ const BgCtx = struct {
             .report = ProgressCtx.report,
         };
         self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-        indexer.reindex(db, filtered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
+        // Re-filter against deleted_paths after acquiring db_mutex — covers the race
+        // where type=3 added a path AFTER the snapshot above but BEFORE we got db_mutex.
+        // type=3 grabs db_mutex serially, so once we hold it, all earlier type=3 deletions
+        // are visible in deleted_paths.
+        var refiltered_paths = std.ArrayList([]const u8).empty;
+        defer refiltered_paths.deinit(alloc);
+        {
+            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
+            defer self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
+            for (filtered_paths.items) |p| {
+                if (self.server_ptr.deleted_paths.contains(p)) continue;
+                refiltered_paths.append(alloc, p) catch {};
+            }
+        }
+        indexer.reindex(db, refiltered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
             var ebuf: [256]u8 = undefined;
             const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
             self.server_ptr.sendLogMessage(2, emsg);
@@ -675,24 +689,30 @@ const BgCtx = struct {
                 for (batch) |p| self.server_ptr.alloc.free(p);
                 self.server_ptr.alloc.free(batch);
             }
-            // Filter out explicitly deleted paths.
+            // Filter out explicitly deleted paths AFTER acquiring db_mutex —
+            // type=3 grabs db_mutex serially, so once we hold it, all earlier
+            // type=3 deletions are visible in deleted_paths. Filtering before
+            // the lock would race against an in-flight delete.
             // Use server alloc (not bg arena) — arena.reset below would invalidate
             // arena-backed storage before the defer fires, causing a UAF on musl.
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
             var filtered = std.ArrayList([]const u8).empty;
             defer filtered.deinit(self.server_ptr.alloc);
-            self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
-            for (batch) |p| {
-                if (!self.server_ptr.deleted_paths.contains(p) and !self.server_ptr.isExcludedPath(p))
-                    filtered.append(self.server_ptr.alloc, p) catch logOomOnce("bgctx.filtered");
+            {
+                self.server_ptr.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
+                defer self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
+                for (batch) |p| {
+                    if (!self.server_ptr.deleted_paths.contains(p) and !self.server_ptr.isExcludedPath(p))
+                        filtered.append(self.server_ptr.alloc, p) catch logOomOnce("bgctx.filtered");
+                }
             }
-            self.server_ptr.deleted_paths_mu.unlock(std.Options.debug_io);
-            if (filtered.items.len == 0) continue;
-            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-            indexer.reindex(db, filtered.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
-                var ebuf: [256]u8 = undefined;
-                const emsg = std.fmt.bufPrint(&ebuf, "refract: incremental reindex failed: {s}", .{@errorName(e)}) catch "refract: incremental reindex failed";
-                self.server_ptr.sendLogMessage(2, emsg);
-            };
+            if (filtered.items.len > 0) {
+                indexer.reindex(db, filtered.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
+                    var ebuf: [256]u8 = undefined;
+                    const emsg = std.fmt.bufPrint(&ebuf, "refract: incremental reindex failed: {s}", .{@errorName(e)}) catch "refract: incremental reindex failed";
+                    self.server_ptr.sendLogMessage(2, emsg);
+                };
+            }
             self.server_ptr.db_mutex.unlock(std.Options.debug_io);
             _ = arena.reset(.retain_capacity);
         }
@@ -2048,22 +2068,26 @@ pub const Server = struct {
             for (batch) |p| self.alloc.free(p);
             self.alloc.free(batch);
         }
-        // Filter out explicitly deleted paths
+        // Filter out explicitly deleted paths AFTER acquiring db_mutex —
+        // covers the race where type=3 commits a delete between the filter
+        // and the reindex.
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.db_mutex.unlock(std.Options.debug_io);
         var filtered = std.ArrayList([]const u8).empty;
         defer filtered.deinit(self.alloc);
-        self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
-        for (batch) |p| {
-            if (!self.deleted_paths.contains(p)) filtered.append(self.alloc, p) catch logOomOnce("batchReindex.filtered");
+        {
+            self.deleted_paths_mu.lockUncancelable(std.Options.debug_io);
+            defer self.deleted_paths_mu.unlock(std.Options.debug_io);
+            for (batch) |p| {
+                if (!self.deleted_paths.contains(p)) filtered.append(self.alloc, p) catch logOomOnce("batchReindex.filtered");
+            }
         }
-        self.deleted_paths_mu.unlock(std.Options.debug_io);
         if (filtered.items.len == 0) return;
-        self.db_mutex.lockUncancelable(std.Options.debug_io);
         indexer.reindex(self.db, filtered.items, false, self.alloc, self.max_file_size.load(.monotonic), null) catch |e| {
             var warn_buf: [128]u8 = undefined;
             const warn_msg = std.fmt.bufPrint(&warn_buf, "refract: batch reindex failed ({d} files): {s}", .{ filtered.items.len, @errorName(e) }) catch "refract: batch reindex failed";
             self.sendLogMessage(2, warn_msg);
         };
-        self.db_mutex.unlock(std.Options.debug_io);
     }
 
     pub const FLUSH_DEBOUNCE_MS: i64 = 150;
