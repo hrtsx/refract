@@ -74,12 +74,12 @@ See [`editors/vscode/README.md`](editors/vscode/README.md) for commands, setting
 
 ### Neovim
 
-Via [refract.nvim](https://github.com/hrtsx/refract.nvim) (handles binary download automatically):
+Via [refract.vim](https://github.com/hrtsx/refract.vim) (handles binary download automatically):
 
 ```lua
 -- lazy.nvim
 {
-  "hrtsx/refract.nvim",
+  "hrtsx/refract.vim",
   build = function() require("refract").install() end,
   ft = { "ruby", "eruby", "haml" },
   opts = {},
@@ -115,7 +115,7 @@ language-servers = ["refract"]
 
 ### Zed
 
-Either install the [Refract Zed extension](editors/zed/README.md), or wire it manually in `.zed/settings.json`:
+Install the extension from the Zed extension registry (search "refract"), or via [zed-refract](https://github.com/hrtsx/zed-refract). For a manual no-extension setup, add to `.zed/settings.json`:
 
 ```json
 {

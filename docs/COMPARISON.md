@@ -85,3 +85,15 @@ Refract's debug build is benchmarked here. Release builds are 2-4× faster.
 ```
 
 Each tool's design optimizes different things. Refract's bet: **most LSP queries are point-lookups against an index, and SQL is a great query language for that.** The downside is initial index bootstrap cost; the upside is fast steady-state and a portable artifact.
+
+## Editor extensions
+
+| Editor | Repo |
+|---|---|
+| VS Code | [`editors/vscode/`](../editors/vscode/) in this repo |
+| Neovim  | [`hrtsx/refract.vim`](https://github.com/hrtsx/refract.vim) |
+| Zed     | [`hrtsx/zed-refract`](https://github.com/hrtsx/zed-refract) |
+| Emacs   | [`editors/emacs/refract.el`](../editors/emacs/refract.el) in this repo |
+| Helix / Sublime | configured via per-editor LSP settings (see main [README](../README.md#editor-setup)) |
+
+Homebrew tap: [`hrtsx/homebrew-refract`](https://github.com/hrtsx/homebrew-refract) — `brew install hrtsx/refract/refract`.
