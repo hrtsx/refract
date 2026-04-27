@@ -103,6 +103,17 @@
           "type": "number",
           "default": 1500,
           "description": "Milliseconds to wait after a save before running RuboCop (reduces thrashing on rapid saves)"
+        },
+        "refract.disableTypeChecker": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable the in-house type checker (refract/nil-receiver, refract/wrong-arity)"
+        },
+        "refract.typeCheckerSeverity": {
+          "type": "string",
+          "enum": ["error", "warning", "info"],
+          "default": "warning",
+          "description": "Severity level for type checker diagnostics"
         }
       }
     }

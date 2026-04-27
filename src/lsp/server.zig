@@ -351,6 +351,21 @@ pub fn rubocopWorkerFn(server: *Server) void {
     }
 }
 
+fn ensureRefractDir(root_path: []const u8, alloc: std.mem.Allocator) !void {
+    const dir_path = try std.fmt.allocPrint(alloc, "{s}/.refract", .{root_path});
+    defer alloc.free(dir_path);
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, dir_path, .default_dir) catch |e| switch (e) {
+        error.PathAlreadyExists => {},
+        else => return e,
+    };
+    const gi_path = try std.fmt.allocPrint(alloc, "{s}/.gitignore", .{dir_path});
+    defer alloc.free(gi_path);
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, gi_path, .{}) catch {
+        const content = "# Auto-created by refract; safe to edit\n*\n!.gitignore\n!disabled.txt\n";
+        std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = gi_path, .data = content }) catch {};
+    };
+}
+
 const BgCtx = struct {
     root_path: []u8,
     server_ptr: *Server,
@@ -376,6 +391,8 @@ const BgCtx = struct {
 
         self.server_ptr.sendLogMessage(3, "refract: indexing workspace");
         self.server_ptr.sendProgressBegin();
+
+        ensureRefractDir(self.root_path, alloc) catch {};
 
         const paths = scanner.scanWithNegations(self.root_path, alloc, self.extra_exclude_dirs, self.gitignore_negations) catch {
             self.server_ptr.sendLogMessage(1, "refract: workspace scan failed");
@@ -855,6 +872,8 @@ pub const Server = struct {
     stdout_writer: ?*std.Io.Writer,
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    disable_type_checker: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    type_checker_severity: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
     log_path: ?[]const u8 = null,
     log_file: ?std.Io.File = null,
     log_level: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
@@ -926,6 +945,8 @@ pub const Server = struct {
             .stdout_writer = null,
             .disable_gem_index = std.atomic.Value(bool).init(false),
             .disable_rubocop = std.atomic.Value(bool).init(false),
+            .disable_type_checker = std.atomic.Value(bool).init(false),
+            .type_checker_severity = std.atomic.Value(u8).init(2),
             .log_path = null,
             .log_level = std.atomic.Value(u8).init(2),
             .max_file_size = std.atomic.Value(usize).init(8 * 1024 * 1024),
@@ -1235,6 +1256,19 @@ pub const Server = struct {
                     if (cfg.get("disableRubocop")) |v| switch (v) {
                         .bool => |b| {
                             self.disable_rubocop.store(b, .monotonic);
+                        },
+                        else => {},
+                    };
+                    if (cfg.get("disableTypeChecker")) |v| switch (v) {
+                        .bool => |b| {
+                            self.disable_type_checker.store(b, .monotonic);
+                        },
+                        else => {},
+                    };
+                    if (cfg.get("typeCheckerSeverity")) |v| switch (v) {
+                        .string => |s| {
+                            const sev: u8 = if (std.mem.eql(u8, s, "error")) 1 else if (std.mem.eql(u8, s, "info")) 3 else 2;
+                            self.type_checker_severity.store(sev, .monotonic);
                         },
                         else => {},
                     };
@@ -1834,6 +1868,15 @@ pub const Server = struct {
                             }
                             if (opts_val.object.get("disableRubocop")) |v| {
                                 if (v == .bool) self.disable_rubocop.store(v.bool, .monotonic);
+                            }
+                            if (opts_val.object.get("disableTypeChecker")) |v| {
+                                if (v == .bool) self.disable_type_checker.store(v.bool, .monotonic);
+                            }
+                            if (opts_val.object.get("typeCheckerSeverity")) |v| {
+                                if (v == .string) {
+                                    const sev: u8 = if (std.mem.eql(u8, v.string, "error")) 1 else if (std.mem.eql(u8, v.string, "info")) 3 else 2;
+                                    self.type_checker_severity.store(sev, .monotonic);
+                                }
                             }
                             if (opts_val.object.get("logLevel")) |v| {
                                 if (v == .integer and v.integer >= 1 and v.integer <= 4)

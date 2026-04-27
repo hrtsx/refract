@@ -44,13 +44,15 @@ export async function activate(context: ExtensionContext) {
       { scheme: "file", pattern: "**/Rakefile" },
     ],
     initializationOptions: {
-      disableGemIndex:    config.get("disableGemIndex"),
-      disableRubocop:     config.get("disableRubocop"),
-      maxFileSizeMb:      config.get("maxFileSizeMb"),
-      maxWorkers:         config.get("maxWorkers"),
-      excludeDirs:        config.get("excludeDirs"),
-      logLevel:           config.get("logLevel"),
-      rubocopDebounceMs:  config.get("rubocopDebounceMs"),
+      disableGemIndex:       config.get("disableGemIndex"),
+      disableRubocop:        config.get("disableRubocop"),
+      maxFileSizeMb:         config.get("maxFileSizeMb"),
+      maxWorkers:            config.get("maxWorkers"),
+      excludeDirs:           config.get("excludeDirs"),
+      logLevel:              config.get("logLevel"),
+      rubocopDebounceMs:     config.get("rubocopDebounceMs"),
+      disableTypeChecker:    config.get("disableTypeChecker"),
+      typeCheckerSeverity:   config.get("typeCheckerSeverity"),
     },
   };
 
