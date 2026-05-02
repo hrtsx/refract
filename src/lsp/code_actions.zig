@@ -9,6 +9,7 @@ const refactor = @import("refactor.zig");
 const disabled_codes = @import("disabled_codes.zig");
 const test_runner = @import("test_runner.zig");
 const rdbg_bridge = @import("../dap/rdbg_bridge.zig");
+const navigation = @import("navigation.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
 const extractParamsObject = S.extractParamsObject;
@@ -697,6 +698,33 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
     }
     if (std.mem.eql(u8, cmd, "refract.showReferences")) {
         known_cmd = true;
+        // Code-lens click: args = [uri, {line, character}]. Serialize the pair
+        // into a textDocument/references-shaped JSON params object, reparse it,
+        // and forward to navigation.handleReferences so the editor receives a
+        // real Location[] result.
+        ref_blk: {
+            const args_val = obj.get("arguments") orelse break :ref_blk;
+            if (args_val != .array or args_val.array.items.len < 2) break :ref_blk;
+            const uri_val = args_val.array.items[0];
+            const pos_val = args_val.array.items[1];
+            if (uri_val != .string or pos_val != .object) break :ref_blk;
+            const line_v = pos_val.object.get("line") orelse break :ref_blk;
+            const char_v = pos_val.object.get("character") orelse break :ref_blk;
+            if (line_v != .integer or char_v != .integer) break :ref_blk;
+            const synth_json = std.fmt.allocPrint(self.alloc,
+                "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"context\":{{\"includeDeclaration\":true}}}}",
+                .{ uri_val.string, line_v.integer, char_v.integer },
+            ) catch break :ref_blk;
+            defer self.alloc.free(synth_json);
+            const parsed = std.json.parseFromSlice(std.json.Value, self.alloc, synth_json, .{}) catch break :ref_blk;
+            defer parsed.deinit();
+            const synth = types.RequestMessage{
+                .id = msg.id,
+                .method = "textDocument/references",
+                .params = parsed.value,
+            };
+            if (try navigation.handleReferences(self, synth)) |resp| return resp;
+        }
     } else if (std.mem.eql(u8, cmd, "refract.runTest") or std.mem.eql(u8, cmd, "refract.debugTest")) {
         known_cmd = true;
         const debug = std.mem.eql(u8, cmd, "refract.debugTest");

@@ -3,7 +3,7 @@
     "ruby": {
       "command": ["refract", "--stdio"],
       "rootIndicationFileNames": ["Gemfile", ".ruby-version", ".tool-versions"],
-      "url": "https://github.com/refract-lsp/refract",
+      "url": "https://github.com/hrtsx/refract",
       "highlightingModeRegex": "^(Ruby|Ruby/Rails/Database SQL|Ruby/Rails/Rake)$"
     },
     "ruby-erb": {

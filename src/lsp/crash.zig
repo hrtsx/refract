@@ -134,7 +134,7 @@ fn writeCrashFilePosix(panic_msg: []const u8, first_trace_addr: ?usize) void {
     pathz_buf[file_path.len] = 0;
     const pathz: [*:0]const u8 = @ptrCast(&pathz_buf);
 
-    const fd = std.c.open(pathz, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    const fd = std.c.open(pathz, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
     if (fd < 0) return;
     defer _ = std.c.close(fd);
 

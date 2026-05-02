@@ -27409,7 +27409,6 @@ test "P34 T34.2 wrong-arity checker flags too many positional arguments" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "refract/wrong-arity") != null);
 }
 
-
 test "parallel reindex computes correct symbol and ref counts" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_parallel_reindex";

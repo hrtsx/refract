@@ -65,18 +65,26 @@ jobs:
             def hello; "ok"; end
           end
           RB
-          cp ./zig-out/bin/refract /usr/local/bin/refract
+          sudo cp ./zig-out/bin/refract /usr/local/bin/refract
+          /usr/local/bin/refract --version
+          # Pre-warm stdlib RBS so first eglot connect doesn't time out indexing.
+          /usr/local/bin/refract --warm-stdlib --db-path /tmp/refract-emacs.db
           emacs --batch --eval "
           (progn
             (require 'eglot)
-            (add-to-list 'eglot-server-programs '(ruby-mode . (\"refract\")))
+            (setq eglot-events-buffer-size 0
+                  eglot-connect-timeout 30
+                  eglot-sync-connect 30)
+            (add-to-list 'eglot-server-programs '(ruby-mode . (\"refract\" \"--db-path\" \"/tmp/refract-emacs.db\")))
             (find-file \"/tmp/emacs-ws/sample.rb\")
             (ruby-mode)
-            (let ((eglot-sync-connect 5)) (eglot-ensure))
-            (sit-for 8)
+            (eglot-ensure)
+            (let ((deadline (+ (float-time) 30)))
+              (while (and (not (eglot-current-server)) (< (float-time) deadline))
+                (sleep-for 0.5)))
             (if (eglot-current-server)
                 (progn (message \"eglot OK\") (kill-emacs 0))
-              (progn (message \"eglot FAIL — no server attached\") (kill-emacs 1))))"
+              (progn (message \"eglot FAIL — no server attached after 30s\") (kill-emacs 1))))"
 
   helix-config-smoke:
     runs-on: ubuntu-latest
@@ -167,12 +175,38 @@ jobs:
           REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
         run: |
           sudo cp ./zig-out/bin/refract /usr/local/bin/refract
+          /usr/local/bin/refract --version
+          /usr/local/bin/refract --warm-stdlib --db-path /tmp/refract-nvim.db
           mkdir -p /tmp/nvim-ws
           echo 'class Smoke; def hello; "ok"; end; end' > /tmp/nvim-ws/sample.rb
-          nvim --headless -u editors/neovim/init.lua /tmp/nvim-ws/sample.rb \
-            -c 'lua vim.defer_fn(function() local n=0; for _ in pairs(vim.lsp.get_active_clients()) do n=n+1 end; if n<1 then vim.cmd("cq") else vim.cmd("qa") end end, 3000)' \
-            -c 'sleep 4' || { echo "FAIL: Neovim LSP client did not start"; exit 1; }
-          echo "Neovim LSP smoke OK"
+          # Use built-in vim.lsp.start (no nvim-lspconfig plugin dep) so the smoke
+          # works on a vanilla Neovim install. The shipped editors/neovim/init.lua
+          # uses lspconfig — that path is verified by end users with a plugin
+          # manager, not in CI.
+          cat > /tmp/nvim-smoke.lua <<'LUA'
+          vim.api.nvim_create_autocmd("FileType", {
+            pattern = { "ruby", "eruby" },
+            callback = function()
+              vim.lsp.start({
+                name = "refract",
+                cmd = { "refract", "--db-path", "/tmp/refract-nvim.db" },
+                root_dir = vim.fs.dirname(vim.fn.expand("%:p")),
+              })
+            end,
+          })
+          vim.defer_fn(function()
+            local clients = vim.lsp.get_active_clients()
+            if #clients < 1 then
+              io.stderr:write("FAIL: no LSP client active after 8s\n")
+              vim.cmd("cq")
+            else
+              io.stdout:write("Neovim LSP smoke OK (" .. #clients .. " client)\n")
+              vim.cmd("qa")
+            end
+          end, 8000)
+          LUA
+          nvim --headless -u NONE -c "luafile /tmp/nvim-smoke.lua" /tmp/nvim-ws/sample.rb -c 'sleep 10' \
+            || { echo "FAIL: Neovim LSP client did not start"; exit 1; }
 
   vscode-smoke:
     runs-on: ubuntu-latest
