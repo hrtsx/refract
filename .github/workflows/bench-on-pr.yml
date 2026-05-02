@@ -90,6 +90,16 @@ jobs:
             exit 1
           fi
 
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            head_results/
+            base_results/
+          retention-days: 90
+
       - name: Comment on PR
         if: always()
         uses: actions/github-script@v7

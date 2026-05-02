@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.0] - 2026-04-25
+## [0.1.0] - 2026-05-08
 
 ### Core LSP Protocol (LSP 3.17)
 
@@ -73,6 +73,14 @@
 
 Code intelligence (`resolve_type`, `class_summary`, `method_signature`, `explain_symbol`, `explain_type_chain`, `suggest_types`, `type_coverage`), symbol search (`workspace_symbols`, `list_by_kind`, `get_file_overview`, `find_unused`, `find_similar`), call graph (`find_callers`, `find_implementations`, `find_references`, `type_hierarchy`), source access (`get_symbol_source`, `grep_source`), Rails (`association_graph`, `route_map`, `i18n_lookup`, `list_validations`, `list_callbacks`, `concern_usage`), diagnostics (`diagnostics`, `diagnostic_summary`), workspace (`workspace_health`, `batch_resolve`), code actions (`refactor`, `available_code_actions`), testing (`test_summary`).
 
+`find_callers` / `find_references` accept a `ref_kind` filter — `call` · `assign` · `decl` · `super` · `yield` · `alias` — backed by the dedicated `refs.kind` column captured at index time.
+
+### DAP Server
+
+- `refract --dap` proxies to `rdbg` (Ruby `debug` gem). Wire-compatible with VS Code, nvim-dap, JetBrains LSP4IJ.
+- Emits a DAP `output` event with `gem install debug` install hint before the failed `launch` response when `rdbg` is missing from `PATH` (or `RDBG_BIN` points at a missing binary), instead of dying silent with a generic error.
+- Workspace path resolution + ENV propagation (chruby/rbenv/asdf) + heartbeat + `terminated` event on rdbg crash.
+
 ### RuboCop Integration
 
 - Automatic `bundle exec` probe when `Gemfile.lock` present; falls back to bare `rubocop`
@@ -91,15 +99,32 @@ Via `initializationOptions` and `workspace/didChangeConfiguration` (all options 
 
 `maxFileSizeMb` (default 8), `rubocopTimeoutSecs`, `rubocopDebounceMs`, `disableRubocop`, `disableGemIndex`, `maxWorkers`, `bundleExecTimeoutSecs`, `extraExcludeDirs`, `logLevel` (1 error · 2 warn · 3 info · 4 debug)
 
-### VS Code Extension
+Per-project `.refractrc.json` adds: `disableTypeChecker`, `typeCheckerSeverity` (`error`/`warning`/`info`), `diagnosticsSuppressions` (codes to ignore), `indexBudget.fileSizeMb`, `indexBudget.excludeDirs`, and `typeCheckerConfidence: { surface: u8, diag: u8 }` (defaults `{ surface: 80, diag: 50 }`) to tune precision/recall for `refract/nil-receiver` and `refract/wrong-arity`.
 
-- Status bar with live indexing progress (`⟳ Refract: indexing app/models…` → `✓ Refract`)
-- All 6 commands in Command Palette: Restart Indexer, Force Reindex, Toggle Gem Indexing, Re-check RuboCop, Show References, Run Test
-- "Open Settings" shortcut on binary-not-found error; "Show Output" on other startup failures
+### Editor Integrations
+
+Eight first-party integrations, each smoke-tested in CI:
+
+- **VS Code** — TypeScript extension with live indexing status bar (`⟳ Refract: indexing app/models…` → `✓ Refract`), seven Command Palette entries (Restart Indexer, Force Reindex, Toggle Gem Indexing, Re-check RuboCop, Show References, Run Test, Run Doctor), debug adapter wiring, "Open Settings" shortcut on binary-not-found, "Show Output" on other startup failures. Smoke: `xvfb-run npm test` driving `@vscode/test-electron` to assert capabilities exchange.
+- **Neovim** — `editors/neovim/init.lua` + `dap.lua`. Smoke: headless `nvim` attaches LSP, asserts ≥1 active client.
+- **Helix** — config-only `language-server.refract`. Smoke: `hx --health ruby` confirms refract picked up.
+- **Emacs** — eglot integration. Smoke: `emacs --batch` with `(eglot-ensure)` + assertion on `(eglot-current-server)`.
+- **Zed** — `editors/zed/extension.toml`. Smoke: TOML parse + `refract --version`.
+- **Sublime LSP** — `LSP-refract.sublime-settings`. Smoke: JSON validation + `refract --version`.
+- **JetBrains** — `editors/jetbrains/plugin.xml` (LSP4IJ-compatible). Smoke: `xmllint --noout` + `refract --version`.
+- **Kate** — `editors/kate/lspclient.json`. Smoke: JSON validation + `refract --version`.
 
 ### CLI
 
-`refract --version`, `--help`, `--verbose`, `--log-file FILE`, `--log-level N`, `--disable-rubocop`, `--db-path PATH`, `--print-db-path`, `--reset-db`, `--check`
+`refract --version`, `--help`, `--verbose`, `--log-file FILE`, `--log-level N`, `--disable-rubocop`, `--db-path PATH`, `--print-db-path`, `--reset-db`, `--check`, `--stats`, `--json`, `--max-workers N`, `--index-only`, `--dump-symbols`, `--workspace-info`, `--last-crash`, `--doctor`, `--repair`, `--dap`, `--mcp`, `--no-color`, `--warm-stdlib`, `--bench-sorbet PATH`, `--bench-steep PATH`, `--self-test`.
+
+`--doctor` walks upward from `/proc/self/exe` for vendor checks, so it stays accurate from any cwd. `--no-color` and `NO_COLOR` env both suppress ANSI. `--self-test` spawns LSP+MCP child handshakes and exits 0 on success — single command CI / install-verify smoke.
+
+### Benchmarks
+
+- Head-to-head matrix vs `ruby-lsp`, `solargraph`, `sorbet`, `steep` with reproducible JSON cells. See `docs/BENCHMARK.md`.
+- One-command repro for third parties: `scripts/bench/fetch-corpora.sh` clones mastodon + discourse + generates a 10k synthetic corpus; `scripts/bench/repro.sh` runs the matrix end-to-end.
+- `bench-on-pr.yml` posts a delta to PR comments AND uploads `head_results/` + `base_results/` JSONs as a 90-day artifact, so reviewers can audit individual cells.
 
 ### Infrastructure
 
@@ -112,4 +137,4 @@ Via `initializationOptions` and `workspace/didChangeConfiguration` (all options 
 
 ---
 
-*Minimum Zig: 0.16.0 · Schema: 5 · Prism 1.9.0 · Ruby 2.7 – 3.4*
+*Minimum Zig: 0.16.0 · Schema: 8 · Prism 1.9.0 · Ruby 2.7 – 3.4*

@@ -2,6 +2,11 @@ const std = @import("std");
 
 const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
+pub const TypeCheckerConfidence = struct {
+    surface: u8 = 80,
+    diag: u8 = 50,
+};
+
 pub const ApplyResult = struct {
     found: bool,
     parse_error: bool = false,
@@ -124,6 +129,18 @@ pub fn loadAndApply(server: anytype, root_path: []const u8) ApplyResult {
                 server.alloc.free(owned);
             };
         };
+        applied += 1;
+    };
+
+    if (obj.get("typeCheckerConfidence")) |v| if (v == .object) {
+        var tcc = TypeCheckerConfidence{};
+        if (v.object.get("surface")) |sv| if (sv == .integer and sv.integer >= 0 and sv.integer <= 100) {
+            tcc.surface = @intCast(sv.integer);
+        };
+        if (v.object.get("diag")) |dv| if (dv == .integer and dv.integer >= 0 and dv.integer <= 100) {
+            tcc.diag = @intCast(dv.integer);
+        };
+        server.type_checker_confidence = tcc;
         applied += 1;
     };
 

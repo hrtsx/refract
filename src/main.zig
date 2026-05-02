@@ -65,6 +65,8 @@ pub fn main(init: std.process.Init) !void {
     var flag_repair: bool = false;
     var bench_sorbet_root: ?[]const u8 = null;
     var bench_steep_root: ?[]const u8 = null;
+    var flag_no_color: bool = false;
+    var flag_self_test: bool = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -84,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
                     "  --verbose            Enable verbose logging\n" ++
                     "  --log-level 1|2|3|4  Set log verbosity (1=error … 4=debug)\n" ++
                     "  --disable-rubocop    Disable RuboCop diagnostics\n" ++
+                    "  --no-color           Disable colored output (or set NO_COLOR env var)\n" ++
                     "  --no-hot-index       Disable in-memory hot symbol index (A/B for benchmarks)\n" ++
                     "  --no-warmup          Disable hot index warmup on initialize (A/B for benchmarks)\n" ++
                     "  --db-path PATH       Override database file path\n" ++
@@ -99,7 +102,12 @@ pub fn main(init: std.process.Init) !void {
                     "  --last-crash         Print most recent crash log and exit\n" ++
                     "  --doctor             Print diagnostic report (colored checklist)\n" ++
                     "  --repair             Perform safe repairs (with --doctor)\n" ++
-                    "  --mcp                Run as MCP server\n",
+                    "  --dap                Run as Debug Adapter Protocol server\n" ++
+                    "  --warm-stdlib        Index standard library and exit\n" ++
+                    "  --bench-sorbet PATH  Benchmark against Sorbet on a project\n" ++
+                    "  --bench-steep PATH   Benchmark against Steep on a project\n" ++
+                    "  --mcp                Run as MCP server\n" ++
+                    "  --self-test          Spawn LSP+MCP child handshakes and exit 0 on success\n",
             );
             return;
         } else if (std.mem.eql(u8, arg, "--log-file")) {
@@ -121,6 +129,8 @@ pub fn main(init: std.process.Init) !void {
             server_log_level = @max(1, @min(lvl, 4));
         } else if (std.mem.eql(u8, arg, "--disable-rubocop")) {
             server_disable_rubocop = true;
+        } else if (std.mem.eql(u8, arg, "--no-color")) {
+            flag_no_color = true;
         } else if (std.mem.eql(u8, arg, "--no-hot-index")) {
             server_disable_hot_index = true;
         } else if (std.mem.eql(u8, arg, "--no-warmup")) {
@@ -165,6 +175,8 @@ pub fn main(init: std.process.Init) !void {
             flag_doctor = true;
         } else if (std.mem.eql(u8, arg, "--repair")) {
             flag_repair = true;
+        } else if (std.mem.eql(u8, arg, "--self-test")) {
+            flag_self_test = true;
         } else if (std.mem.eql(u8, arg, "--bench-sorbet")) {
             if (i + 1 >= args.len) {
                 try std.Io.File.stderr().writeStreamingAll(io, "refract: --bench-sorbet requires a project root path\n");
@@ -271,13 +283,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (flag_doctor) {
-        const no_color = std.c.getenv("NO_COLOR") != null;
+        const no_color = flag_no_color or (std.c.getenv("NO_COLOR") != null);
         const opts = doctor.DoctorOptions{
             .json = flag_json,
             .repair = flag_repair,
             .no_color = no_color,
         };
         try doctor.runDoctor(io, db_path, cwd, opts, alloc);
+        return;
+    }
+
+    if (flag_self_test) {
+        try runSelfTest(io, alloc);
         return;
     }
 
@@ -883,6 +900,114 @@ fn indexStdlibRbs(io: std.Io, db: db_mod.Db, cwd_path: []const u8, alloc: std.me
     var sbuf: [128]u8 = undefined;
     const smsg = std.fmt.bufPrint(&sbuf, "refract: indexed {d} stdlib RBS files\n", .{stdlib_const.len}) catch "refract: indexed stdlib RBS\n";
     std.debug.print("{s}", .{smsg});
+}
+
+fn selfExePath(buf: []u8) ?[]const u8 {
+    const n = std.c.readlink("/proc/self/exe", buf.ptr, buf.len);
+    if (n <= 0 or n >= buf.len) return null;
+    return buf[0..@intCast(n)];
+}
+
+fn selfTestProbe(io: std.Io, alloc: std.mem.Allocator, label: []const u8, exe_path: []const u8, extra_arg: ?[]const u8, db_path: []const u8, cwd_path: []const u8, request_body: []const u8, expect_substr: []const u8, lsp_framing: bool) bool {
+    var stderr = std.Io.File.stderr();
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(alloc);
+    argv.append(alloc, exe_path) catch return false;
+    if (extra_arg) |a| argv.append(alloc, a) catch return false;
+    argv.append(alloc, "--db-path") catch return false;
+    argv.append(alloc, db_path) catch return false;
+
+    const cwd_z = alloc.dupeZ(u8, cwd_path) catch return false;
+    defer alloc.free(cwd_z);
+
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+        .cwd = .{ .path = cwd_z },
+    }) catch return false;
+    defer child.kill(io);
+
+    if (child.stdin) |*sin| {
+        if (lsp_framing) {
+            var hdr_buf: [128]u8 = undefined;
+            const hdr = std.fmt.bufPrint(&hdr_buf, "Content-Length: {d}\r\n\r\n", .{request_body.len}) catch return false;
+            sin.writeStreamingAll(io, hdr) catch return false;
+            sin.writeStreamingAll(io, request_body) catch return false;
+        } else {
+            sin.writeStreamingAll(io, request_body) catch return false;
+            sin.writeStreamingAll(io, "\n") catch return false;
+        }
+    }
+
+    var out_buf: [16384]u8 = undefined;
+    var got: usize = 0;
+    const start = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    while (got < out_buf.len) {
+        const now = std.Io.Timestamp.now(io, .real).toMilliseconds();
+        if (now - start > 5000) break;
+        if (child.stdout) |*sout| {
+            const n = sout.readStreaming(io, &.{out_buf[got..]}) catch break;
+            if (n == 0) break;
+            got += n;
+            if (std.mem.indexOf(u8, out_buf[0..got], expect_substr) != null) {
+                stderr.writeStreamingAll(io, "  ✓ ") catch {};
+                stderr.writeStreamingAll(io, label) catch {};
+                stderr.writeStreamingAll(io, "\n") catch {};
+                return true;
+            }
+        } else break;
+    }
+    stderr.writeStreamingAll(io, "  ✗ ") catch {};
+    stderr.writeStreamingAll(io, label) catch {};
+    stderr.writeStreamingAll(io, " (no expected response within 5s)\n") catch {};
+    return false;
+}
+
+fn runSelfTest(io: std.Io, alloc: std.mem.Allocator) !void {
+    var stderr = std.Io.File.stderr();
+    try stderr.writeStreamingAll(io, "refract --self-test\n===================\n");
+
+    var exe_buf: [4096]u8 = undefined;
+    const exe_path = selfExePath(&exe_buf) orelse {
+        try stderr.writeStreamingAll(io, "  ✗ could not resolve self exe path\n");
+        return error.SelfExePath;
+    };
+
+    var rnd: [8]u8 = undefined;
+    io.random(&rnd);
+    const rid = std.mem.readInt(u64, &rnd, .little);
+
+    const lsp_db = try std.fmt.allocPrint(alloc, "/tmp/refract_selftest_lsp_{x}.db", .{rid});
+    defer alloc.free(lsp_db);
+    const mcp_db = try std.fmt.allocPrint(alloc, "/tmp/refract_selftest_mcp_{x}.db", .{rid});
+    defer alloc.free(mcp_db);
+    const ws = try std.fmt.allocPrint(alloc, "/tmp/refract_selftest_ws_{x}", .{rid});
+    defer alloc.free(ws);
+    std.Io.Dir.createDirAbsolute(io, ws, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, ws) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, lsp_db) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, mcp_db) catch {};
+
+    const lsp_req =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{"disableGemIndex":true,"disableRubocop":true}}}
+    ;
+    const mcp_req =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"refract-self-test","version":"1"}}}
+    ;
+
+    var ok = true;
+    if (!selfTestProbe(io, alloc, "LSP initialize handshake", exe_path, null, lsp_db, ws, lsp_req, "\"capabilities\"", true)) ok = false;
+    if (!selfTestProbe(io, alloc, "MCP initialize handshake", exe_path, "--mcp", mcp_db, ws, mcp_req, "\"protocolVersion\"", false)) ok = false;
+
+    if (ok) {
+        try stderr.writeStreamingAll(io, "self-test OK\n");
+    } else {
+        try stderr.writeStreamingAll(io, "self-test FAILED\n");
+        return error.SelfTestFailed;
+    }
 }
 
 fn runBenchSorbetSteep(io: std.Io, alloc: std.mem.Allocator, sorbet_root: ?[]const u8, steep_root: ?[]const u8) !void {

@@ -45,7 +45,7 @@ pub fn runDoctor(
     try checkDatabase(io, db_path, alloc, &checks);
     try checkRdbg(alloc, &checks);
     try checkRubyEnv(alloc, cwd, &checks);
-    try checkPrismVendor(alloc, &checks);
+    try checkPrismVendor(io, alloc, &checks);
     try checkOtlpEndpoint(alloc, &checks);
     try checkDbLock(alloc, db_path, &checks);
     try checkSchemaIntegrity(alloc, db_path, &checks);
@@ -126,7 +126,7 @@ fn checkDatabase(
     });
 
     const schema_ver = db.getSchemaVersion() orelse 0;
-    const expected: u32 = 7;
+    const expected: u32 = db_mod.CURRENT_SCHEMA;
     if (schema_ver == expected) {
         try checks.append(alloc, .{
             .name = try alloc.dupe(u8, "Database schema version"),
@@ -278,27 +278,69 @@ fn checkRubyEnv(alloc: std.mem.Allocator, cwd: []const u8, checks: *std.ArrayLis
     }
 }
 
-fn checkPrismVendor(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
-    const header_path = "vendor/prism/include/prism.h";
-    const source_path = "vendor/prism/src/prism.c";
+fn fileSizeAbs(io: std.Io, path: []const u8) ?u64 {
+    var f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer f.close(io);
+    const st = f.stat(io) catch return null;
+    return st.size;
+}
 
-    const h_stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, header_path, .{}) catch null;
-    const c_stat = std.Io.Dir.cwd().statFile(std.Options.debug_io, source_path, .{}) catch null;
-
-    if (h_stat != null and c_stat != null and h_stat.?.size > 0 and c_stat.?.size > 0) {
+fn checkPrismVendor(io: std.Io, alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+    var exe_buf: [4096]u8 = undefined;
+    const n = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+    if (n <= 0 or n >= exe_buf.len) {
         try checks.append(alloc, .{
             .name = try alloc.dupe(u8, "Prism vendor"),
             .status = .ok,
-            .detail = try std.fmt.allocPrint(alloc, "{d} + {d} bytes", .{ h_stat.?.size, c_stat.?.size }),
+            .detail = try alloc.dupe(u8, "vendored at compile time"),
         });
-    } else {
-        try checks.append(alloc, .{
-            .name = try alloc.dupe(u8, "Prism vendor"),
-            .status = .fail,
-            .detail = try alloc.dupe(u8, "missing or empty"),
-            .fix = try alloc.dupe(u8, "git submodule update --init"),
-        });
+        return;
     }
+    const exe_path = exe_buf[0..@intCast(n)];
+
+    var current = std.fs.path.dirname(exe_path) orelse exe_path;
+    while (true) {
+        var join_buf: [4096]u8 = undefined;
+        const build_zig = std.fmt.bufPrint(&join_buf, "{s}/build.zig", .{current}) catch break;
+        if (fileSizeAbs(io, build_zig)) |_| {
+            var hbuf: [4096]u8 = undefined;
+            var sbuf: [4096]u8 = undefined;
+            const header_path = std.fmt.bufPrint(&hbuf, "{s}/vendor/prism/include/prism.h", .{current}) catch break;
+            const source_path = std.fmt.bufPrint(&sbuf, "{s}/vendor/prism/src/prism.c", .{current}) catch break;
+            const h = fileSizeAbs(io, header_path);
+            const c = fileSizeAbs(io, source_path);
+            if (h != null and c != null and h.? > 0 and c.? > 0) {
+                try checks.append(alloc, .{
+                    .name = try alloc.dupe(u8, "Prism vendor"),
+                    .status = .ok,
+                    .detail = try std.fmt.allocPrint(alloc, "{d} + {d} bytes", .{ h.?, c.? }),
+                });
+            } else {
+                try checks.append(alloc, .{
+                    .name = try alloc.dupe(u8, "Prism vendor"),
+                    .status = .fail,
+                    .detail = try alloc.dupe(u8, "missing or empty"),
+                    .fix = try alloc.dupe(u8, "git submodule update --init"),
+                });
+            }
+            return;
+        }
+        const parent = std.fs.path.dirname(current);
+        if (parent == null or std.mem.eql(u8, parent.?, current)) {
+            try checks.append(alloc, .{
+                .name = try alloc.dupe(u8, "Prism vendor"),
+                .status = .ok,
+                .detail = try alloc.dupe(u8, "vendored at compile time"),
+            });
+            return;
+        }
+        current = parent.?;
+    }
+    try checks.append(alloc, .{
+        .name = try alloc.dupe(u8, "Prism vendor"),
+        .status = .ok,
+        .detail = try alloc.dupe(u8, "vendored at compile time"),
+    });
 }
 
 fn checkOtlpEndpoint(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {

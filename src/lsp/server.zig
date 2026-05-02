@@ -1055,6 +1055,7 @@ pub const Server = struct {
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_type_checker: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     type_checker_severity: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
+    type_checker_confidence: workspace_config.TypeCheckerConfidence = .{},
     log_path: ?[]const u8 = null,
     log_file: ?std.Io.File = null,
     log_level: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),

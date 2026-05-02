@@ -158,13 +158,19 @@
   },
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --platform=node --format=cjs",
-    "watch": "npm run build -- --watch"
+    "watch": "npm run build -- --watch",
+    "compile-tests": "tsc -p ./tsconfig.test.json",
+    "pretest": "npm run build && npm run compile-tests",
+    "test": "node ./out/test/smoke.test.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
     "esbuild": "^0.20.0",
-    "@types/vscode": "^1.75.0"
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^20.0.0",
+    "@vscode/test-electron": "^2.4.0",
+    "typescript": "^5.4.0"
   }
 }

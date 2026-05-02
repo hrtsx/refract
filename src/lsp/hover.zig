@@ -109,7 +109,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
     if (type_resolver.resolve(self.alloc, self.db, lookup_word, null, -1)) |hit_const| {
         var hit = hit_const;
         defer hit.deinit(self.alloc);
-        if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+        if (hit.confidence >= self.type_checker_confidence.surface) {
             var aw = std.Io.Writer.Allocating.init(self.alloc);
             const w = &aw.writer;
             try w.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"`");
@@ -248,7 +248,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
                 if (type_resolver.resolve(self.alloc, self.db, recv_w2, null, -1)) |hit_const| {
                     var hit = hit_const;
                     defer hit.deinit(self.alloc);
-                    if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                    if (hit.confidence >= self.type_checker_confidence.surface) {
                         sorbet_recv_owned = type_resolver.stripWrapper(self.alloc, hit.type_str) catch null;
                         if (sorbet_recv_owned) |b| recv_type = b;
                     }
@@ -265,7 +265,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
             if (type_resolver.resolve(self.alloc, self.db, base_type, word, -1)) |hit_const| {
                 var hit = hit_const;
                 defer hit.deinit(self.alloc);
-                if (hit.confidence >= type_resolver.SURFACE_THRESHOLD) {
+                if (hit.confidence >= self.type_checker_confidence.surface) {
                     var aw_m = std.Io.Writer.Allocating.init(self.alloc);
                     const w_m = &aw_m.writer;
                     try w_m.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"`");
