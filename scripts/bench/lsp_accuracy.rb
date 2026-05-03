@@ -45,6 +45,29 @@ QUERIES = [
   # Chained-receiver stdlib (phase ⑤ deferred — expected to miss for now):
   ["stdlib chained Object#to_s",           "accuracy_main.rb", 11,  8, "(stdlib)", nil],
   ["stdlib chained String#upcase",         "accuracy_main.rb", 11, 13, "(stdlib)", nil],
+
+  # B1: Block return types
+  ["block map returns array",              "accuracy_block_return.rb", 4, 21, "(stdlib)", nil],
+  ["block tap returns receiver",           "accuracy_block_return.rb", 8, 18, "(stdlib)", nil],
+  ["block then returns block result",      "accuracy_block_return.rb", 12, 15, "(stdlib)", nil],
+  ["block each_with_object returns obj",   "accuracy_block_return.rb", 16, 26, "(stdlib)", nil],
+  ["block lazy map force returns array",   "accuracy_block_return.rb", 20, 31, "(stdlib)", nil],
+  ["symbol to_proc map",                   "accuracy_block_return.rb", 24, 26, "(stdlib)", nil],
+
+  # B2: Rails associations
+  ["assoc has_one resolve",                "accuracy_rails_assoc.rb", 25, 17, "accuracy_rails_assoc.rb", 2],
+  ["assoc has_many resolve",               "accuracy_rails_assoc.rb", 26, 18, "accuracy_rails_assoc.rb", 2],
+  ["assoc through source",                 "accuracy_rails_assoc.rb", 27, 22, "accuracy_rails_assoc.rb", 8],
+  ["assoc polymorphic type union",         "accuracy_rails_assoc.rb", 28, 17, "accuracy_rails_assoc.rb", 10],
+
+  # B2: Pattern matching
+  ["pattern match case in Foo",            "accuracy_pattern_match.rb", 8, 11, "(stdlib)", nil],
+  ["pattern match case in hash",           "accuracy_pattern_match.rb", 10, 15, "(stdlib)", nil],
+  ["pattern match case in array",          "accuracy_pattern_match.rb", 12, 13, "(stdlib)", nil],
+
+  # B2: Concerning
+  ["concern included block",               "accuracy_concern.rb", 5, 20, "accuracy_concern.rb", 5],
+  ["concern instance method",              "accuracy_concern.rb", 31, 18, "accuracy_concern.rb", 8],
 ]
 
 def basename_of(uri)
@@ -75,7 +98,8 @@ client.start
 client.initialize!
 
 # didOpen all fixture files so each LSP has them in memory.
-fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb]
+fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb
+                    accuracy_block_return.rb accuracy_rails_assoc.rb accuracy_pattern_match.rb accuracy_concern.rb]
 opens = {}
 fixture_files.each do |file|
   abs = File.join(root, file)

@@ -728,6 +728,18 @@ fn inferBlockReturnType(method_name: []const u8, receiver_type: []const u8) ?[]c
     {
         return receiver_type;
     }
+    if (std.mem.eql(u8, method_name, "tap")) {
+        return receiver_type;
+    }
+    if (std.mem.eql(u8, method_name, "then") or std.mem.eql(u8, method_name, "yield_self")) {
+        return "Block";
+    }
+    if (std.mem.eql(u8, method_name, "lazy")) {
+        return receiver_type;
+    }
+    if (std.mem.eql(u8, method_name, "force")) {
+        return receiver_type;
+    }
     return null;
 }
 
@@ -2463,6 +2475,43 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             insertBlockParams(ctx, block_node, lit_type, mname, accum_t) catch {
                                 ctx.error_count += 1;
                             };
+                        }
+                    }
+                }
+            }
+            // Symbol to_proc: &:method_name at call site
+            if (cn.block != null and cn.block.?.*.type == prism.NODE_SYMBOL) {
+                const sym_block: *const prism.SymbolNode = @ptrCast(@alignCast(cn.block.?));
+                if (sym_block.unescaped.source) |sym_src| {
+                    const method_name_sym = sym_src[0..sym_block.unescaped.length];
+                    if (cn.receiver) |recv| {
+                        if (recv.*.type == prism.NODE_LOCAL_VAR_READ) {
+                            const rv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv));
+                            const rv_name = resolveConstant(ctx.parser, rv.name);
+                            if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv_stmt| {
+                                defer lv_stmt.finalize();
+                                lv_stmt.bind_int(1, ctx.file_id);
+                                lv_stmt.bind_text(2, rv_name);
+                                if (lv_stmt.step() catch false) {
+                                    const t = lv_stmt.column_text(0);
+                                    if (t.len > 0) {
+                                        const elem = stripArrayBrackets(t);
+                                        if (elem) |e| {
+                                            if (lookupMethodReturn(ctx.db, e, method_name_sym)) |_| {
+                                                insertRef(ctx.db, ctx.file_id, method_name_sym, 0, 0, null, "call") catch {
+                                                    ctx.error_count += 1;
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                            } else |_| {}
+                        } else if (inferLiteralType(recv)) |lit_type| {
+                            if (lookupMethodReturn(ctx.db, lit_type, method_name_sym)) |_| {
+                                insertRef(ctx.db, ctx.file_id, method_name_sym, 0, 0, null, "call") catch {
+                                    ctx.error_count += 1;
+                                };
+                            }
                         }
                     }
                 }
