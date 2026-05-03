@@ -986,9 +986,10 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         } else call_vlen;
         call_snip = call_snip_buf[0..call_snip_end];
     }
-    // Scan keyword hash options for class_name:, through:, polymorphic:
+    // Scan keyword hash options for class_name:, through:, source:, polymorphic:
     var class_name_opt: ?[]const u8 = null;
     var through_join: ?[]const u8 = null;
+    var source_alias: ?[]const u8 = null;
     var is_polymorphic = false;
     if (args_list.size > 1) {
         for (1..args_list.size) |oi| {
@@ -1019,6 +1020,12 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
                         if (tj_sv.unescaped.source != null)
                             through_join = tj_sv.unescaped.source[0..tj_sv.unescaped.length];
                     }
+                } else if (std.mem.eql(u8, kname, "source")) {
+                    if (kh_assoc.value.*.type == prism.NODE_SYMBOL) {
+                        const src_sym: *const prism.SymbolNode = @ptrCast(@alignCast(kh_assoc.value));
+                        if (src_sym.unescaped.source != null)
+                            source_alias = src_sym.unescaped.source[0..src_sym.unescaped.length];
+                    }
                 } else if (std.mem.eql(u8, kname, "polymorphic")) {
                     if (kh_assoc.value.*.type == prism.NODE_TRUE) is_polymorphic = true;
                 }
@@ -1034,8 +1041,10 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         std.fmt.bufPrint(&through_vs_buf, "through:{s}", .{tj}) catch call_snip
     else
         call_snip;
+    // When source: alias is present, use that for type inference instead of sym_name
+    const assoc_lookup_name = source_alias orelse sym_name;
     // Polymorphic belongs_to has no static return type — the concrete type lives in *_type column.
-    const assoc_return_type = if (is_polymorphic) null else inferAssocReturnType(ctx.alloc, mname, sym_name, class_name_opt);
+    const assoc_return_type = if (is_polymorphic) null else inferAssocReturnType(ctx.alloc, mname, assoc_lookup_name, class_name_opt);
     defer if (assoc_return_type) |rt| ctx.alloc.free(rt);
     if (assoc_return_type) |rt| {
         try insertSymbolWithReturn(ctx, kind, sym_name, lc.line, lc.col, rt, mname, parent, effective_snip);
@@ -2558,12 +2567,35 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                 }
             }
-            // ActiveSupport::Concern `included do...end` — traverse block body with current namespace
-            if (cn.receiver == null and std.mem.eql(u8, mname, "included")) {
+            // ActiveSupport::Concern `included do...end` or `extended do...end` — traverse block body with current namespace
+            if (cn.receiver == null and (std.mem.eql(u8, mname, "included") or std.mem.eql(u8, mname, "extended"))) {
                 if (cn.block != null and cn.block.?.*.type == prism.NODE_BLOCK) {
                     const inc_blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
                     if (inc_blk.body != null) {
                         prism.visit_child_nodes(inc_blk.body.?, visitor, @ptrCast(ctx));
+                    }
+                }
+            }
+            // ActiveSupport::Concern `concerning :AuthMethods do...end` — synthesize namespace
+            if (cn.receiver == null and std.mem.eql(u8, mname, "concerning")) {
+                if (cn.arguments != null) {
+                    const concern_args = cn.arguments[0].arguments;
+                    if (concern_args.size > 0 and concern_args.nodes[0].*.type == prism.NODE_SYMBOL) {
+                        const concern_sym: *const prism.SymbolNode = @ptrCast(@alignCast(concern_args.nodes[0]));
+                        if (concern_sym.unescaped.source) |sym_src| {
+                            const concern_name = sym_src[0..concern_sym.unescaped.length];
+                            if (cn.block != null and cn.block.?.*.type == prism.NODE_BLOCK) {
+                                const concern_blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+                                if (ctx.namespace_stack_len < 64) {
+                                    ctx.namespace_stack[ctx.namespace_stack_len] = concern_name;
+                                    ctx.namespace_stack_len += 1;
+                                    if (concern_blk.body != null) {
+                                        prism.visit_child_nodes(concern_blk.body.?, visitor, @ptrCast(ctx));
+                                    }
+                                    ctx.namespace_stack_len -= 1;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3517,6 +3549,58 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, pat_type, 85, ctx.scope_id) catch {
                 ctx.error_count += 1;
             };
+            prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
+        },
+        prism.NODE_ARRAY_PATTERN => {
+            const ap: *const prism.ArrayPatternNode = @ptrCast(@alignCast(n));
+            if (ap.requireds.size > 0) {
+                for (0..ap.requireds.size) |i| {
+                    const elem = ap.requireds.nodes[i];
+                    if (elem.*.type == prism.NODE_CAPTURE_PATTERN) {
+                        const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(elem));
+                        const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
+                        const elem_name = resolveConstant(ctx.parser, target.name);
+                        const elem_lc = locationLineCol(ctx.parser, elem.*.location.start);
+                        insertLocalVar(ctx.db, ctx.file_id, elem_name, elem_lc.line, elem_lc.col, "Object", 85, ctx.scope_id) catch {
+                            ctx.error_count += 1;
+                        };
+                    }
+                }
+            }
+            if (ap.rest) |rest_pat| {
+                if (rest_pat.*.type == prism.NODE_CAPTURE_PATTERN) {
+                    const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(rest_pat));
+                    const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
+                    const rest_name = resolveConstant(ctx.parser, target.name);
+                    const rest_lc = locationLineCol(ctx.parser, rest_pat.*.location.start);
+                    insertLocalVar(ctx.db, ctx.file_id, rest_name, rest_lc.line, rest_lc.col, "[Object]", 85, ctx.scope_id) catch {
+                        ctx.error_count += 1;
+                    };
+                }
+            }
+            prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+            return false;
+        },
+        prism.NODE_HASH_PATTERN => {
+            const hp: *const prism.HashPatternNode = @ptrCast(@alignCast(n));
+            if (hp.elements.size > 0) {
+                for (0..hp.elements.size) |i| {
+                    const elem = hp.elements.nodes[i];
+                    if (elem.*.type == prism.NODE_ASSOC) {
+                        const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
+                        if (assoc.value.*.type == prism.NODE_CAPTURE_PATTERN) {
+                            const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(assoc.value));
+                            const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
+                            const hash_key_name = resolveConstant(ctx.parser, target.name);
+                            const hash_lc = locationLineCol(ctx.parser, assoc.value.*.location.start);
+                            insertLocalVar(ctx.db, ctx.file_id, hash_key_name, hash_lc.line, hash_lc.col, "Object", 85, ctx.scope_id) catch {
+                                ctx.error_count += 1;
+                            };
+                        }
+                    }
+                }
+            }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
         },
