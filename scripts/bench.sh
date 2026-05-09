@@ -108,6 +108,21 @@ run_once() {
   rm -f "$time_log"
 }
 
+compute_median() {
+  local count=0
+  local values=()
+  while read -r val; do
+    values+=("$val")
+    ((count++))
+  done
+  if (( count == 0 )); then
+    echo "0"
+    return
+  fi
+  local mid=$(( (count + 1) / 2 ))
+  printf '%s\n' "${values[@]}" | sort -n | sed -n "${mid}p"
+}
+
 generate_corpus
 
 echo "# Refract perf gate"
@@ -115,15 +130,22 @@ echo "binary:       $REFRACT_BIN"
 echo "version:      $("$REFRACT_BIN" --version 2>/dev/null | head -1)"
 echo "corpus:       $CORPUS_DIR (~$N_FILES files)"
 echo "budget:       wall < ${BUDGET_SEC}s, peak RSS < ${BUDGET_MB} MB"
-echo "runs:         $N_RUNS (best of)"
+echo "runs:         5 trials + 1 prewarm"
 echo
+
+echo "prewarm (untimed)..."
+result=$(run_once "$CORPUS_DIR/run-prewarm.db") || exit 1
 
 best_wall=999999
 best_rss=999999
-for i in $(seq 1 "$N_RUNS"); do
+wall_vals=()
+rss_vals=()
+for i in $(seq 1 5); do
   result=$(run_once "$CORPUS_DIR/run-$i.db") || exit 1
   wall=$(echo "$result" | awk '{print $1}')
   rss=$(echo "$result" | awk '{print $2}')
+  wall_vals+=("$wall")
+  rss_vals+=("$rss")
   printf "  run %d  wall=%ss  peak_rss=%s MB\n" "$i" "$wall" "$rss"
   if (( $(echo "$wall < $best_wall" | bc -l 2>/dev/null || echo 0) )); then
     best_wall="$wall"
@@ -132,9 +154,15 @@ for i in $(seq 1 "$N_RUNS"); do
     best_rss=$rss
   fi
 done
+
+median_wall=$(printf '%s\n' "${wall_vals[@]}" | sort -n | awk '{if(NR==3)print}')
+median_rss=$(printf '%s\n' "${rss_vals[@]}" | sort -n | awk '{if(NR==3)print}')
+
 echo
-echo "best wall:    ${best_wall}s   (budget ${BUDGET_SEC}s)"
-echo "best RSS:     ${best_rss} MB  (budget ${BUDGET_MB} MB)"
+echo "best wall:    ${best_wall}s    (budget ${BUDGET_SEC}s)"
+echo "median wall:  ${median_wall}s   (p50)"
+echo "best RSS:     ${best_rss} MB   (budget ${BUDGET_MB} MB)"
+echo "median RSS:   ${median_rss} MB  (p50)"
 
 fail=0
 if (( $(echo "$best_wall > $BUDGET_SEC" | bc -l 2>/dev/null || echo 0) )); then

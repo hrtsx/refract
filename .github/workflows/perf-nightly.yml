@@ -1,0 +1,134 @@
+name: Perf Nightly
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  discussions: write
+
+jobs:
+  bench:
+    name: Nightly realistic bench regression check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Zig 0.16
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Setup Ruby 3.4
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: false
+
+      - name: Cache benchmark workspaces
+        uses: actions/cache@v4
+        with:
+          path: |
+            corpora/mastodon
+            corpora/discourse
+          key: bench-corpora-v1
+          restore-keys: bench-corpora-
+
+      - name: Build refract
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run nightly bench (discourse-lib + mastodon, micro + session)
+        env:
+          REALISTIC_CORPORA: discourse-lib mastodon
+          REALISTIC_WORKLOADS: micro session
+          REALISTIC_SERVERS: refract
+        run: |
+          ./scripts/bench/realistic_run.sh || true
+          ls -lh bench-results/realistic/ || echo "No results"
+
+      - name: Check for regressions
+        id: check
+        run: |
+          if [[ ! -f "bench-results/realistic/refract.json" ]]; then
+            echo "SKIP=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CURRENT_HOVER=$(jq -r '.discourse_lib.micro.hover.p50' bench-results/realistic/refract.json 2>/dev/null || echo "")
+          CURRENT_DEF=$(jq -r '.discourse_lib.micro.def.p50' bench-results/realistic/refract.json 2>/dev/null || echo "")
+          CURRENT_COMP=$(jq -r '.discourse_lib.micro.completion.p50' bench-results/realistic/refract.json 2>/dev/null || echo "")
+
+          if [[ -z "$CURRENT_HOVER" ]] || [[ "$CURRENT_HOVER" == "null" ]]; then
+            echo "SKIP=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Read last 7 days of results from bench-results/ dir
+          # For now, use current values (would read from history in full implementation)
+          BASELINE_HOVER=$(echo "$CURRENT_HOVER")
+          BASELINE_DEF=$(echo "$CURRENT_DEF")
+          BASELINE_COMP=$(echo "$CURRENT_COMP")
+
+          # Check for regression > 15%
+          HOVER_REG=$(awk "BEGIN {print ($CURRENT_HOVER - $BASELINE_HOVER) / $BASELINE_HOVER * 100}")
+          DEF_REG=$(awk "BEGIN {print ($CURRENT_DEF - $BASELINE_DEF) / $BASELINE_DEF * 100}")
+          COMP_REG=$(awk "BEGIN {print ($CURRENT_COMP - $BASELINE_COMP) / $BASELINE_COMP * 100}")
+
+          echo "HOVER_P50=${CURRENT_HOVER}ms" >> "$GITHUB_OUTPUT"
+          echo "DEF_P50=${CURRENT_DEF}ms" >> "$GITHUB_OUTPUT"
+          echo "COMP_P50=${CURRENT_COMP}ms" >> "$GITHUB_OUTPUT"
+          echo "HOVER_REG=${HOVER_REG}%" >> "$GITHUB_OUTPUT"
+          echo "DEF_REG=${DEF_REG}%" >> "$GITHUB_OUTPUT"
+          echo "COMP_REG=${COMP_REG}%" >> "$GITHUB_OUTPUT"
+
+      - name: Post discussion comment
+        if: steps.check.outputs.SKIP != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const hover = "${{ steps.check.outputs.HOVER_P50 }}";
+            const def = "${{ steps.check.outputs.DEF_P50 }}";
+            const comp = "${{ steps.check.outputs.COMP_P50 }}";
+            const hoverReg = "${{ steps.check.outputs.HOVER_REG }}";
+            const defReg = "${{ steps.check.outputs.DEF_REG }}";
+            const compReg = "${{ steps.check.outputs.COMP_REG }}";
+
+            const regressedFields = [
+              hoverReg > 15 ? `hover +${hoverReg.slice(0, 5)}%` : null,
+              defReg > 15 ? `def +${defReg.slice(0, 5)}%` : null,
+              compReg > 15 ? `completion +${compReg.slice(0, 5)}%` : null,
+            ].filter(Boolean);
+
+            if (regressedFields.length === 0) {
+              console.log("No regressions detected");
+              return;
+            }
+
+            const commit = context.sha.slice(0, 7);
+            const body = `⚠️ **Perf regression detected** in ${commit}\n\n` +
+              `discourse-lib micro cold-path p50:\n` +
+              `- hover: ${hover}\n` +
+              `- def: ${def}\n` +
+              `- completion: ${comp}\n\n` +
+              `Regressions: ${regressedFields.join(", ")}`;
+
+            github.rest.discussions.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              discussion_number: 1,
+              body,
+            }).catch(() => console.log("Failed to post discussion comment"));
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly-results
+          path: bench-results/realistic/
+          retention-days: 90

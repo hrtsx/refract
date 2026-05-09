@@ -9,7 +9,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
               ▼
    refract  ── parses Ruby with Prism ── persists to per-project SQLite ── serves LSP queries
               │
-              └─ also: refract --mcp  (34 tools for AI agents)
+              └─ also: refract --mcp  (39 tools for AI agents)
 ```
 
 **Why pick refract**
@@ -18,7 +18,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
 - **Rails 5.2–8.0 DSL coverage** — `has_many`, `has_one_attached`, `delegated_type`, `composed_of`, `attribute :x, :integer`, etc.
 - **Type-aware** — RBS + Sorbet sigs + literal narrowing power completion, hover, inlay hints
 - **Light type checking** — `refract/nil-receiver` and `refract/wrong-arity` ship in v0.1, confidence-gated
-- **AI-native** — `refract --mcp` exposes 34 tools your agent can call directly
+- **AI-native** — `refract --mcp` exposes 39 tools your agent can call directly
 - **Single binary** — drop into Docker, CI, anywhere. No Ruby on the path.
 
 See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the head-to-head numbers vs Solargraph, Ruby LSP, Sorbet, and Steep — perf, accuracy, DX, RAM — plus when to pick each.
@@ -231,7 +231,7 @@ To suppress a diagnostic for the workspace, append it to `.refract/disabled.txt`
 
 ## MCP Server
 
-Start with `refract --mcp`. Exposes 34 tools for AI agent integration.
+Start with `refract --mcp`. Exposes 39 tools for AI agent integration.
 
 **Highest-value tools for Rails projects:**
 

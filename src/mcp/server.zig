@@ -3255,22 +3255,133 @@ pub const Server = struct {
     }
 
     fn toolCoverageGapAnalyzer(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        _ = getStrArg(args, "file");
+        const file_filter = getStrArg(args, "file");
+        const threshold = getIntArg(args, "threshold") orelse 1;
+
+        const stmt = self.db.prepare(
+            \\SELECT s.name, s.parent_name, f.path, s.line, COUNT(r.name) as ref_count
+            \\FROM symbols s
+            \\JOIN files f ON f.id = s.file_id
+            \\LEFT JOIN refs r ON r.name = s.name AND EXISTS (
+            \\  SELECT 1 FROM files rf WHERE rf.id = r.file_id AND (rf.path LIKE '%_test.rb' OR rf.path LIKE '%_spec.rb')
+            \\)
+            \\WHERE s.kind = 'def' AND f.is_gem = 0
+            \\  AND (? IS NULL OR f.path = ?)
+            \\GROUP BY s.id
+            \\HAVING ref_count < ?
+            \\ORDER BY f.path, s.line LIMIT 100
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+        if (file_filter) |ff| {
+            stmt.bind_text(1, ff);
+            stmt.bind_text(2, ff);
+        } else {
+            stmt.bind_null(1);
+            stmt.bind_null(2);
+        }
+        stmt.bind_int(3, threshold);
+
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"gaps\":[]}");
+        try w.writeAll("{\"gaps\":[");
+
+        var row_count: usize = 0;
+        while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count > 0) try w.writeByte(',');
+            row_count += 1;
+            const name = stmt.column_text(0);
+            const parent_name = stmt.column_text(1);
+            const file_path = stmt.column_text(2);
+            const line = stmt.column_int(3);
+            const ref_count = stmt.column_int(4);
+            try w.writeAll("{\"name\":");
+            try writeJsonStr(w, name);
+            try w.writeAll(",\"parent_name\":");
+            if (parent_name.len > 0) try writeJsonStr(w, parent_name) else try w.writeAll("null");
+            try w.writeAll(",\"file\":");
+            try writeJsonStr(w, file_path);
+            try w.print(",\"line\":{d},\"test_ref_count\":{d}", .{ line, ref_count });
+            try w.writeByte('}');
+        }
+        try w.print("],\"threshold\":{d},\"note\":\"finds defs with <threshold test refs\"}}", .{threshold});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
     }
 
     fn toolSecurityAuditSummary(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        _ = getStrArg(args, "file");
+        const file_filter = getStrArg(args, "file");
+
+        const stmt = self.db.prepare(
+            \\SELECT f.path, b.code, b.severity, b.message, 'brakeman' as tool_type
+            \\FROM brakeman_findings b
+            \\JOIN files f ON f.id = b.file_id
+            \\WHERE (? IS NULL OR f.path = ?)
+            \\UNION ALL
+            \\SELECT f.path, s.rule_id, s.severity, s.message, 'semgrep' as tool_type
+            \\FROM semgrep_findings s
+            \\JOIN files f ON f.id = s.file_id
+            \\WHERE (? IS NULL OR f.path = ?)
+            \\ORDER BY f.path
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+        if (file_filter) |ff| {
+            stmt.bind_text(1, ff);
+            stmt.bind_text(2, ff);
+            stmt.bind_text(3, ff);
+            stmt.bind_text(4, ff);
+        } else {
+            stmt.bind_null(1);
+            stmt.bind_null(2);
+            stmt.bind_null(3);
+            stmt.bind_null(4);
+        }
+
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"findings\":[],\"summary\":{\"total_risk\":0,\"high_count\":0}}");
+        try w.writeAll("{\"findings\":[");
+
+        var row_count: usize = 0;
+        var total_risk: i32 = 0;
+        var high_count: i32 = 0;
+        while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count >= 100) break;
+            const file_path = stmt.column_text(0);
+            const code = stmt.column_text(1);
+            const severity = stmt.column_int(2);
+            const message = stmt.column_text(3);
+            const tool_type = stmt.column_text(4);
+
+            const cvss_score: i32 = switch (severity) {
+                10 => 10,
+                9 => 9,
+                8 => 8,
+                7 => 7,
+                6 => 6,
+                5 => 5,
+                4 => 4,
+                3 => 3,
+                2 => 2,
+                else => 1,
+            };
+            total_risk += cvss_score;
+            if (cvss_score >= 7) high_count += 1;
+
+            if (row_count > 0) try w.writeByte(',');
+            row_count += 1;
+            try w.writeAll("{\"file\":");
+            try writeJsonStr(w, file_path);
+            try w.writeAll(",\"code\":");
+            try writeJsonStr(w, code);
+            try w.print(",\"severity\":{d},\"cvss_score\":{d},\"message\":", .{ severity, cvss_score });
+            try writeJsonStr(w, message);
+            try w.writeAll(",\"tool\":");
+            try writeJsonStr(w, tool_type);
+            try w.writeByte('}');
+        }
+        try w.print("],\"summary\":{{\"total_risk\":{d},\"high_count\":{d},\"note\":\"top 100 findings\"}}}}", .{ total_risk, high_count });
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -3280,7 +3391,55 @@ pub const Server = struct {
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"migrations\":[],\"deps\":[],\"rollback_hazards\":[]}");
+
+        const stmt = self.db.prepare(
+            \\SELECT f.path, s.name, s.line
+            \\FROM symbols s
+            \\JOIN files f ON f.id = s.file_id
+            \\WHERE f.path LIKE '%db/migrate/%.rb' AND s.kind = 'classdef'
+            \\ORDER BY f.path
+            \\LIMIT 200
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+
+        try w.writeAll("{\"migrations\":[");
+        var row_count: usize = 0;
+        var hazard_count: usize = 0;
+
+        while (stmt.step() catch |e| stepLog(e)) {
+            const file_path = stmt.column_text(0);
+            const class_name = stmt.column_text(1);
+
+            if (row_count > 0) try w.writeByte(',');
+            row_count += 1;
+
+            try w.writeAll("{\"file\":");
+            try writeJsonStr(w, file_path);
+            try w.writeAll(",\"class_name\":");
+            try writeJsonStr(w, class_name);
+
+            var hazards: [3]bool = .{ false, false, false };
+            if (std.mem.indexOf(u8, class_name, "change_column") != null) {
+                hazards[0] = true;
+                hazard_count += 1;
+            }
+            if (std.mem.indexOf(u8, class_name, "remove_column") != null) {
+                hazards[1] = true;
+                hazard_count += 1;
+            }
+            if (std.mem.indexOf(u8, class_name, "execute") != null) {
+                hazards[2] = true;
+                hazard_count += 1;
+            }
+
+            try w.print(",\"hazard_change_column\":{s},\"hazard_remove_column\":{s},\"hazard_execute\":{s}}}", .{
+                if (hazards[0]) "true" else "false",
+                if (hazards[1]) "true" else "false",
+                if (hazards[2]) "true" else "false",
+            });
+        }
+
+        try w.print("],\"rollback_hazards\":{d},\"note\":\"marks potentially non-reversible operations\"}}", .{hazard_count});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -3290,18 +3449,107 @@ pub const Server = struct {
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"dependencies\":[],\"transitive_count\":0}");
+
+        var gem_count: usize = 0;
+        var transitive_count: usize = 0;
+
+        const cwd = std.Io.Dir.cwd();
+        const gemfile_content = cwd.readFileAlloc(std.Options.debug_io, "Gemfile.lock", self.alloc, std.Io.Limit.limited(1_000_000)) catch {
+            try w.writeAll("{\"dependencies\":[],\"transitive_count\":0,\"note\":\"Gemfile.lock not found\"}");
+            const text = try aw.toOwnedSlice();
+            defer self.alloc.free(text);
+            return self.buildToolResult(id, text);
+        };
+        defer self.alloc.free(gemfile_content);
+
+        try w.writeAll("{\"dependencies\":[");
+
+        var lines = std.mem.splitSequence(u8, gemfile_content, "\n");
+        var in_gem_section = false;
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (std.mem.eql(u8, trimmed, "GEM")) {
+                in_gem_section = true;
+                continue;
+            }
+            if (in_gem_section and trimmed.len == 0) break;
+            if (!in_gem_section) continue;
+
+            if (std.mem.startsWith(u8, trimmed, "remote:") or std.mem.startsWith(u8, trimmed, "specs:")) continue;
+
+            if (trimmed.len > 0 and !std.mem.startsWith(u8, trimmed, " ")) {
+                const paren_pos = std.mem.indexOf(u8, trimmed, "(");
+                if (paren_pos) |pp| {
+                    const name = std.mem.trim(u8, trimmed[0..pp], " ");
+                    const version_end = std.mem.lastIndexOf(u8, trimmed, ")") orelse trimmed.len;
+                    const version = std.mem.trim(u8, trimmed[pp + 1 .. version_end], " ()");
+
+                    if (gem_count > 0) try w.writeByte(',');
+                    gem_count += 1;
+                    if (gem_count > 100) break;
+
+                    try w.writeAll("{\"name\":");
+                    try writeJsonStr(w, name);
+                    try w.writeAll(",\"version\":");
+                    try writeJsonStr(w, version);
+                    try w.writeByte('}');
+                }
+            } else if (std.mem.startsWith(u8, trimmed, "dependencies:")) {
+                transitive_count += 1;
+            }
+        }
+
+        try w.print("],\"transitive_count\":{d},\"note\":\"top 100 gems from Gemfile.lock\"}}", .{transitive_count});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
     }
 
     fn toolUnusedAssociationChain(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        _ = getStrArg(args, "class_name");
+        const class_name = getStrArg(args, "class_name");
+
+        const stmt = self.db.prepare(
+            \\SELECT s.name, s.line, f.path, COUNT(r.name) as ref_count
+            \\FROM symbols s
+            \\JOIN files f ON f.id = s.file_id
+            \\LEFT JOIN refs r ON r.name = s.name
+            \\WHERE s.kind IN ('association', 'has_many', 'belongs_to', 'has_one', 'has_and_belongs_to_many')
+            \\  AND f.is_gem = 0
+            \\  AND (? IS NULL OR s.parent_name = ?)
+            \\GROUP BY s.id
+            \\HAVING ref_count = 0
+            \\ORDER BY f.path, s.line
+            \\LIMIT 100
+        ) catch return self.buildToolError(id, "database error");
+        defer stmt.finalize();
+        if (class_name) |cn| {
+            stmt.bind_text(1, cn);
+            stmt.bind_text(2, cn);
+        } else {
+            stmt.bind_null(1);
+            stmt.bind_null(2);
+        }
+
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"unused_associations\":[]}");
+        try w.writeAll("{\"unused_associations\":[");
+
+        var row_count: usize = 0;
+        while (stmt.step() catch |e| stepLog(e)) {
+            if (row_count > 0) try w.writeByte(',');
+            row_count += 1;
+            const name = stmt.column_text(0);
+            const line = stmt.column_int(1);
+            const file_path = stmt.column_text(2);
+            const ref_count = stmt.column_int(3);
+            try w.writeAll("{\"name\":");
+            try writeJsonStr(w, name);
+            try w.print(",\"line\":{d},\"file\":", .{line});
+            try writeJsonStr(w, file_path);
+            try w.print(",\"ref_count\":{d}}}", .{ref_count});
+        }
+        try w.print("],\"note\":\"associations with 0 references in workspace\"}}", .{});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
