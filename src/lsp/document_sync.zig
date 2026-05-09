@@ -210,6 +210,22 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         gop.value_ptr.* = now_ms;
     }
     self.notifyFileTouched(real_path);
+
+    if (self.hot.load(.acquire)) |hot_idx| {
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        defer self.hot_mu.unlock(std.Options.debug_io);
+        const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch {
+            diagnostics.publishDiagnostics(self, uri, real_path, false);
+            return;
+        };
+        defer db_stmt.finalize();
+        db_stmt.bind_text(1, real_path);
+        if (db_stmt.step() catch false) {
+            const file_id = db_stmt.column_int(0);
+            hot_idx.invalidateFileCache(@intCast(file_id));
+        }
+    }
+
     diagnostics.publishDiagnostics(self, uri, real_path, false);
 }
 

@@ -68,6 +68,58 @@ QUERIES = [
   # B2: Concerning
   ["concern module mixin",                 "accuracy_concern.rb", 22, 19, "accuracy_concern.rb", 2],
   ["concern instance method call",         "accuracy_concern.rb", 28, 13, "accuracy_concern.rb", 9],
+
+  # Extended Block Return Types
+  ["block yield_self single",              "accuracy_block_advanced.rb", 2, 18, "(stdlib)", nil],
+  ["block yield_self chain",               "accuracy_block_advanced.rb", 7, 18, "(stdlib)", nil],
+  ["proc new call",                        "accuracy_block_advanced.rb", 12, 10, "accuracy_block_advanced.rb", 13],
+  ["lambda call",                          "accuracy_block_advanced.rb", 17, 16, "accuracy_block_advanced.rb", 18],
+  ["each_with_object accumulator",         "accuracy_block_advanced.rb", 22, 20, "(stdlib)", nil],
+  ["where then chain",                     "accuracy_block_advanced.rb", 27, 22, "(stdlib)", nil],
+  ["map block return type",                "accuracy_block_advanced.rb", 12, 8, "accuracy_block_advanced.rb", 13],
+  ["map string receiver",                  "accuracy_block_advanced.rb", 2, 10, "(stdlib)", nil],
+
+  # Extended Pattern Matching
+  ["pattern hash keys destructure",        "accuracy_pattern_advanced.rb", 2, 14, "accuracy_pattern_advanced.rb", 4],
+  ["pattern array with splat",             "accuracy_pattern_advanced.rb", 9, 14, "accuracy_pattern_advanced.rb", 11],
+  ["pattern class capture",                "accuracy_pattern_advanced.rb", 16, 14, "accuracy_pattern_advanced.rb", 18],
+  ["pattern nested hash",                  "accuracy_pattern_advanced.rb", 23, 14, "accuracy_pattern_advanced.rb", 25],
+  ["pattern with guard clause",            "accuracy_pattern_advanced.rb", 30, 14, "accuracy_pattern_advanced.rb", 32],
+  ["pattern alternative values",           "accuracy_pattern_advanced.rb", 37, 14, "accuracy_pattern_advanced.rb", 39],
+
+  # Extended Rails Associations
+  ["assoc polymorphic commentable",        "accuracy_assoc_extended.rb", 39, 13, "accuracy_assoc_extended.rb", 12],
+  ["assoc through with source",            "accuracy_assoc_extended.rb", 34, 13, "accuracy_assoc_extended.rb", 19],
+  ["assoc belongs_to author",              "accuracy_assoc_extended.rb", 37, 13, "accuracy_assoc_extended.rb", 4],
+  ["assoc has_many reactions",             "accuracy_assoc_extended.rb", 35, 13, "accuracy_assoc_extended.rb", 24],
+  ["assoc chained posts",                  "accuracy_assoc_extended.rb", 32, 13, "accuracy_assoc_extended.rb", 17],
+  ["assoc chained comments",               "accuracy_assoc_extended.rb", 33, 13, "accuracy_assoc_extended.rb", 18],
+  ["assoc articles through",               "accuracy_assoc_extended.rb", 34, 13, "accuracy_assoc_extended.rb", 19],
+  ["assoc commentable polymorphic",        "accuracy_assoc_extended.rb", 39, 13, "accuracy_assoc_extended.rb", 12],
+
+  # Enumerator Chains
+  ["lazy chain map force",                 "accuracy_enumerator.rb", 2, 18, "(stdlib)", nil],
+  ["to_enum each iteration",               "accuracy_enumerator.rb", 7, 14, "(stdlib)", nil],
+  ["each with_index",                      "accuracy_enumerator.rb", 11, 18, "(stdlib)", nil],
+  ["zip elements",                         "accuracy_enumerator.rb", 15, 18, "(stdlib)", nil],
+  ["each_cons pairs",                      "accuracy_enumerator.rb", 19, 18, "(stdlib)", nil],
+  ["lazy select map chain",                "accuracy_enumerator.rb", 23, 20, "(stdlib)", nil],
+
+  # Splat & Kwargs
+  ["splat method with args",               "accuracy_splat_kwargs.rb", 22, 21, "accuracy_splat_kwargs.rb", 2],
+  ["splat unpacking array",                "accuracy_splat_kwargs.rb", 24, 25, "accuracy_splat_kwargs.rb", 2],
+  ["kwargs method call",                   "accuracy_splat_kwargs.rb", 25, 14, "accuracy_splat_kwargs.rb", 6],
+  ["kwargs unpacking hash",                "accuracy_splat_kwargs.rb", 27, 29, "accuracy_splat_kwargs.rb", 6],
+  ["rest params count",                    "accuracy_splat_kwargs.rb", 22, 14, "accuracy_splat_kwargs.rb", 10],
+  ["kwargs passthrough",                   "accuracy_splat_kwargs.rb", 27, 14, "accuracy_splat_kwargs.rb", 6],
+
+  # Struct & Data
+  ["struct new creation",                  "accuracy_struct_data.rb", 4, 8, "accuracy_struct_data.rb", 2],
+  ["struct attribute access",              "accuracy_struct_data.rb", 5, 8, "accuracy_struct_data.rb", 2],
+  ["data define creation",                 "accuracy_struct_data.rb", 11, 14, "accuracy_struct_data.rb", 9],
+  ["data attribute access",                "accuracy_struct_data.rb", 12, 14, "accuracy_struct_data.rb", 9],
+  ["frozen struct creation",                "accuracy_struct_data.rb", 21, 10, "accuracy_struct_data.rb", 17],
+  ["data pattern matching",                "accuracy_struct_data.rb", 28, 14, "accuracy_struct_data.rb", 29],
 ]
 
 def basename_of(uri)
@@ -99,7 +151,9 @@ client.initialize!
 
 # didOpen all fixture files so each LSP has them in memory.
 fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb
-                    accuracy_block_return.rb accuracy_rails_assoc.rb accuracy_pattern_match.rb accuracy_concern.rb]
+                    accuracy_block_return.rb accuracy_rails_assoc.rb accuracy_pattern_match.rb accuracy_concern.rb
+                    accuracy_block_advanced.rb accuracy_pattern_advanced.rb accuracy_assoc_extended.rb
+                    accuracy_enumerator.rb accuracy_splat_kwargs.rb accuracy_struct_data.rb]
 opens = {}
 fixture_files.each do |file|
   abs = File.join(root, file)

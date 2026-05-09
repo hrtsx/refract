@@ -57,6 +57,66 @@ pub const LookupQuery = struct {
     receiver_type: ?[]const u8 = null,
 };
 
+pub const FileCacheEntry = struct {
+    file_id: u32,
+    symbols: []HotSymbol,
+    last_access_tick: u64,
+};
+
+pub const FileCache = struct {
+    entries: [8]?FileCacheEntry = [_]?FileCacheEntry{null} ** 8,
+    tick: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+    pub fn get(self: *FileCache, file_id: u32) ?[]HotSymbol {
+        for (self.entries) |maybe_entry| {
+            if (maybe_entry) |entry| {
+                if (entry.file_id == file_id) {
+                    return entry.symbols;
+                }
+            }
+        }
+        return null;
+    }
+
+    pub fn put(self: *FileCache, file_id: u32, symbols: []HotSymbol) void {
+        const now_tick = self.tick.load(.monotonic) +% 1;
+        self.tick.store(now_tick, .monotonic);
+
+        var oldest_idx: usize = 0;
+        var oldest_tick: u64 = std.math.maxInt(u64);
+
+        for (self.entries, 0..) |maybe_entry, i| {
+            if (maybe_entry == null) {
+                self.entries[i] = FileCacheEntry{ .file_id = file_id, .symbols = symbols, .last_access_tick = now_tick };
+                return;
+            }
+            if (maybe_entry) |entry| {
+                if (entry.file_id == file_id) {
+                    self.entries[i] = FileCacheEntry{ .file_id = file_id, .symbols = symbols, .last_access_tick = now_tick };
+                    return;
+                }
+                if (entry.last_access_tick < oldest_tick) {
+                    oldest_tick = entry.last_access_tick;
+                    oldest_idx = i;
+                }
+            }
+        }
+
+        self.entries[oldest_idx] = FileCacheEntry{ .file_id = file_id, .symbols = symbols, .last_access_tick = now_tick };
+    }
+
+    pub fn invalidate(self: *FileCache, file_id: u32) void {
+        for (self.entries, 0..) |maybe_entry, i| {
+            if (maybe_entry) |entry| {
+                if (entry.file_id == file_id) {
+                    self.entries[i] = null;
+                    return;
+                }
+            }
+        }
+    }
+};
+
 pub const HotIndex = struct {
     arena: std.heap.ArenaAllocator,
     /// Keyed by symbol's stored name. Equivalent to `WHERE s.name = ?`.
@@ -76,6 +136,7 @@ pub const HotIndex = struct {
     sorted_by_name: []HotSymbol,
     symbol_count: u32,
     file_count: u32,
+    file_cache: FileCache = .{},
 
     pub fn deinit(self: *HotIndex) void {
         const child = self.arena.child_allocator;
@@ -101,6 +162,18 @@ pub const HotIndex = struct {
 
     pub fn classesIn(self: *const HotIndex, file_id: u32) []const []const u8 {
         return if (self.classes_by_file.get(file_id)) |s| s else &.{};
+    }
+
+    pub fn getSymbolsForFile(self: *const HotIndex, file_id: u32) ?[]const HotSymbol {
+        return self.file_cache.get(file_id);
+    }
+
+    pub fn cacheSymbolsForFile(self: *HotIndex, file_id: u32, symbols: []HotSymbol) void {
+        self.file_cache.put(file_id, symbols);
+    }
+
+    pub fn invalidateFileCache(self: *HotIndex, file_id: u32) void {
+        self.file_cache.invalidate(file_id);
     }
 
     /// Returns def/classdef HotSymbols whose `parent_name` matches `class_name`.

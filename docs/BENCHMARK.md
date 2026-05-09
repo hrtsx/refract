@@ -182,7 +182,7 @@ hit the 180 s harness cap and serve queries against a still-building index.
 | `--repair` autofix | **yes** | no | no | no | no |
 | Built-in linter codes | 7 (`refract/nil-receiver`, `wrong-arity`, …) | none | optional `solargraph typecheck` | full type checker | full type checker |
 | RuboCop integration | optional (default on, `--disable-rubocop`) | external | external | n/a | n/a |
-| MCP server for AI agents | **yes** (`refract --mcp`, 34 tools) | no | no | no | no |
+| MCP server for AI agents | **yes** (`refract --mcp`, 39 tools) | no | no | no | no |
 | LSP method coverage | 28+ incl. semantic-tokens, inlay-hints, code-action, foldingRange, prepareRename, willRenameFiles | 20+ | 20+ | type-error focused | type-error focused |
 
 `ldd refract` on Linux: only libc + ld-linux. macOS build similar. Drop into Docker

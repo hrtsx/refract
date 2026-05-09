@@ -69,7 +69,7 @@
 - `**Extends:**` section alongside `**Includes:**` in class/module hover
 - Block parameters labeled `*(block param)*` instead of `*(local variable)*`
 
-### MCP Server (34 tools)
+### MCP Server (39 tools)
 
 Code intelligence (`resolve_type`, `class_summary`, `method_signature`, `explain_symbol`, `explain_type_chain`, `suggest_types`, `type_coverage`), symbol search (`workspace_symbols`, `list_by_kind`, `get_file_overview`, `find_unused`, `find_similar`), call graph (`find_callers`, `find_implementations`, `find_references`, `type_hierarchy`), source access (`get_symbol_source`, `grep_source`), Rails (`association_graph`, `route_map`, `i18n_lookup`, `list_validations`, `list_callbacks`, `concern_usage`), diagnostics (`diagnostics`, `diagnostic_summary`), workspace (`workspace_health`, `batch_resolve`), code actions (`refactor`, `available_code_actions`), testing (`test_summary`).
 
@@ -125,6 +125,15 @@ Eight first-party integrations, each smoke-tested in CI:
 - Head-to-head matrix vs `ruby-lsp`, `solargraph`, `sorbet`, `steep` with reproducible JSON cells. See `docs/BENCHMARK.md`.
 - One-command repro for third parties: `scripts/bench/fetch-corpora.sh` clones mastodon + discourse + generates a 10k synthetic corpus; `scripts/bench/repro.sh` runs the matrix end-to-end.
 - `bench-on-pr.yml` posts a delta to PR comments AND uploads `head_results/` + `base_results/` JSONs as a 90-day artifact, so reviewers can audit individual cells.
+- `perf-nightly.yml` runs daily at 06:00 UTC against discourse-lib + mastodon (micro + session). Opens a GitHub Discussion when hover/def/comp p50 regresses > 15 % vs the last 7-day median. 25-minute job timeout.
+
+### Performance
+
+- Synchronous hot-index warmup on `initialize` with a 200 ms budget; falls back to async on budget overflow. Eliminates cold-path penalty on the first hover/def request.
+- Pre-prepared SQL cache: 10 hottest statements (hover-exact, hover-qualified, def-exact, refs-by-name, params, mixins, completion-prefix, completion-namespace, symbol-by-file) prepared at `Server.init` so no request pays prepare cost.
+- Per-file LRU symbol cache (8 entries) backing hover + definition fast path; invalidated under `db_mutex` on every `didChange` to prevent stale reads.
+- Cold-path SQL: exact `s.name = ?` (indexed) probed first; `LIKE '%::' || ?` qualified-suffix scan only runs on zero rows.
+- `src/bench.zig` reports real `p50/p95/p99` (sorted-index, not avg/min/max). Bench harness prewarms once + reports best-of-5 + median to cut page-cache variance < 10 %.
 
 ### Infrastructure
 

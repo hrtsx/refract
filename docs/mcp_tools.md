@@ -1,6 +1,6 @@
 # MCP Tools
 
-Refract exposes 34 tools over the Model Context Protocol (MCP) when launched with `refract --mcp`. The server speaks the 2025-06-18 protocol revision over stdio.
+Refract exposes 39 tools over the Model Context Protocol (MCP) when launched with `refract --mcp`. The server speaks the 2025-06-18 protocol revision over stdio.
 
 Designed for LLM coding agents (Claude Code, Codex, custom): every tool grounds its output in the indexed workspace — no hallucinated symbols.
 
