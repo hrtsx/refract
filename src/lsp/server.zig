@@ -1154,7 +1154,21 @@ pub const Server = struct {
         const tmp_base: []const u8 = if (std.c.getenv("TMPDIR")) |p| std.mem.span(p) else if (std.c.getenv("TMP")) |p| std.mem.span(p) else "/tmp";
         const tmp_dir = std.fmt.allocPrint(alloc, "{s}/refract-{d}-{x}", .{ tmp_base, pid, std.mem.readInt(u32, &rand_bytes, .little) }) catch null;
         s.tmp_dir = tmp_dir;
+        s.prePrepareHotStatements();
         return s;
+    }
+
+    fn prePrepareHotStatements(self: *Server) void {
+        _ = self.cachedStmt("SELECT id FROM files WHERE path = ?") catch {};
+        _ = self.cachedStmt("SELECT id FROM symbols WHERE file_id = ? AND kind IN ('class','module') LIMIT 1") catch {};
+        _ = self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module','classdef') LIMIT 1") catch {};
+        _ = self.cachedStmt("SELECT p.name FROM params p JOIN symbols s ON p.symbol_id=s.id WHERE s.name=? AND s.kind='def' AND p.kind='keyword' ORDER BY p.position LIMIT 20") catch {};
+        _ = self.cachedStmt("SELECT module_name FROM mixins WHERE class_id = ? AND kind IN ('include','prepend') ORDER BY rowid") catch {};
+        _ = self.cachedStmt("SELECT DISTINCT name FROM symbols WHERE file_id = ? LIMIT 100") catch {};
+        _ = self.cachedStmt("SELECT DISTINCT name FROM symbols LIMIT 1000") catch {};
+        _ = self.cachedStmt("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1") catch {};
+        _ = self.cachedStmt("SELECT name FROM refs WHERE name = ? LIMIT 100") catch {};
+        _ = self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name LIKE ? ESCAPE '\\' LIMIT 50") catch {};
     }
 
     fn spawnTypeWorker(self: *Server, kind: sorbet_bridge.ServerKind) void {
@@ -1346,18 +1360,15 @@ pub const Server = struct {
         if (!self.warmup_enabled.load(.monotonic)) return;
         if (self.hot.load(.acquire) != null) return;
 
-        // Don't spawn a second warmup if one is already running. Joining it
-        // before respawn would block the LSP read loop.
-        self.warmup_thread_mu.lockUncancelable(std.Options.debug_io);
-        defer self.warmup_thread_mu.unlock(std.Options.debug_io);
-        if (self.warmup_thread != null) return;
+        const warmup_start = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
+        rebuildHotIndex(self);
+        const warmup_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - warmup_start;
 
-        const ctx = std.heap.c_allocator.create(WarmupCtx) catch return;
-        ctx.server_ptr = self;
-        self.warmup_thread = std.Thread.spawn(.{}, WarmupCtx.run, .{ctx}) catch blk: {
-            std.heap.c_allocator.destroy(ctx);
-            break :blk null;
-        };
+        if (warmup_ms > 200) {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "refract: synchronous warmup took {d}ms (exceeded 200ms budget)", .{warmup_ms}) catch "refract: synchronous warmup exceeded budget";
+            self.sendLogMessage(2, msg);
+        }
     }
 
     pub fn cachedStmt(self: *Server, comptime sql: [*:0]const u8) !db_mod.CachedStmt {

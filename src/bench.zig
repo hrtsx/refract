@@ -11,21 +11,33 @@ fn nowNs() i96 {
 }
 
 fn timedRun(comptime name: []const u8, iterations: u32, func: anytype) void {
-    var min_ns: i96 = std.math.maxInt(i96);
-    var max_ns: i96 = 0;
-    var total_ns: i96 = 0;
+    var times = std.ArrayList(i96).init(std.heap.c_allocator);
+    defer times.deinit();
+    times.ensureTotalCapacity(iterations) catch return;
+
     for (0..iterations) |_| {
         const t0 = nowNs();
         func();
         const elapsed: i96 = nowNs() - t0;
-        total_ns += elapsed;
-        if (elapsed < min_ns) min_ns = elapsed;
-        if (elapsed > max_ns) max_ns = elapsed;
+        times.appendAssumeCapacity(elapsed);
     }
-    const avg_us = @divTrunc(total_ns, @as(i96, iterations) * 1000);
-    const min_us = @divTrunc(min_ns, 1000);
-    const max_us = @divTrunc(max_ns, 1000);
-    std.debug.print("  {s}: {d}us avg, {d}us min, {d}us max ({d} iters)\n", .{ name, avg_us, min_us, max_us, iterations });
+
+    std.sort.insertion(i96, times.items, {}, struct {
+        fn lessThan(_: void, a: i96, b: i96) bool {
+            return a < b;
+        }
+    }.lessThan);
+
+    const n = @as(i96, @intCast(times.items.len));
+    const p50_idx: usize = @intCast(@divTrunc((n - 1) * 50, 100));
+    const p95_idx: usize = @intCast(@divTrunc((n - 1) * 95, 100));
+    const p99_idx: usize = @intCast(@divTrunc((n - 1) * 99, 100));
+
+    const p50_us = @divTrunc(times.items[p50_idx], 1000);
+    const p95_us = @divTrunc(times.items[p95_idx], 1000);
+    const p99_us = @divTrunc(times.items[p99_idx], 1000);
+
+    std.debug.print("  {s}: p50={d}us p95={d}us p99={d}us ({d} iters)\n", .{ name, p50_us, p95_us, p99_us, iterations });
 }
 
 const small_ruby =
@@ -235,13 +247,6 @@ test "bench: workspace/symbol search in 5000-symbol DB" {
         stmt.bind_int(2, @intCast(i % 9999));
         _ = stmt.step() catch {};
     }
-
-    timedRun("workspace symbol search (5000 symbols)", 200, struct {
-        fn run() void {
-            const sdb = db_mod.Db.open(":memory:") catch return;
-            sdb.close();
-        }
-    }.run);
 
     var total_ns: i96 = 0;
     for (0..200) |_| {
