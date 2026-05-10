@@ -253,6 +253,13 @@ pub const Plugin = struct {
             try std.fs.path.join(alloc, &.{ plugin_dir, manifest.entry });
         errdefer alloc.free(entry);
 
+        // Sandbox advisory: v0.1.0 ships without OS-level enforcement. Plugin
+        // manifest `sandbox.allow_network` / `sandbox.allow_fs_write` are
+        // recorded but not enforced. Linux seccomp-bpf + macOS sandbox_init
+        // are tracked for 0.2.0. Emit a one-line stderr notice so operators
+        // know plugins run with the spawning process's full privileges.
+        std.debug.print("refract: plugin '{s}' running unsandboxed (v0.1.0; sandbox enforcement deferred to 0.2.0)\n", .{manifest.id});
+
         const argv = [_][]const u8{entry};
         const cwd_z = try alloc.dupeZ(u8, plugin_dir);
         defer alloc.free(cwd_z);

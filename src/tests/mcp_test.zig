@@ -1000,6 +1000,93 @@ test "P47 T47.25 MCP find_similar returns matches" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "result") != null);
 }
 
+test "P47 T47.27 MCP coverage_gap_analyzer returns gaps array" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4727";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/lib.rb", .data = "class Lib\n  def untested_method\n    42\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"coverage_gap_analyzer\",\"arguments\":{}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"gaps\"") != null);
+}
+
+test "P47 T47.28 MCP security_audit_summary returns findings array" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4728";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"security_audit_summary\",\"arguments\":{}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"findings\"") != null);
+}
+
+test "P47 T47.29 MCP migration_chain_analyzer returns migrations array" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4729";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/dummy.rb", .data = "class App\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"migration_chain_analyzer\",\"arguments\":{}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"migrations\"") != null);
+}
+
+test "P47 T47.30 MCP dependency_tree_resolver handles missing Gemfile.lock" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4730";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/dummy.rb", .data = "class App\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"dependency_tree_resolver\",\"arguments\":{}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"dependencies\"") != null);
+}
+
+test "P47 T47.31 MCP unused_association_chain returns array" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4731";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/model.rb", .data = "class User\n  has_many :posts\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/model.rb\",\"type\":1}]}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"unused_association_chain\",\"arguments\":{\"class_name\":\"User\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"unused_associations\"") != null);
+}
+
 test "P47 T47.26 MCP rate limiting rejects excess requests" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p47_t4726";
