@@ -1,6 +1,12 @@
 # Changelog
 
-## [0.1.0] - 2026-05-14
+## [0.1.0-alpha.1] - 2026-05-14
+
+First public alpha. Intended for early testers + dogfooding. The plumbing
+listed below is real and tested in CI, but the daily editor experience has
+not yet been validated by hour-of-use sessions on production Rails apps.
+Expect rough edges. File issues. The 0.1.0 final tag will follow after
+alpha-tester feedback.
 
 ### Core LSP Protocol (LSP 3.17)
 

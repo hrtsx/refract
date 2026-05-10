@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# refract-test-gen: reads `refract.test-gen.suggest` requests and emits RSpec
+# stubs for the methods passed in the gaps argument. The host (refract) is
+# expected to have already called the MCP tool `coverage_gap_analyzer` and to
+# pass the resulting `gaps` array in the request params.
+#
+# Request shape:
+#   { "params": { "gaps": [ { "name": "method", "parent_name": "Klass",
+#                             "file": "...", "line": 42 }, ... ] } }
+#
+# Response shape:
+#   { "result": { "stubs": [ { "file": "spec/klass_spec.rb",
+#                              "rspec": "describe Klass do\n  ..." } ] } }
+
+require "json"
+
+$stdout.sync = true
+
+def read_message(io)
+  headers = {}
+  loop do
+    line = io.gets
+    return nil if line.nil?
+    line = line.chomp("\r\n")
+    break if line.empty?
+    key, val = line.split(": ", 2)
+    headers[key.downcase] = val
+  end
+  len = headers["content-length"]&.to_i
+  return nil unless len && len > 0
+  body = io.read(len)
+  JSON.parse(body)
+end
+
+def send_message(io, payload)
+  body = JSON.generate(payload)
+  io.write("Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+  io.flush
+end
+
+def stub_for(gap)
+  klass = gap["parent_name"] || "Object"
+  method = gap["name"]
+  spec_path = if gap["file"]
+                gap["file"].sub(%r{\Alib/}, "spec/").sub(/\.rb\z/, "_spec.rb")
+              else
+                "spec/#{klass.downcase}_spec.rb"
+              end
+  rspec = <<~RSPEC
+    require "rails_helper"
+
+    RSpec.describe #{klass} do
+      describe "##{method}" do
+        it "is not yet covered" do
+          pending "refract-test-gen: write a real expectation at #{gap['file']}:#{gap['line']}"
+          expect(subject.respond_to?(:#{method})).to be true
+        end
+      end
+    end
+  RSPEC
+  { "file" => spec_path, "rspec" => rspec }
+end
+
+loop do
+  msg = read_message($stdin)
+  break if msg.nil?
+  method = msg["method"]
+  id = msg["id"]
+
+  case method
+  when "initialize"
+    send_message($stdout, {
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => {
+        "capabilities" => { "lsp_requests" => ["refract.test-gen.suggest"] }
+      }
+    })
+  when "refract.test-gen.suggest"
+    gaps = msg.dig("params", "gaps") || []
+    stubs = gaps.first(50).map { |g| stub_for(g) }
+    send_message($stdout, {
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => { "stubs" => stubs, "count" => stubs.size }
+    })
+  when "shutdown"
+    send_message($stdout, { "jsonrpc" => "2.0", "id" => id, "result" => nil })
+  when "exit"
+    break
+  else
+    if id
+      send_message($stdout, {
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "error" => { "code" => -32601, "message" => "method not found: #{method}" }
+      })
+    end
+  end
+end

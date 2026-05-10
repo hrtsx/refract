@@ -4,7 +4,7 @@ class Refract < Formula
   # NOTE: SHA256 values are placeholders. Regenerate after building release
   # artifacts via `scripts/bump-formula.sh 0.1.0 <sha-aarch64-macos> <sha-x86_64-macos>
   # <sha-aarch64-linux> <sha-x86_64-linux>`.
-  version "0.1.0"
+  version "0.1.0-alpha.1"
   license "MIT"
 
   on_macos do
