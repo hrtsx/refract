@@ -3392,13 +3392,21 @@ pub const Server = struct {
         errdefer aw.deinit();
         const w = &aw.writer;
 
+        // Per-migration-file hazards: scan refs for hazard call names inside
+        // db/migrate/*.rb. Detects change_column / remove_column / execute as
+        // potentially non-reversible operations.
         const stmt = self.db.prepare(
-            \\SELECT f.path, s.name, s.line
-            \\FROM symbols s
-            \\JOIN files f ON f.id = s.file_id
-            \\WHERE f.path LIKE '%db/migrate/%.rb' AND s.kind = 'classdef'
+            \\SELECT f.path,
+            \\       MAX(CASE WHEN r.name = 'change_column' THEN 1 ELSE 0 END) AS h_change,
+            \\       MAX(CASE WHEN r.name = 'remove_column' THEN 1 ELSE 0 END) AS h_remove,
+            \\       MAX(CASE WHEN r.name = 'execute'       THEN 1 ELSE 0 END) AS h_execute,
+            \\       (SELECT s.name FROM symbols s WHERE s.file_id = f.id AND s.kind = 'classdef' LIMIT 1) AS class_name
+            \\FROM files f
+            \\LEFT JOIN refs r ON r.file_id = f.id
+            \\WHERE f.path LIKE '%db/migrate/%.rb'
+            \\GROUP BY f.id
             \\ORDER BY f.path
-            \\LIMIT 200
+            \\LIMIT 500
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
 
@@ -3408,7 +3416,10 @@ pub const Server = struct {
 
         while (stmt.step() catch |e| stepLog(e)) {
             const file_path = stmt.column_text(0);
-            const class_name = stmt.column_text(1);
+            const h_change = stmt.column_int(1) != 0;
+            const h_remove = stmt.column_int(2) != 0;
+            const h_execute = stmt.column_int(3) != 0;
+            const class_name = stmt.column_text(4);
 
             if (row_count > 0) try w.writeByte(',');
             row_count += 1;
@@ -3416,30 +3427,20 @@ pub const Server = struct {
             try w.writeAll("{\"file\":");
             try writeJsonStr(w, file_path);
             try w.writeAll(",\"class_name\":");
-            try writeJsonStr(w, class_name);
+            if (class_name.len > 0) try writeJsonStr(w, class_name) else try w.writeAll("null");
 
-            var hazards: [3]bool = .{ false, false, false };
-            if (std.mem.indexOf(u8, class_name, "change_column") != null) {
-                hazards[0] = true;
-                hazard_count += 1;
-            }
-            if (std.mem.indexOf(u8, class_name, "remove_column") != null) {
-                hazards[1] = true;
-                hazard_count += 1;
-            }
-            if (std.mem.indexOf(u8, class_name, "execute") != null) {
-                hazards[2] = true;
-                hazard_count += 1;
-            }
+            if (h_change) hazard_count += 1;
+            if (h_remove) hazard_count += 1;
+            if (h_execute) hazard_count += 1;
 
             try w.print(",\"hazard_change_column\":{s},\"hazard_remove_column\":{s},\"hazard_execute\":{s}}}", .{
-                if (hazards[0]) "true" else "false",
-                if (hazards[1]) "true" else "false",
-                if (hazards[2]) "true" else "false",
+                if (h_change) "true" else "false",
+                if (h_remove) "true" else "false",
+                if (h_execute) "true" else "false",
             });
         }
 
-        try w.print("],\"rollback_hazards\":{d},\"note\":\"marks potentially non-reversible operations\"}}", .{hazard_count});
+        try w.print("],\"rollback_hazards\":{d},\"note\":\"flags change_column / remove_column / execute calls per migration\"}}", .{hazard_count});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
