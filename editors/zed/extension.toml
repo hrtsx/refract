@@ -1,6 +1,6 @@
 id = "refract"
 name = "Refract Ruby LSP"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 schema_version = 1
 authors = ["refract contributors"]
 description = "Ruby language server backed by Refract"

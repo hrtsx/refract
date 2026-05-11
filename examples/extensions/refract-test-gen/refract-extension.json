@@ -1,0 +1,20 @@
+{
+  "id": "test-gen",
+  "version": "0.1.0",
+  "entry": "bin/refract-plugin-test-gen",
+  "description": "Reads coverage_gap_analyzer output from refract MCP and emits RSpec stubs for untested methods. Demo-grade.",
+  "capabilities": {
+    "lsp_requests": ["refract.test-gen.suggest"],
+    "lsp_notifications": [],
+    "mcp_tools": []
+  },
+  "timeouts": {
+    "initialize_ms": 5000,
+    "request_ms": 5000,
+    "shutdown_ms": 1000
+  },
+  "sandbox": {
+    "allow_network": false,
+    "allow_fs_write": []
+  }
+}

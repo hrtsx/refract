@@ -125,3 +125,40 @@ test "buildArgv assembles rdbg invocation" {
     try std.testing.expectEqualStrings("bundle exec rspec", argv[4]);
     try std.testing.expectEqualStrings("spec/foo_spec.rb", argv[5]);
 }
+
+test "buildArgv empty program_args still produces well-formed argv" {
+    const alloc = std.testing.allocator;
+    const args = [_][]const u8{};
+    const argv = try RdbgBridge.buildArgv(alloc, "ruby app.rb", &args);
+    defer RdbgBridge.freeArgv(alloc, argv);
+
+    try std.testing.expect(argv.len == 5);
+    try std.testing.expectEqualStrings("--open=stdio", argv[1]);
+    try std.testing.expectEqualStrings("--", argv[3]);
+    try std.testing.expectEqualStrings("ruby app.rb", argv[4]);
+}
+
+test "buildArgv honours RDBG_BIN override" {
+    const c_lib = @cImport({
+        @cInclude("stdlib.h");
+    });
+    _ = c_lib.setenv("RDBG_BIN", "/custom/path/to/rdbg-override", 1);
+    defer _ = c_lib.unsetenv("RDBG_BIN");
+    const alloc = std.testing.allocator;
+    const args = [_][]const u8{};
+    const argv = try RdbgBridge.buildArgv(alloc, "p", &args);
+    defer RdbgBridge.freeArgv(alloc, argv);
+    try std.testing.expectEqualStrings("/custom/path/to/rdbg-override", argv[0]);
+}
+
+test "buildArgv multi-arg program forwards all program_args after --" {
+    const alloc = std.testing.allocator;
+    const args = [_][]const u8{ "--seed", "42", "spec/foo_spec.rb" };
+    const argv = try RdbgBridge.buildArgv(alloc, "bundle exec rspec", &args);
+    defer RdbgBridge.freeArgv(alloc, argv);
+    try std.testing.expect(argv.len == 5 + args.len);
+    try std.testing.expectEqualStrings("--", argv[3]);
+    try std.testing.expectEqualStrings("--seed", argv[5]);
+    try std.testing.expectEqualStrings("42", argv[6]);
+    try std.testing.expectEqualStrings("spec/foo_spec.rb", argv[7]);
+}
