@@ -1,0 +1,62 @@
+name: Soak Nightly
+
+on:
+  schedule:
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "Soak duration (default 7200 = 2 h)"
+        required: false
+        default: "7200"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-soak-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-soak-
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3 git
+      - name: Build refract
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: Fetch discourse-lib soak corpus
+        run: |
+          git clone --depth=1 https://github.com/discourse/discourse.git /tmp/discourse
+          mkdir -p /tmp/soak-workspace
+          cp -r /tmp/discourse/lib /tmp/soak-workspace/lib
+      - name: Run soak harness
+        env:
+          REFRACT: ./zig-out/bin/refract
+          DURATION: ${{ github.event.inputs.duration_seconds || '7200' }}
+        run: scripts/soak.sh /tmp/soak-workspace "$DURATION"
+      - name: Upload soak logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-logs
+          path: |
+            /tmp/refract-soak-*/refract.stdout
+            /tmp/refract-soak-*/refract.stderr
+            ~/.local/state/refract/crash-*.log
+          if-no-files-found: ignore
+          retention-days: 14

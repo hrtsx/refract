@@ -161,3 +161,75 @@ jobs:
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
+
+  test-debug:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lsp, mcp, edge]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-debug-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-debug-
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "-Doptimize=Debug"
+      - uses: actions/cache@v5
+        with:
+          path: /tmp/refract_test_stdlib_template.db
+          key: linux-rbs-template-${{ hashFiles('src/indexer/**', 'src/main.zig') }}
+          restore-keys: linux-rbs-template-
+      - name: Warm stdlib RBS template
+        run: |
+          if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
+            ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
+          fi
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "-Doptimize=Debug" test:${{ matrix.suite }}
+
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-valgrind-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-valgrind-
+      - run: sudo apt-get update && sudo apt-get install -y valgrind sqlite3
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "-Doptimize=Debug"
+      - name: valgrind --self-test (catches C-boundary leaks at SQLite/Prism)
+        run: |
+          valgrind \
+            --error-exitcode=1 \
+            --leak-check=full \
+            --show-leak-kinds=definite,possible \
+            --errors-for-leak-kinds=definite \
+            --suppressions=/dev/null \
+            ./zig-out/bin/refract --self-test

@@ -63,8 +63,10 @@ pub const FileCacheEntry = struct {
     last_access_tick: u64,
 };
 
+pub const FILE_CACHE_CAPACITY: usize = 32;
+
 pub const FileCache = struct {
-    entries: [8]?FileCacheEntry = [_]?FileCacheEntry{null} ** 8,
+    entries: [FILE_CACHE_CAPACITY]?FileCacheEntry = [_]?FileCacheEntry{null} ** FILE_CACHE_CAPACITY,
     tick: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn get(self: *FileCache, file_id: u32) ?[]HotSymbol {
@@ -134,6 +136,12 @@ pub const HotIndex = struct {
     /// All symbols sorted ascending by name for prefix scans.
     /// Equivalent to `WHERE s.name LIKE ? ESCAPE '\'` with a leading-anchor pattern.
     sorted_by_name: []HotSymbol,
+    /// Pre-rendered hover markdown body (JSON-escaped, between `"value":"` and
+    /// the trailing `"`). Keyed by `HotSymbol.name`. Populated at warmup for
+    /// the top-N most-referenced symbols whose name is unambiguous in
+    /// `name_map` (single def/classdef entry). Lookup-only after build;
+    /// freed with the arena.
+    pre_rendered_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
     symbol_count: u32,
     file_count: u32,
     file_cache: FileCache = .{},
@@ -145,7 +153,22 @@ pub const HotIndex = struct {
         self.file_paths.deinit(child);
         self.classes_by_file.deinit(child);
         self.methods_by_parent.deinit(child);
+        self.pre_rendered_by_name.deinit(child);
         self.arena.deinit();
+    }
+
+    /// Returns the pre-rendered, JSON-escaped hover markdown body for `name`,
+    /// or null when the symbol was not in the top-N cache or its name is
+    /// ambiguous across multiple defs/classdefs.
+    pub fn lookupPreRendered(self: *const HotIndex, name: []const u8) ?[]const u8 {
+        return self.pre_rendered_by_name.get(name);
+    }
+
+    /// Insert a pre-rendered hover body. Caller must allocate `name` and
+    /// `body` with `self.arena.allocator()` so they live for the HotIndex
+    /// lifetime.
+    pub fn putPreRendered(self: *HotIndex, name: []const u8, body: []const u8) !void {
+        try self.pre_rendered_by_name.put(self.arena.child_allocator, name, body);
     }
 
     pub fn lookupName(self: *const HotIndex, name: []const u8) []const HotSymbol {

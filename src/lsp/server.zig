@@ -26,6 +26,7 @@ const workspace_config = @import("workspace_config.zig");
 const handler_registry = @import("handler_registry.zig");
 const observability = @import("observability.zig");
 const plugin_host = @import("plugin_host.zig");
+const redact = @import("redact.zig");
 const sorbet_bridge = @import("sorbet_bridge.zig");
 const sorbet_worker = @import("sorbet_worker.zig");
 const llm_adapter = @import("llm_adapter.zig");
@@ -110,6 +111,15 @@ pub fn rebuildHotIndex(self: *Server) void {
         return;
     };
 
+    // Pre-render hover bodies for the top-N most-referenced symbols (W1.1).
+    // Runs before the new HotIndex is published, so no reader races; failures
+    // are non-fatal (we just skip the cache).
+    preRenderHotHover(self, new_idx, ro_db) catch |e| {
+        var pbuf: [256]u8 = undefined;
+        const pmsg = std.fmt.bufPrint(&pbuf, "refract: hover pre-render skipped: {s}", .{@errorName(e)}) catch "refract: hover pre-render skipped";
+        self.sendLogMessage(3, pmsg);
+    };
+
     self.hot_mu.lockUncancelable(std.Options.debug_io);
     defer self.hot_mu.unlock(std.Options.debug_io);
 
@@ -138,6 +148,102 @@ pub fn rebuildHotIndex(self: *Server) void {
     var ibuf: [128]u8 = undefined;
     const imsg = std.fmt.bufPrint(&ibuf, "refract: hot index built ({d} symbols, {d} files)", .{ new_idx.symbol_count, new_idx.file_count }) catch "refract: hot index built";
     self.sendLogMessage(3, imsg);
+}
+
+const PRE_RENDER_TOP_N: usize = 1000;
+
+/// Pre-render hover bodies for the top-N most-referenced def/classdef
+/// symbols whose name is unambiguous (single entry in name_map). Each body
+/// is the JSON-escaped value that goes between `"value":"` and `"` in the
+/// hover response; the hot-path can copy it verbatim and skip the per-call
+/// markdown composer.
+///
+/// Skipped silently when:
+///   - the symbol has overloads (multiple defs sharing the name)
+///   - file_id has no path
+///   - the symbol kind is not def/classdef
+fn preRenderHotHover(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !void {
+    const stmt = db.prepare(
+        "SELECT name, COUNT(*) AS c FROM refs GROUP BY name ORDER BY c DESC LIMIT " ++ std.fmt.comptimePrint("{d}", .{PRE_RENDER_TOP_N}),
+    ) catch return;
+    defer stmt.finalize();
+
+    const arena = hot.arena.allocator();
+    var rendered: u32 = 0;
+
+    while (stmt.step() catch false) {
+        const name = stmt.column_text(0);
+        if (name.len == 0) continue;
+        const syms = hot.lookupName(name);
+        if (syms.len == 0) continue;
+
+        // Pick the single def/classdef. If multiple match, skip (ambiguous).
+        var picked: ?hot_index_mod.HotSymbol = null;
+        var def_count: u32 = 0;
+        for (syms) |s| {
+            if (s.kind != .def and s.kind != .classdef) continue;
+            picked = s;
+            def_count += 1;
+        }
+        if (def_count != 1) continue;
+        const hs = picked.?;
+
+        const sym_path = hot.pathFor(hs.file_id) orelse continue;
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        defer aw.deinit();
+        const w = &aw.writer;
+        const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
+
+        w.writeAll("*(") catch continue;
+        writeEscapedJsonContent(w, kind_label) catch continue;
+        w.writeAll(")* `") catch continue;
+        writeEscapedJsonContent(w, name) catch continue;
+        if (hs.params_sig) |sig| {
+            if (sig.len > 0) {
+                w.writeAll("(") catch continue;
+                writeEscapedJsonContent(w, sig) catch continue;
+                w.writeAll(")") catch continue;
+            }
+        }
+        w.writeByte('`') catch continue;
+        if (hs.return_type) |rt| {
+            if (rt.len > 0) {
+                w.writeAll(" \\u2192 ") catch continue;
+                writeEscapedJsonContent(w, rt) catch continue;
+                if (self.isNilableMethod(name)) w.writeAll(" | nil") catch continue;
+            }
+        }
+        w.writeAll("\\n\\n\\u2192 ") catch continue;
+        const rel = preRenderRelPath(sym_path, self.root_path);
+        writeEscapedJsonContent(w, rel) catch continue;
+        w.print(":{d}", .{@as(i64, @intCast(hs.line))}) catch continue;
+        if (hs.doc) |d| {
+            if (d.len > 0) {
+                w.writeAll("\\n\\n") catch continue;
+                writeEscapedJsonContent(w, d) catch continue;
+            }
+        }
+
+        // Copy body + name into the HotIndex arena so they survive until next
+        // rebuild. The Allocating writer's slice is owned by self.alloc; we
+        // dupe into the arena and let aw.deinit free the temp.
+        const body_owned = arena.dupe(u8, aw.written()) catch continue;
+        const name_owned = arena.dupe(u8, name) catch continue;
+        hot.putPreRendered(name_owned, body_owned) catch continue;
+        rendered += 1;
+    }
+
+    var lbuf: [128]u8 = undefined;
+    const lmsg = std.fmt.bufPrint(&lbuf, "refract: hover pre-rendered {d} top symbols", .{rendered}) catch "refract: hover pre-rendered";
+    self.sendLogMessage(3, lmsg);
+}
+
+fn preRenderRelPath(sym_path: []const u8, root_path: ?[]u8) []const u8 {
+    const rp = root_path orelse return sym_path;
+    if (!std.mem.startsWith(u8, sym_path, rp)) return sym_path;
+    const after = sym_path[rp.len..];
+    return if (after.len > 0 and after[0] == '/') after[1..] else after;
 }
 
 fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
@@ -2017,6 +2123,9 @@ pub const Server = struct {
 
     pub fn sendLogMessage(self: *Server, level: u8, msg: []const u8) void {
         if (level > self.log_level.load(.monotonic)) return;
+        const redacted_owned = redact.redactAlloc(std.heap.c_allocator, msg) catch null;
+        defer if (redacted_owned) |r| std.heap.c_allocator.free(r);
+        const safe_msg: []const u8 = if (redacted_owned) |r| r else msg;
         if (self.log_path) |lp| blk: {
             self.log_mutex.lockUncancelable(std.Options.debug_io);
             defer self.log_mutex.unlock(std.Options.debug_io);
@@ -2040,7 +2149,7 @@ pub const Server = struct {
             }) catch "";
             const append_off = f.length(std.Options.debug_io) catch 0;
             f.writePositionalAll(std.Options.debug_io, ts_str, append_off) catch {};
-            f.writePositionalAll(std.Options.debug_io, msg, append_off + ts_str.len) catch |e| {
+            f.writePositionalAll(std.Options.debug_io, safe_msg, append_off + ts_str.len) catch |e| {
                 self.log_file.?.close(std.Options.debug_io);
                 self.log_file = null;
                 var fbuf: [128]u8 = undefined;
@@ -2048,14 +2157,14 @@ pub const Server = struct {
                 std.debug.print("{s}", .{fmsg});
                 break :blk;
             };
-            f.writePositionalAll(std.Options.debug_io, "\n", append_off + ts_str.len + msg.len) catch {};
+            f.writePositionalAll(std.Options.debug_io, "\n", append_off + ts_str.len + safe_msg.len) catch {};
         }
         var aw = std.Io.Writer.Allocating.init(std.heap.c_allocator);
         const w = &aw.writer;
         w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\",\"params\":{\"type\":") catch return;
         w.print("{d}", .{level}) catch return;
         w.writeAll(",\"message\":") catch return;
-        writeEscapedJson(w, msg) catch return;
+        writeEscapedJson(w, safe_msg) catch return;
         w.writeAll("}}") catch return;
         const json = aw.toOwnedSlice() catch return;
         defer std.heap.c_allocator.free(json);
@@ -2071,6 +2180,9 @@ pub const Server = struct {
     }
 
     pub fn sendLspWindowMessage(self: *Server, method: []const u8, level: u8, msg: []const u8) void {
+        const redacted_owned = redact.redactAlloc(std.heap.c_allocator, msg) catch null;
+        defer if (redacted_owned) |r| std.heap.c_allocator.free(r);
+        const safe_msg: []const u8 = if (redacted_owned) |r| r else msg;
         var aw = std.Io.Writer.Allocating.init(std.heap.c_allocator);
         const w = &aw.writer;
         w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"") catch return;
@@ -2078,7 +2190,7 @@ pub const Server = struct {
         w.writeAll("\",\"params\":{\"type\":") catch return;
         w.print("{d}", .{level}) catch return;
         w.writeAll(",\"message\":") catch return;
-        writeEscapedJson(w, msg) catch return;
+        writeEscapedJson(w, safe_msg) catch return;
         w.writeAll("}}") catch return;
         const json = aw.toOwnedSlice() catch return;
         defer std.heap.c_allocator.free(json);
@@ -2372,16 +2484,25 @@ pub const Server = struct {
             self.recorder.?.spawnWorker();
         }
         if (self.plugin_host == null) {
-            self.plugin_host = plugin_host.Host.init(self.alloc, build_meta.version);
-            if (self.root_uri) |ruri| {
-                if (uriToPath(self.alloc, ruri) catch null) |rp| {
-                    defer self.alloc.free(rp);
-                    self.plugin_host.?.discoverAndSpawn(rp) catch |err| {
-                        var pbuf: [256]u8 = undefined;
-                        const pmsg = std.fmt.bufPrint(&pbuf, "refract: plugin host discovery failed: {s}", .{@errorName(err)}) catch "refract: plugin host discovery failed";
-                        self.sendLogMessage(2, pmsg);
-                    };
+            const plugins_enabled = blk: {
+                const env = std.c.getenv("RFC_ENABLE_PLUGINS") orelse break :blk false;
+                const v = std.mem.span(env);
+                break :blk v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
+            };
+            if (plugins_enabled) {
+                self.plugin_host = plugin_host.Host.init(self.alloc, build_meta.version);
+                if (self.root_uri) |ruri| {
+                    if (uriToPath(self.alloc, ruri) catch null) |rp| {
+                        defer self.alloc.free(rp);
+                        self.plugin_host.?.discoverAndSpawn(rp) catch |err| {
+                            var pbuf: [256]u8 = undefined;
+                            const pmsg = std.fmt.bufPrint(&pbuf, "refract: plugin host discovery failed: {s}", .{@errorName(err)}) catch "refract: plugin host discovery failed";
+                            self.sendLogMessage(2, pmsg);
+                        };
+                    }
                 }
+            } else {
+                self.sendLogMessage(3, "refract: plugins disabled in 0.1.0 (set RFC_ENABLE_PLUGINS=1 to opt in; OS-level sandbox enforcement lands in 0.2.0)");
             }
         }
 

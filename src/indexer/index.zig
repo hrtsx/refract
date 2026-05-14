@@ -2493,34 +2493,21 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const sym_block: *const prism.SymbolNode = @ptrCast(@alignCast(cn.block.?));
                 if (sym_block.unescaped.source) |sym_src| {
                     const method_name_sym = sym_src[0..sym_block.unescaped.length];
-                    if (cn.receiver) |recv| {
-                        if (recv.*.type == prism.NODE_LOCAL_VAR_READ) {
-                            const rv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv));
-                            const rv_name = resolveConstant(ctx.parser, rv.name);
-                            if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv_stmt| {
-                                defer lv_stmt.finalize();
-                                lv_stmt.bind_int(1, ctx.file_id);
-                                lv_stmt.bind_text(2, rv_name);
-                                if (lv_stmt.step() catch false) {
-                                    const t = lv_stmt.column_text(0);
-                                    if (t.len > 0) {
-                                        const elem = stripArrayBrackets(t);
-                                        if (elem) |e| {
-                                            if (lookupMethodReturn(ctx.db, e, method_name_sym)) |_| {
-                                                insertRef(ctx.db, ctx.file_id, method_name_sym, 0, 0, null, "call") catch {
-                                                    ctx.error_count += 1;
-                                                };
-                                            }
-                                        }
-                                    }
-                                }
-                            } else |_| {}
-                        } else if (inferLiteralType(recv)) |lit_type| {
-                            if (lookupMethodReturn(ctx.db, lit_type, method_name_sym)) |_| {
-                                insertRef(ctx.db, ctx.file_id, method_name_sym, 0, 0, null, "call") catch {
-                                    ctx.error_count += 1;
-                                };
-                            }
+                    insertSymbolToProcRef(ctx, cn.receiver, method_name_sym);
+                }
+            }
+            // method-reference proc: &method(:foo) at call site. Resolves
+            // `foo` against the receiver type the same way `&:foo` does.
+            if (cn.block != null and cn.block.?.*.type == prism.NODE_CALL) {
+                const block_call: *const prism.CallNode = @ptrCast(@alignCast(cn.block.?));
+                const block_method_name = resolveConstant(ctx.parser, block_call.name);
+                if (std.mem.eql(u8, block_method_name, "method") and block_call.arguments != null) {
+                    const inner_args = block_call.arguments[0].arguments;
+                    if (inner_args.size == 1 and inner_args.nodes[0].*.type == prism.NODE_SYMBOL) {
+                        const sym_arg: *const prism.SymbolNode = @ptrCast(@alignCast(inner_args.nodes[0]));
+                        if (sym_arg.unescaped.source) |sym_src2| {
+                            const method_name_via = sym_src2[0..sym_arg.unescaped.length];
+                            insertSymbolToProcRef(ctx, cn.receiver, method_name_via);
                         }
                     }
                 }
@@ -3783,6 +3770,41 @@ fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32,
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
     if (kind) |k| stmt.bind_text(6, k) else stmt.bind_null(6);
     _ = try stmt.step();
+}
+
+/// Shared body for `&:symbol` and `&method(:symbol)` at call sites: resolve
+/// the method against the receiver's inferred type (local-var or literal
+/// receiver), and insert a `refs.kind=call` row when the method exists on
+/// that type. No-op when receiver is null or untyped.
+fn insertSymbolToProcRef(ctx: *VisitCtx, receiver: ?*const prism.Node, method_name: []const u8) void {
+    const recv = receiver orelse return;
+    if (recv.*.type == prism.NODE_LOCAL_VAR_READ) {
+        const rv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(recv));
+        const rv_name = resolveConstant(ctx.parser, rv.name);
+        if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv_stmt| {
+            defer lv_stmt.finalize();
+            lv_stmt.bind_int(1, ctx.file_id);
+            lv_stmt.bind_text(2, rv_name);
+            if (lv_stmt.step() catch false) {
+                const t = lv_stmt.column_text(0);
+                if (t.len > 0) {
+                    if (stripArrayBrackets(t)) |elem| {
+                        if (lookupMethodReturn(ctx.db, elem, method_name)) |_| {
+                            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call") catch {
+                                ctx.error_count += 1;
+                            };
+                        }
+                    }
+                }
+            }
+        } else |_| {}
+    } else if (inferLiteralType(recv)) |lit_type| {
+        if (lookupMethodReturn(ctx.db, lit_type, method_name)) |_| {
+            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call") catch {
+                ctx.error_count += 1;
+            };
+        }
+    }
 }
 
 // Variant for ref insertions where call-site context is known (positional arg count and,

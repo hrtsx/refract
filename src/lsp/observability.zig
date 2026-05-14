@@ -1,6 +1,7 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
 const otlp_exporter = @import("otlp_exporter.zig");
+const redact = @import("redact.zig");
 
 const FLUSH_INTERVAL_NS: u64 = 5 * std.time.ns_per_s;
 const MAX_SAMPLES_PER_METHOD: usize = 4096;
@@ -72,7 +73,10 @@ pub const Recorder = struct {
         duration_ns: u64,
     ) void {
         const ts = nowUs();
-        const args_capped = if (args_json.len > MAX_AUDIT_ARGS_BYTES) args_json[0..MAX_AUDIT_ARGS_BYTES] else args_json;
+        const redacted = redact.redactAlloc(self.alloc, args_json) catch null;
+        defer if (redacted) |r| self.alloc.free(r);
+        const src = if (redacted) |r| r else args_json;
+        const args_capped = if (src.len > MAX_AUDIT_ARGS_BYTES) src[0..MAX_AUDIT_ARGS_BYTES] else src;
         const us: i64 = @intCast(duration_ns / std.time.ns_per_us);
         self.db_mu.lockUncancelable(self.io);
         defer self.db_mu.unlock(self.io);

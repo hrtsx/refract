@@ -82,13 +82,23 @@ jobs:
         run: |
           python3 head/scripts/bench/compare.py head_results base_results > delta.txt
           cat delta.txt
-          # Fail PR when any session-mode op p95 regresses > 15%.
+          # Gates:
+          # - any session-mode op p95 regresses > 15% → PR red
+          # - any micro/hover/p50 or micro/def/p50 regresses > 10% → PR red
+          status=0
           if grep -E "REGRESSION p95 [0-9]+\.[0-9]+%$" delta.txt | awk -F' ' '{ if ($3+0 > 15) exit 1 }'; then
-            echo "passed"
+            :
           else
-            echo "regression > 15% detected"
-            exit 1
+            echo "session p95 regression > 15% detected"
+            status=1
           fi
+          if grep -E "MICRO (hover|def)/p50 REGRESSION [0-9]+\.[0-9]+%$" delta.txt | awk -F' ' '{ if ($4+0 > 10) exit 1 }'; then
+            :
+          else
+            echo "micro hover/def p50 regression > 10% detected"
+            status=1
+          fi
+          exit $status
 
       - name: Upload benchmark results
         if: always()

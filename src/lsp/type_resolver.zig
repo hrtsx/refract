@@ -1,5 +1,6 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
+const type_oracle_hot = @import("type_oracle_hot.zig");
 
 pub const Source = enum {
     sorbet,
@@ -42,6 +43,14 @@ pub fn resolve(
 ) ?TypeResult {
     if (selectSorbet(alloc, db, fqn, method_name) catch null) |r| return r;
     if (selectSteep(alloc, db, fqn, method_name) catch null) |r| return r;
+    if (method_name) |mn| {
+        if (param_pos == -1) {
+            if (type_oracle_hot.lookup(fqn, mn)) |t| {
+                const owned = alloc.dupe(u8, t) catch null;
+                if (owned) |o| return TypeResult{ .type_str = o, .source = .type_oracle, .confidence = 90 };
+            }
+        }
+    }
     if (selectOracle(alloc, db, fqn, method_name, param_pos) catch null) |r| return r;
     if (method_name) |mn| {
         if (selectParam(alloc, db, fqn, mn, param_pos) catch null) |r| return r;
@@ -138,20 +147,42 @@ fn selectLiteral(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8) !?Typ
 
 /// Reduce a Sorbet/Steep `type_str` to a bare class name suitable for
 /// looking up in the symbols table. Strips `Class<X>` wrappers, `T.nilable(X)`,
-/// and generic parameters. Returns owned bytes the caller frees.
+/// `T::Array[X]` / `T::Hash[K, V]` / `T::Set[X]` shapes, and generic parameters.
+/// Iterates to fixpoint with a depth cap of 4 to defang adversarial inputs.
+/// Returns owned bytes the caller frees.
 pub fn stripWrapper(alloc: std.mem.Allocator, type_str: []const u8) ![]u8 {
-    const trimmed = std.mem.trim(u8, type_str, " \t");
-    if (std.mem.startsWith(u8, trimmed, "Class<") and std.mem.endsWith(u8, trimmed, ">")) {
-        return try alloc.dupe(u8, trimmed["Class<".len .. trimmed.len - 1]);
+    var current = std.mem.trim(u8, type_str, " \t");
+    var depth: u8 = 0;
+    while (depth < 4) : (depth += 1) {
+        const next = stripOneLevel(current) orelse break;
+        if (next.ptr == current.ptr and next.len == current.len) break;
+        current = std.mem.trim(u8, next, " \t");
     }
-    if (std.mem.startsWith(u8, trimmed, "T.nilable(") and std.mem.endsWith(u8, trimmed, ")")) {
-        return try alloc.dupe(u8, trimmed["T.nilable(".len .. trimmed.len - 1]);
+    return try alloc.dupe(u8, current);
+}
+
+fn stripOneLevel(t: []const u8) ?[]const u8 {
+    if (t.len == 0) return null;
+    if (std.mem.startsWith(u8, t, "Class<") and std.mem.endsWith(u8, t, ">")) {
+        return t["Class<".len .. t.len - 1];
     }
-    const lbracket = std.mem.indexOfAny(u8, trimmed, "<[");
+    if (std.mem.startsWith(u8, t, "T.nilable(") and std.mem.endsWith(u8, t, ")")) {
+        return t["T.nilable(".len .. t.len - 1];
+    }
+    if (std.mem.startsWith(u8, t, "T.must(") and std.mem.endsWith(u8, t, ")")) {
+        return t["T.must(".len .. t.len - 1];
+    }
+    if (std.mem.startsWith(u8, t, "T::")) {
+        const after_t = t[3..];
+        const lb = std.mem.indexOfAny(u8, after_t, "<[") orelse return after_t;
+        if (lb == 0) return null;
+        return after_t[0..lb];
+    }
+    const lbracket = std.mem.indexOfAny(u8, t, "<[");
     if (lbracket) |idx| if (idx > 0) {
-        return try alloc.dupe(u8, trimmed[0..idx]);
+        return t[0..idx];
     };
-    return try alloc.dupe(u8, trimmed);
+    return null;
 }
 
 /// Resolve a `Class#method` query through the chain. Convenience wrapper
@@ -222,6 +253,58 @@ test "stripWrapper unwraps Class<X>, T.nilable(X), generics" {
         const s = try stripWrapper(alloc, "  String  ");
         defer alloc.free(s);
         try std.testing.expectEqualStrings("String", s);
+    }
+}
+
+test "stripWrapper unwraps T::Array[X] / T::Hash[K, V] / T::Set[X]" {
+    const alloc = std.testing.allocator;
+    {
+        const s = try stripWrapper(alloc, "T::Array[User]");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("Array", s);
+    }
+    {
+        const s = try stripWrapper(alloc, "T::Hash[Symbol, String]");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("Hash", s);
+    }
+    {
+        const s = try stripWrapper(alloc, "T::Set[Integer]");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("Set", s);
+    }
+}
+
+test "stripWrapper iterates nested wrappers to fixpoint" {
+    const alloc = std.testing.allocator;
+    {
+        const s = try stripWrapper(alloc, "T.nilable(T::Array[T.nilable(String)])");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("Array", s);
+    }
+    {
+        const s = try stripWrapper(alloc, "Class<T.nilable(User)>");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("User", s);
+    }
+    {
+        const s = try stripWrapper(alloc, "T.must(T.nilable(Order))");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("Order", s);
+    }
+}
+
+test "stripWrapper passes through bare names and unknown wrappers safely" {
+    const alloc = std.testing.allocator;
+    {
+        const s = try stripWrapper(alloc, "User");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("User", s);
+    }
+    {
+        const s = try stripWrapper(alloc, "");
+        defer alloc.free(s);
+        try std.testing.expectEqualStrings("", s);
     }
 }
 
