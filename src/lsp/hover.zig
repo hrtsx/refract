@@ -663,6 +663,24 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
             if (best) |hs| {
                 if (hs.kind == .def or hs.kind == .classdef) {
                     if (hot.pathFor(hs.file_id)) |sym_path| {
+                        // Pre-rendered fast-fast path (W1.1): top-N most-referenced
+                        // symbols have their JSON-escaped markdown body cached at
+                        // warmup. When `hs.name == name` (no namespace tail mismatch),
+                        // dump the body verbatim and skip the inline composer.
+                        if (std.mem.eql(u8, hs.name, name)) {
+                            if (hot.lookupPreRendered(name)) |body| {
+                                var aw2 = std.Io.Writer.Allocating.init(self.alloc);
+                                const w2 = &aw2.writer;
+                                try w2.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+                                try w2.writeAll(body);
+                                try w2.writeAll("\"}");
+                                try w2.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
+                                const raw_resp = try aw2.toOwnedSlice();
+                                hot_lock_held = false;
+                                self.hot_mu.unlock(std.Options.debug_io);
+                                return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
+                            }
+                        }
                         const kind_label: []const u8 = if (hs.kind == .classdef) "def self" else "def";
                         var aw = std.Io.Writer.Allocating.init(self.alloc);
                         const w = &aw.writer;

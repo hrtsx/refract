@@ -13,6 +13,10 @@ const crash = @import("lsp/crash.zig");
 const doctor = @import("cli/doctor.zig");
 const sorbet_harness = @import("tests/sorbet_harness.zig");
 
+comptime {
+    _ = @import("tests/type_resolver_test.zig");
+}
+
 pub const Panic = crash.Panic;
 
 var stdin_buf: [65536]u8 = undefined;

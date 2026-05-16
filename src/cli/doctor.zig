@@ -4,6 +4,8 @@ const build_meta = @import("build_meta");
 const ruby_env = @import("../indexer/ruby_env.zig");
 const coverage_reader = @import("../indexer/coverage_reader.zig");
 const TimeoutCtx = @import("../lsp/server.zig").TimeoutCtx;
+const redact = @import("../lsp/redact.zig");
+const crash = @import("../lsp/crash.zig");
 
 pub const Status = enum {
     ok,
@@ -52,6 +54,11 @@ pub fn runDoctor(
     try checkDbLock(alloc, db_path, &checks);
     try checkSchemaIntegrity(alloc, db_path, &checks);
     try checkGemCoverage(alloc, db_path, &checks);
+    try checkStaleWalLock(io, db_path, alloc, &checks);
+    try checkBundlePresence(alloc, cwd, &checks);
+    try checkTmpdirWritable(alloc, &checks);
+    try checkPriorCrashLog(io, alloc, &checks);
+    try checkPluginsGate(alloc, &checks);
 
     if (opts.repair) {
         try performRepairs(io, db_path, alloc);
@@ -375,10 +382,12 @@ fn checkOtlpEndpoint(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !v
         return;
     }
 
+    const redacted = redact.redactAlloc(alloc, endpoint_str) catch try alloc.dupe(u8, "<endpoint>");
+    defer alloc.free(redacted);
     try checks.append(alloc, .{
         .name = try alloc.dupe(u8, "OTLP endpoint"),
         .status = .ok,
-        .detail = try std.fmt.allocPrint(alloc, "configured: {s}", .{endpoint_str}),
+        .detail = try std.fmt.allocPrint(alloc, "configured: {s}", .{redacted}),
     });
 }
 
@@ -529,6 +538,170 @@ fn checkGemCoverage(alloc: std.mem.Allocator, db_path: []const u8, checks: *std.
             .name = try alloc.dupe(u8, "Gem coverage"),
             .status = .ok,
             .detail = try std.fmt.allocPrint(alloc, "{d:.1}% average", .{avg_coverage}),
+        });
+    }
+}
+
+fn checkStaleWalLock(io: std.Io, db_path: []const u8, alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+    const wal_path = try std.fmt.allocPrint(alloc, "{s}-wal", .{db_path});
+    defer alloc.free(wal_path);
+    const shm_path = try std.fmt.allocPrint(alloc, "{s}-shm", .{db_path});
+    defer alloc.free(shm_path);
+
+    const wal_stat = std.Io.Dir.cwd().statFile(io, wal_path, .{}) catch {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "WAL file"),
+            .status = .ok,
+            .detail = try alloc.dupe(u8, "absent"),
+        });
+        return;
+    };
+
+    const wal_age_ns = std.Io.Timestamp.now(io, .real).toNanoseconds() - wal_stat.mtime.toNanoseconds();
+    const wal_age_s: i64 = @intCast(@divTrunc(wal_age_ns, std.time.ns_per_s));
+    const wal_size_kb: i64 = @intCast(@divTrunc(wal_stat.size, 1024));
+
+    if (wal_age_s > 24 * 60 * 60) {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "WAL file"),
+            .status = .warn,
+            .detail = try std.fmt.allocPrint(alloc, "{d} KB, {d}h old (no active session)", .{ wal_size_kb, @divTrunc(wal_age_s, 3600) }),
+            .fix = try alloc.dupe(u8, "stale -wal/-shm from a prior crash; `refract --repair` checkpoints"),
+        });
+    } else {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "WAL file"),
+            .status = .ok,
+            .detail = try std.fmt.allocPrint(alloc, "{d} KB, active", .{wal_size_kb}),
+        });
+    }
+}
+
+fn checkBundlePresence(alloc: std.mem.Allocator, cwd: []const u8, checks: *std.ArrayList(Check)) !void {
+    if (cwd.len == 0) return;
+    const lockfile = try std.fs.path.join(alloc, &.{ cwd, "Gemfile.lock" });
+    defer alloc.free(lockfile);
+    const lockfile_z = try alloc.dupeZ(u8, lockfile);
+    defer alloc.free(lockfile_z);
+    if (std.c.access(lockfile_z, std.c.F_OK) != 0) {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Bundler"),
+            .status = .ok,
+            .detail = try alloc.dupe(u8, "Gemfile.lock not present (skipped)"),
+        });
+        return;
+    }
+
+    var child = std.process.spawn(std.Options.debug_io, .{
+        .argv = &.{ "bundle", "--version" },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Bundler"),
+            .status = .warn,
+            .detail = try alloc.dupe(u8, "Gemfile.lock present but `bundle` not on PATH"),
+            .fix = try alloc.dupe(u8, "gem install bundler (RuboCop integration degraded without it)"),
+        });
+        return;
+    };
+    var ctx = TimeoutCtx{
+        .child = &child,
+        .done = std.atomic.Value(bool).init(false),
+        .timeout_ns = 3 * std.time.ns_per_s,
+    };
+    const kill_thread = std.Thread.spawn(.{}, TimeoutCtx.run, .{&ctx}) catch null;
+    const wait_result = child.wait(std.Options.debug_io) catch null;
+    ctx.done.store(true, .release);
+    if (kill_thread) |t| t.join();
+    if (wait_result != null and wait_result.? == .exited and wait_result.?.exited == 0) {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Bundler"),
+            .status = .ok,
+            .detail = try alloc.dupe(u8, "found on PATH"),
+        });
+    } else {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Bundler"),
+            .status = .warn,
+            .detail = try alloc.dupe(u8, "Gemfile.lock present but `bundle` not usable"),
+            .fix = try alloc.dupe(u8, "gem install bundler (RuboCop integration degraded without it)"),
+        });
+    }
+}
+
+fn checkTmpdirWritable(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+    const tmp_dir = if (std.c.getenv("TMPDIR")) |v| std.mem.span(v) else "/tmp";
+    const probe = try std.fmt.allocPrint(alloc, "{s}/refract-doctor-{d}", .{ tmp_dir, std.c.getpid() });
+    defer alloc.free(probe);
+    const probe_z = try alloc.dupeZ(u8, probe);
+    defer alloc.free(probe_z);
+    const fd = std.c.open(probe_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+    if (fd < 0) {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "TMPDIR"),
+            .status = .fail,
+            .detail = try std.fmt.allocPrint(alloc, "{s} not writable", .{tmp_dir}),
+            .fix = try alloc.dupe(u8, "set TMPDIR to a writable directory"),
+        });
+        return;
+    }
+    _ = std.c.close(fd);
+    _ = std.c.unlink(probe_z);
+    try checks.append(alloc, .{
+        .name = try alloc.dupe(u8, "TMPDIR"),
+        .status = .ok,
+        .detail = try std.fmt.allocPrint(alloc, "{s} writable", .{tmp_dir}),
+    });
+}
+
+fn checkPriorCrashLog(io: std.Io, alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+    const mtime_ns = crash.lastCrashMtime(io, alloc) orelse {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Prior crash log"),
+            .status = .ok,
+            .detail = try alloc.dupe(u8, "none"),
+        });
+        return;
+    };
+    const now_ns: i96 = @intCast(std.Io.Timestamp.now(io, .real).toNanoseconds());
+    const age_s: i64 = @intCast(@divTrunc(now_ns - mtime_ns, std.time.ns_per_s));
+    const state_dir = crash.stateDir(alloc) orelse {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Prior crash log"),
+            .status = .warn,
+            .detail = try std.fmt.allocPrint(alloc, "present ({d}s ago)", .{age_s}),
+            .fix = try alloc.dupe(u8, "review with `refract --last-crash`"),
+        });
+        return;
+    };
+    defer alloc.free(state_dir);
+    try checks.append(alloc, .{
+        .name = try alloc.dupe(u8, "Prior crash log"),
+        .status = .warn,
+        .detail = try std.fmt.allocPrint(alloc, "{s} ({d}s ago)", .{ state_dir, age_s }),
+        .fix = try alloc.dupe(u8, "review with `refract --last-crash`"),
+    });
+}
+
+fn checkPluginsGate(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+    const env = std.c.getenv("RFC_ENABLE_PLUGINS");
+    const enabled = if (env) |e| blk: {
+        const v = std.mem.span(e);
+        break :blk v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
+    } else false;
+    if (enabled) {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Plugins"),
+            .status = .warn,
+            .detail = try alloc.dupe(u8, "enabled (RFC_ENABLE_PLUGINS=1); no OS sandbox until 0.2"),
+            .fix = try alloc.dupe(u8, "audit your installed plugins; unset RFC_ENABLE_PLUGINS to disable"),
+        });
+    } else {
+        try checks.append(alloc, .{
+            .name = try alloc.dupe(u8, "Plugins"),
+            .status = .ok,
+            .detail = try alloc.dupe(u8, "disabled (set RFC_ENABLE_PLUGINS=1 to opt in; sandbox lands in 0.2)"),
         });
     }
 }

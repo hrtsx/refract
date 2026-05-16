@@ -1,0 +1,51 @@
+name: Fuzz Nightly
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-fuzz-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-fuzz-
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Build fuzz harnesses
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" fuzz-bin
+      - name: Run corpus replay
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" fuzz-corpus
+      - name: Collect any new crashes
+        if: failure()
+        run: |
+          mkdir -p crashes
+          find fuzzing -name 'crash-*' -exec cp {} crashes/ \; || true
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: crashes/
+          if-no-files-found: ignore
+          retention-days: 30

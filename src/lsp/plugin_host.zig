@@ -62,6 +62,7 @@ pub const ManifestValidationError = error{
     EmptyEntry,
     ReservedMethod,
     InvalidNamespace,
+    ElevatedCapabilityForbidden,
 };
 
 /// Validate manifest fields per plugin SDK 1.0 invariants.
@@ -71,6 +72,9 @@ pub const ManifestValidationError = error{
 ///   - capabilities.lsp_requests / lsp_notifications:
 ///     - rejected when in `RESERVED_LSP_METHODS`
 ///     - must start with `refract.<id>.` or `experimental.<id>.` namespace
+///   - sandbox.allow_network / sandbox.allow_fs_write:
+///     - rejected outright in 0.1.0; OS-level sandbox enforcement lands in 0.2.0.
+///       Until then any declared elevated capability is a hard error (fail closed).
 pub fn validateManifest(m: Manifest) ManifestValidationError!void {
     if (m.id.len == 0) return error.EmptyId;
     for (m.id) |b| {
@@ -79,6 +83,9 @@ pub fn validateManifest(m: Manifest) ManifestValidationError!void {
     }
     if (m.version.len == 0) return error.EmptyVersion;
     if (m.entry.len == 0) return error.EmptyEntry;
+
+    if (m.allow_network) return error.ElevatedCapabilityForbidden;
+    if (m.allow_fs_write.len > 0) return error.ElevatedCapabilityForbidden;
 
     for (m.lsp_requests) |method| try validatePluginMethod(m.id, method);
     for (m.lsp_notifications) |method| try validatePluginMethod(m.id, method);
@@ -576,6 +583,26 @@ test "validateManifest rejects bad id chars" {
     var m = try parseManifest(alloc, json);
     defer m.deinit(alloc);
     try std.testing.expectError(error.InvalidIdChars, validateManifest(m));
+}
+
+test "validateManifest refuses allow_network=true (0.1.0 fail-closed until 0.2 sandbox)" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"id":"net","version":"0.1.0","entry":"bin/x","capabilities":{"lsp_requests":["refract.net.fetch"]},"sandbox":{"allow_network":true,"allow_fs_write":[]}}
+    ;
+    var m = try parseManifest(alloc, json);
+    defer m.deinit(alloc);
+    try std.testing.expectError(error.ElevatedCapabilityForbidden, validateManifest(m));
+}
+
+test "validateManifest refuses non-empty allow_fs_write" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"id":"fs","version":"0.1.0","entry":"bin/x","capabilities":{"lsp_requests":["refract.fs.write"]},"sandbox":{"allow_network":false,"allow_fs_write":["/tmp"]}}
+    ;
+    var m = try parseManifest(alloc, json);
+    defer m.deinit(alloc);
+    try std.testing.expectError(error.ElevatedCapabilityForbidden, validateManifest(m));
 }
 
 test "parseManifest defaults apply when timeouts/sandbox missing" {
