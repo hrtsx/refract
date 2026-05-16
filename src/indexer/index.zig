@@ -3299,6 +3299,32 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         leaf_type = leaf_type_buf[0..lt_len];
                     }
                 }
+                // AR singular finishers on a Relation: unwrap `[Type]` → `Type`.
+                // Mirrors how `User.where(…).first` returns one `User`, not a
+                // collection. Limited to the documented AR finder set so we
+                // don't accidentally unwrap `[String].first` (which would be wrong
+                // for `String#first` on a String literal).
+                if (leaf_type == null and std.mem.startsWith(u8, current_type, "[") and std.mem.endsWith(u8, current_type, "]")) {
+                    const is_ar_singular = for ([_][]const u8{
+                        "first", "last",     "take",         "find",
+                        "find!", "find_by",  "find_by!",     "find_or_create_by",
+                        "take!", "find_or_initialize_by",
+                    }) |m| {
+                        if (std.mem.eql(u8, leaf_method, m)) break true;
+                    } else false;
+                    if (is_ar_singular) {
+                        const inner = current_type[1 .. current_type.len - 1];
+                        const il = @min(inner.len, leaf_type_buf.len);
+                        @memcpy(leaf_type_buf[0..il], inner[0..il]);
+                        leaf_type = leaf_type_buf[0..il];
+                    }
+                }
+                // `.pluck(:col)` on a Relation returns a plain Array.
+                if (leaf_type == null and std.mem.eql(u8, leaf_method, "pluck")) {
+                    const lt = "Array";
+                    @memcpy(leaf_type_buf[0..lt.len], lt);
+                    leaf_type = leaf_type_buf[0..lt.len];
+                }
                 if (leaf_type) |lt| {
                     const confidence: u8 = switch (chain_len) {
                         2 => 38,
