@@ -795,6 +795,38 @@ test "check_integrity on valid db" {
     try db.check_integrity();
 }
 
+test "self-heal: corrupted db file is detected, deleted, rebuilt with was_self_healed=true" {
+    // Write a garbage non-SQLite file to a temp path. Db.open's lightweight
+    // schema probe fails → self-heal deletes + recreates a fresh DB.
+    const pid: u64 = @intCast(std.c.getpid());
+    var path_buf: [96]u8 = undefined;
+    const path_str = try std.fmt.bufPrint(&path_buf, "/tmp/refract_crash_recovery_{d}.db", .{pid});
+    path_buf[path_str.len] = 0;
+    const path_z: [:0]const u8 = path_buf[0..path_str.len :0];
+
+    const garbage = "NOT_SQLITE_GARBAGE_PAYLOAD_PADDING_FOR_HEADER_PROBE";
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = path_z, .data = garbage });
+
+    const db = try Db.open(path_z);
+    defer db.close();
+    try std.testing.expect(db.was_self_healed);
+    try db.init_schema();
+    try db.check_integrity();
+
+    std.Io.Dir.cwd().deleteFile(std.Options.debug_io, path_z) catch {};
+    var aux_buf: [128]u8 = undefined;
+    if (std.fmt.bufPrint(&aux_buf, "{s}-wal", .{path_z})) |wal| {
+        aux_buf[wal.len] = 0;
+        const wal_z: [:0]const u8 = aux_buf[0..wal.len :0];
+        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, wal_z) catch {};
+    } else |_| {}
+    if (std.fmt.bufPrint(&aux_buf, "{s}-shm", .{path_z})) |shm| {
+        aux_buf[shm.len] = 0;
+        const shm_z: [:0]const u8 = aux_buf[0..shm.len :0];
+        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, shm_z) catch {};
+    } else |_| {}
+}
+
 test "getSchemaVersion returns current version" {
     const db = try Db.open(":memory:");
     defer db.close();

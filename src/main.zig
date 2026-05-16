@@ -11,6 +11,7 @@ const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
 const crash = @import("lsp/crash.zig");
 const doctor = @import("cli/doctor.zig");
+const sandbox = @import("lsp/sandbox.zig");
 const sorbet_harness = @import("tests/sorbet_harness.zig");
 
 comptime {
@@ -45,6 +46,16 @@ pub fn main(init: std.process.Init) !void {
     var args_arena = std.heap.ArenaAllocator.init(alloc);
     defer args_arena.deinit();
     const args = try init.minimal.args.toSlice(args_arena.allocator());
+
+    // Sandbox trampoline: refract spawns itself with --sandbox-exec to apply
+    // seccomp/Landlock/rlimits to a plugin before execve'ing it. Filter
+    // persists across exec so the plugin runs sandboxed without cooperation.
+    //
+    // Syntax: refract --sandbox-exec [--allow-network] [--allow-fs-write=PATH]... -- ENTRY
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--sandbox-exec")) {
+        try runSandboxExec(alloc, io, args);
+        return; // execve replaces this process; if it returns, we exit error
+    }
 
     var server_log_path: ?[]const u8 = null;
     var server_log_level: u8 = 2;
@@ -294,8 +305,10 @@ pub fn main(init: std.process.Init) !void {
             .no_color = no_color,
         };
         const had_fail = try doctor.runDoctor(io, db_path, cwd, opts, alloc);
-        if (had_fail) return error.DoctorFailed;
-        return;
+        // Explicit non-zero exit on hard fails so `refract --doctor` can be
+        // used as a CI / install-verify gate. (`return error.DoctorFailed`
+        // produced a stack-trace dump on stderr — confusing for shell users.)
+        std.process.exit(if (had_fail) 1 else 0);
     }
 
     if (flag_self_test) {
@@ -1058,6 +1071,62 @@ fn runOneServer(io: std.Io, alloc: std.mem.Allocator, kind: sorbet_harness.Serve
     h.sendShutdown() catch {};
 }
 
+/// Sandbox trampoline. Parses --allow-network / --allow-fs-write=PATH flags,
+/// then everything after `--` is the plugin argv. Applies sandbox to current
+/// process and execve's the plugin. Filter persists across exec.
+fn runSandboxExec(alloc: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !void {
+    var allow_network = false;
+    var allow_fs_write_list = std.ArrayList([]const u8).empty;
+    defer allow_fs_write_list.deinit(alloc);
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const a: []const u8 = args[i];
+        if (std.mem.eql(u8, a, "--")) {
+            i += 1;
+            break;
+        } else if (std.mem.eql(u8, a, "--allow-network")) {
+            allow_network = true;
+        } else if (std.mem.startsWith(u8, a, "--allow-fs-write=")) {
+            try allow_fs_write_list.append(alloc, a["--allow-fs-write=".len..]);
+        } else {
+            try std.Io.File.stderr().writeStreamingAll(io, "refract --sandbox-exec: unknown flag\n");
+            std.process.exit(2);
+        }
+    }
+    if (i >= args.len) {
+        try std.Io.File.stderr().writeStreamingAll(io, "refract --sandbox-exec: missing plugin entry after --\n");
+        std.process.exit(2);
+    }
+
+    const config = sandbox.Config{
+        .allow_network = allow_network,
+        .allow_fs_write = allow_fs_write_list.items,
+    };
+    sandbox.apply(config) catch |e| {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "refract --sandbox-exec: sandbox init failed: {s}\n", .{@errorName(e)}) catch "refract: sandbox init failed\n";
+        try std.Io.File.stderr().writeStreamingAll(io, msg);
+        std.process.exit(3);
+    };
+
+    // Build NULL-terminated argv for execve. Entries are already :0 in our
+    // args (Zig CLI args are sentinel-terminated), so we can reuse the
+    // pointers directly without re-duping.
+    const child_argv = args[i..];
+    const argv_z = try alloc.alloc(?[*:0]const u8, child_argv.len + 1);
+    defer alloc.free(argv_z);
+    for (child_argv, 0..) |arg, idx| argv_z[idx] = arg.ptr;
+    argv_z[child_argv.len] = null;
+
+    const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_z.ptr);
+    const envp_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(&std.c.environ[0]);
+    _ = std.c.execve(child_argv[0].ptr, argv_ptr, envp_ptr);
+    // If we reach here, execve failed.
+    try std.Io.File.stderr().writeStreamingAll(io, "refract --sandbox-exec: execve failed\n");
+    std.process.exit(4);
+}
+
 test {
     _ = @import("lsp/transport.zig");
     _ = @import("db.zig");
@@ -1068,6 +1137,7 @@ test {
     _ = @import("tests/dap_test.zig");
     _ = @import("lsp/observability.zig");
     _ = @import("lsp/plugin_host.zig");
+    _ = @import("lsp/sandbox.zig");
     _ = @import("lsp/sorbet_bridge.zig");
     _ = @import("lsp/type_resolver.zig");
     _ = @import("dap/server.zig");

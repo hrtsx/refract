@@ -1,0 +1,83 @@
+name: Bench Scale Nightly
+
+on:
+  schedule:
+    - cron: "53 4 * * *"
+  workflow_dispatch:
+    inputs:
+      corpus_size:
+        description: "Synthetic file count (default 100000)"
+        required: false
+        default: "100000"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-scale-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-scale-
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3 ruby coreutils time
+      - name: Build refract (ReleaseSafe)
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Doptimize=ReleaseSafe
+      - name: Generate synthetic corpus
+        env:
+          SIZE: ${{ github.event.inputs.corpus_size || '100000' }}
+        run: |
+          ruby scripts/bench/synth_corpus.rb /tmp/corpus-scale "$SIZE"
+          du -sh /tmp/corpus-scale
+          find /tmp/corpus-scale -name '*.rb' | wc -l
+      - name: Index + assert ceilings
+        run: |
+          set -euo pipefail
+          cd /tmp/corpus-scale
+          DB=/tmp/refract_scale.db
+          rm -f "$DB" "$DB-wal" "$DB-shm"
+          # Index. Capture wall time + peak RSS via /usr/bin/time -v.
+          /usr/bin/time -v -o /tmp/index.time \
+            "$GITHUB_WORKSPACE/zig-out/bin/refract" --db-path "$DB" --index-only
+          cat /tmp/index.time
+          # Index time ceiling: 5 minutes (300s).
+          elapsed_sec=$(awk -F': ' '/Elapsed \(wall clock\) time/{
+            split($2,a,":"); if (length(a)==3) print a[1]*3600+a[2]*60+a[3]; else print a[1]*60+a[2];
+          }' /tmp/index.time)
+          if awk -v e="$elapsed_sec" 'BEGIN{exit !(e+0 > 300)}'; then
+            echo "FAIL: index time ${elapsed_sec}s > 300s ceiling"
+            exit 1
+          fi
+          # RSS ceiling: 1 GB (1048576 KB).
+          peak_kb=$(awk -F': ' '/Maximum resident set size/{print $2}' /tmp/index.time)
+          if [ "$peak_kb" -gt 1048576 ]; then
+            echo "FAIL: peak RSS ${peak_kb} KB > 1 GB ceiling"
+            exit 1
+          fi
+          echo "PASS: index ${elapsed_sec}s, peak ${peak_kb} KB"
+          # DB size for visibility
+          du -sh "$DB"
+      - name: Upload scale metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-metrics
+          path: |
+            /tmp/index.time
+          retention-days: 30

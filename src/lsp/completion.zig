@@ -1127,9 +1127,11 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
             try seen.put(try seen_arena.allocator().dupe(u8, sym.name), {});
             try ranked.append(self.alloc, .{ .sym = sym, .tier = 0 });
         }
-        // Mirror SQL substring fallback only for words long enough to be specific
-        // (`buildQueryPattern` itself only adds a leading `%` when len > 3).
-        if (word.len > 3) {
+        // Substring fallback runs only when prefix scan came back thin.
+        // Linear over `sorted_by_name` (~10k entries on a Mastodon-size repo)
+        // is the dominant cost in `micro comp`; skip it when prefix already
+        // yielded enough candidates to fill the 200-item response cap.
+        if (word.len > 3 and ranked.items.len < 50) {
             var sub_buf = std.ArrayList(hot_index_mod.HotSymbol).empty;
             defer sub_buf.deinit(self.alloc);
             try hot.appendSubstringMatches(word, &sub_buf, self.alloc);

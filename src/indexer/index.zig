@@ -3306,8 +3306,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 // for `String#first` on a String literal).
                 if (leaf_type == null and std.mem.startsWith(u8, current_type, "[") and std.mem.endsWith(u8, current_type, "]")) {
                     const is_ar_singular = for ([_][]const u8{
-                        "first", "last",     "take",         "find",
-                        "find!", "find_by",  "find_by!",     "find_or_create_by",
+                        "first", "last",                  "take",     "find",
+                        "find!", "find_by",               "find_by!", "find_or_create_by",
                         "take!", "find_or_initialize_by",
                     }) |m| {
                         if (std.mem.eql(u8, leaf_method, m)) break true;

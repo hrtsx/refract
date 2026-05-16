@@ -120,6 +120,15 @@ pub fn rebuildHotIndex(self: *Server) void {
         self.sendLogMessage(3, pmsg);
     };
 
+    // Pre-render goto-definition JSON for the same top-N hot symbols. Cuts
+    // micro-def p50 down to the hover path's ballpark by skipping the
+    // mutex+SQL+toClientColFromPath round-trip on hot names. (W1.2 / PR1)
+    preRenderHotDef(self, new_idx, ro_db) catch |e| {
+        var pbuf: [256]u8 = undefined;
+        const pmsg = std.fmt.bufPrint(&pbuf, "refract: def pre-render skipped: {s}", .{@errorName(e)}) catch "refract: def pre-render skipped";
+        self.sendLogMessage(3, pmsg);
+    };
+
     self.hot_mu.lockUncancelable(std.Options.debug_io);
     defer self.hot_mu.unlock(std.Options.debug_io);
 
@@ -244,6 +253,84 @@ fn preRenderRelPath(sym_path: []const u8, root_path: ?[]u8) []const u8 {
     if (!std.mem.startsWith(u8, sym_path, rp)) return sym_path;
     const after = sym_path[rp.len..];
     return if (after.len > 0 and after[0] == '/') after[1..] else after;
+}
+
+/// Pre-render goto-definition response bodies for the top-N hot symbols.
+/// Stores two variants per name:
+///   - LocationLink fragment (LSP 3.14+) sans braces and origin: caller wraps
+///     with `{...,"originSelectionRange":{...}}` per request.
+///   - Legacy Location (full object including braces): emit verbatim.
+/// Skipped on multi-def names (rendering would be ambiguous).
+fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !void {
+    const stmt = db.prepare(
+        "SELECT name, COUNT(*) AS c FROM refs GROUP BY name ORDER BY c DESC LIMIT " ++ std.fmt.comptimePrint("{d}", .{PRE_RENDER_TOP_N}),
+    ) catch return;
+    defer stmt.finalize();
+
+    const arena = hot.arena.allocator();
+    var frc: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer {
+        var it = frc.iterator();
+        while (it.next()) |e| self.alloc.free(e.value_ptr.*);
+        frc.deinit(self.alloc);
+    }
+
+    var rendered: u32 = 0;
+    while (stmt.step() catch false) {
+        const name = stmt.column_text(0);
+        if (name.len == 0) continue;
+        const syms = hot.lookupName(name);
+        if (syms.len == 0) continue;
+
+        var picked: ?hot_index_mod.HotSymbol = null;
+        var def_count: u32 = 0;
+        for (syms) |s| {
+            if (s.kind != .def and s.kind != .classdef and s.kind != .class_ and s.kind != .module) continue;
+            picked = s;
+            def_count += 1;
+        }
+        if (def_count != 1) continue;
+        const hs = picked.?;
+        const sym_path = hot.pathFor(hs.file_id) orelse continue;
+
+        const sym_line0 = @as(i64, @intCast(hs.line)) - 1;
+        const start_char = self.toClientColFromPath(&frc, sym_path, sym_line0, @intCast(hs.col));
+        const end_char = start_char + @as(u32, @intCast(name.len));
+
+        // LocationLink fragment (no outer braces, no origin).
+        var aw_link = std.Io.Writer.Allocating.init(self.alloc);
+        defer aw_link.deinit();
+        const w_link = &aw_link.writer;
+        w_link.writeAll("\"targetUri\":\"file://") catch continue;
+        writePathAsUri(w_link, sym_path) catch continue;
+        w_link.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+            sym_line0, start_char, sym_line0, end_char,
+        }) catch continue;
+        w_link.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+            sym_line0, start_char, sym_line0, end_char,
+        }) catch continue;
+        const link_owned = arena.dupe(u8, aw_link.written()) catch continue;
+
+        // Legacy Location (full self-contained object).
+        var aw_loc = std.Io.Writer.Allocating.init(self.alloc);
+        defer aw_loc.deinit();
+        const w_loc = &aw_loc.writer;
+        w_loc.writeAll("{\"uri\":\"file://") catch continue;
+        writePathAsUri(w_loc, sym_path) catch continue;
+        w_loc.print("\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{
+            sym_line0, start_char, sym_line0, end_char,
+        }) catch continue;
+        const loc_owned = arena.dupe(u8, aw_loc.written()) catch continue;
+
+        const name_owned = arena.dupe(u8, name) catch continue;
+        hot.putPreDefLink(name_owned, link_owned) catch continue;
+        hot.putPreDefLoc(name_owned, loc_owned) catch continue;
+        rendered += 1;
+    }
+
+    var lbuf: [128]u8 = undefined;
+    const lmsg = std.fmt.bufPrint(&lbuf, "refract: def pre-rendered {d} top symbols", .{rendered}) catch "refract: def pre-rendered";
+    self.sendLogMessage(3, lmsg);
 }
 
 fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
@@ -1275,6 +1362,25 @@ pub const Server = struct {
         _ = self.cachedStmt("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1") catch {};
         _ = self.cachedStmt("SELECT name FROM refs WHERE name = ? LIMIT 100") catch {};
         _ = self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name LIKE ? ESCAPE '\\' LIMIT 50") catch {};
+        // PR2: pre-prepare def + comp hot-path queries. Matches the SQL paths
+        // in navigation.zig:queryAndEmitDefinitions and
+        // completion.zig:completeGeneral; cap def-exact at 20 (was unbounded).
+        _ = self.cachedStmt(
+            \\SELECT s.name, s.line, s.col, f.path
+            \\FROM symbols s JOIN files f ON s.file_id = f.id
+            \\WHERE s.name = ? LIMIT 20
+        ) catch {};
+        _ = self.cachedStmt(
+            \\SELECT s.name, s.kind,
+            \\  (SELECT GROUP_CONCAT(
+            \\    CASE p.kind WHEN 'keyword' THEN p.name||':' WHEN 'rest' THEN '*'||p.name
+            \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
+            \\    ELSE p.name END, ', ')
+            \\   FROM params p WHERE p.symbol_id=s.id ORDER BY p.position),
+            \\  s.doc
+            \\FROM symbols s WHERE s.name LIKE ? ESCAPE '\'
+            \\ORDER BY CASE WHEN s.name LIKE ? ESCAPE '\' THEN 0 ELSE 1 END, length(s.name), s.name LIMIT 200
+        ) catch {};
     }
 
     fn spawnTypeWorker(self: *Server, kind: sorbet_bridge.ServerKind) void {
@@ -1615,6 +1721,12 @@ pub const Server = struct {
             self.bg_started = true;
             if (self.db.was_self_healed) {
                 self.sendLogMessage(2, "refract: db was rebuilt from a corrupted state on startup; the index is fresh");
+                // Custom notification so editors / dashboards can surface a
+                // user-visible banner. Distinct from window/showMessage to
+                // avoid forcing a modal — clients opt in by listening.
+                self.sendNotification(
+                    \\{"jsonrpc":"2.0","method":"$/refract/recovered","params":{"reason":"db_corruption"}}
+                );
             }
             self.startBgIndexer();
             if (self.rubocop_thread == null) {
@@ -2388,6 +2500,37 @@ pub const Server = struct {
                             if (opts_val.object.get("logLevel")) |v| {
                                 if (v == .integer and v.integer >= 1 and v.integer <= 4)
                                     self.log_level.store(@intCast(v.integer), .monotonic);
+                            }
+
+                            // PR10: warn on unknown initializationOptions keys.
+                            // Lax-default (log WARN, keep going). Future strict
+                            // mode is opt-in via `strictInit:true`; for now we
+                            // just point editor authors at typos.
+                            const known_keys = [_][]const u8{
+                                "disableGemIndex",         "maxFileSizeBytes",
+                                "maxFileSizeMb",           "rubocopTimeoutSecs",
+                                "rubocopDebounceMs",       "bundleExecTimeoutSecs",
+                                "maxWorkers",              "excludeDirs",
+                                "extraExcludeDirs",        "disableRubocop",
+                                "disableTypeChecker",      "typeCheckerSeverity",
+                                "diagnosticsSuppressions", "indexBudget",
+                                "typeCheckerConfidence",   "logLevel",
+                                "strictInit",
+                            };
+                            var it = opts_val.object.iterator();
+                            while (it.next()) |entry| {
+                                var known = false;
+                                for (known_keys) |k| {
+                                    if (std.mem.eql(u8, entry.key_ptr.*, k)) {
+                                        known = true;
+                                        break;
+                                    }
+                                }
+                                if (!known) {
+                                    var wbuf: [256]u8 = undefined;
+                                    const wmsg = std.fmt.bufPrint(&wbuf, "refract: ignoring unknown initializationOptions key '{s}'", .{entry.key_ptr.*}) catch "refract: ignoring unknown initializationOption";
+                                    self.sendLogMessage(2, wmsg);
+                                }
                             }
                         }
                     }
