@@ -260,12 +260,12 @@ extern "c" fn sandbox_init(profile: [*:0]const u8, flags: u64, errorbuf: *?[*:0]
 extern "c" fn sandbox_free_error(errorbuf: [*:0]u8) void;
 
 fn applyMacosSandbox(config: Config) Error!void {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.heap.page_allocator);
-    const w = buf.writer(std.heap.page_allocator);
+    const alloc = std.heap.page_allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
 
     // SBPL profile: read-only by default; deny network; allow specific writes.
-    w.print(
+    buf.appendSlice(alloc,
         \\(version 1)
         \\(deny default)
         \\(allow process-fork)
@@ -275,19 +275,21 @@ fn applyMacosSandbox(config: Config) Error!void {
         \\(allow mach-lookup)
         \\(allow file-read*)
         \\(allow ipc-posix-shm)
-    , .{}) catch return error.SandboxInitFailed;
+    ) catch return error.SandboxInitFailed;
 
     if (config.allow_network) {
-        w.print("\n(allow network*)", .{}) catch return error.SandboxInitFailed;
+        buf.appendSlice(alloc, "\n(allow network*)") catch return error.SandboxInitFailed;
     }
 
     for (config.allow_fs_write) |p| {
-        w.print("\n(allow file-write* (subpath \"{s}\"))", .{p}) catch return error.SandboxInitFailed;
+        const line = std.fmt.allocPrint(alloc, "\n(allow file-write* (subpath \"{s}\"))", .{p}) catch return error.SandboxInitFailed;
+        defer alloc.free(line);
+        buf.appendSlice(alloc, line) catch return error.SandboxInitFailed;
     }
     // Always allow writes under /tmp (plugin tempfiles) and /dev/null.
-    w.print("\n(allow file-write* (subpath \"/tmp\"))", .{}) catch return error.SandboxInitFailed;
-    w.print("\n(allow file-write-data (literal \"/dev/null\"))", .{}) catch return error.SandboxInitFailed;
-    buf.append(std.heap.page_allocator, 0) catch return error.SandboxInitFailed;
+    buf.appendSlice(alloc, "\n(allow file-write* (subpath \"/tmp\"))") catch return error.SandboxInitFailed;
+    buf.appendSlice(alloc, "\n(allow file-write-data (literal \"/dev/null\"))") catch return error.SandboxInitFailed;
+    buf.append(alloc, 0) catch return error.SandboxInitFailed;
 
     var err: ?[*:0]u8 = null;
     const profile_z: [*:0]const u8 = @ptrCast(buf.items.ptr);

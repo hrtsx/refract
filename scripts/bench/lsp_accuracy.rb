@@ -132,6 +132,22 @@ QUERIES = [
   # W2.3: &method(:foo) proc-as-block
   ["method ref &method(:double)",          "accuracy_method_ref.rb", 10, 18, "accuracy_method_ref.rb", 2],
   ["method ref &method(:stringify)",       "accuracy_method_ref.rb", 14, 18, "accuracy_method_ref.rb", 6],
+
+  # PR7: DSL + narrowing coverage (delegate prefix, composed_of, ActiveStorage,
+  # Sorbet T.let / T.cast / T.must, etc.). Probes go-to-def from the call-site
+  # back to the synthetic def the indexer emits for each DSL.
+  ["delegate prefix:true name",            "accuracy_dsl_advanced.rb", 30, 4, "accuracy_dsl_advanced.rb", 9],
+  ["delegate prefix:true email",           "accuracy_dsl_advanced.rb", 31, 4, "accuracy_dsl_advanced.rb", 9],
+  ["delegate prefix::alt phone",           "accuracy_dsl_advanced.rb", 32, 4, "accuracy_dsl_advanced.rb", 10],
+  ["composed_of address getter",           "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
+  ["has_one_attached avatar getter",       "accuracy_dsl_advanced.rb", 34, 4, "accuracy_dsl_advanced.rb", 6],
+  ["has_many_attached photos getter",      "accuracy_dsl_advanced.rb", 35, 4, "accuracy_dsl_advanced.rb", 7],
+  ["T.let narrowing — local s",            "accuracy_dsl_advanced.rb", 23, 4, "accuracy_dsl_advanced.rb", 20],
+  ["splat *args resolves to Array",        "accuracy_splat_kwargs.rb", 22, 14, "accuracy_splat_kwargs.rb", 10],
+  ["double-splat **opts resolves to Hash", "accuracy_splat_kwargs.rb", 27, 14, "accuracy_splat_kwargs.rb", 6],
+  ["composed_of writer accessor",          "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
+  ["delegate without prefix bare name",    "accuracy_main.rb", 45, 9, "accuracy_model.rb", 5],
+  ["attr_reader from composed_of class",   "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
 ]
 
 def basename_of(uri)
@@ -166,7 +182,7 @@ fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_
                     accuracy_block_return.rb accuracy_rails_assoc.rb accuracy_pattern_match.rb accuracy_concern.rb
                     accuracy_block_advanced.rb accuracy_pattern_advanced.rb accuracy_assoc_extended.rb
                     accuracy_enumerator.rb accuracy_splat_kwargs.rb accuracy_struct_data.rb
-                    accuracy_relation_chain.rb accuracy_method_ref.rb]
+                    accuracy_relation_chain.rb accuracy_method_ref.rb accuracy_dsl_advanced.rb]
 opens = {}
 fixture_files.each do |file|
   abs = File.join(root, file)
