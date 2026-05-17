@@ -711,7 +711,8 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
             const line_v = pos_val.object.get("line") orelse break :ref_blk;
             const char_v = pos_val.object.get("character") orelse break :ref_blk;
             if (line_v != .integer or char_v != .integer) break :ref_blk;
-            const synth_json = std.fmt.allocPrint(self.alloc,
+            const synth_json = std.fmt.allocPrint(
+                self.alloc,
                 "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"context\":{{\"includeDeclaration\":true}}}}",
                 .{ uri_val.string, line_v.integer, char_v.integer },
             ) catch break :ref_blk;
@@ -740,6 +741,15 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
                 } else null;
                 const path2 = uriToPath(std.heap.c_allocator, file_uri) catch null;
                 if (path2) |p| spawn: {
+                    // Workspace-root bounds check: refuse client-supplied URIs
+                    // that escape the workspace (e.g. file:///etc/passwd or
+                    // file:///../foo). Without this a malicious LSP client
+                    // could pivot a runTest into arbitrary command execution.
+                    if (!self.pathInBounds(p)) {
+                        std.heap.c_allocator.free(p);
+                        self.sendShowMessage(2, "refract: refused runTest path outside workspace");
+                        break :spawn;
+                    }
                     const rctx = std.heap.c_allocator.create(RunTestCtx) catch {
                         std.heap.c_allocator.free(p);
                         break :spawn;

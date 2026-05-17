@@ -120,6 +120,18 @@ QUERIES = [
   ["data attribute access",                "accuracy_struct_data.rb", 12, 14, "accuracy_struct_data.rb", 9],
   ["frozen struct creation",                "accuracy_struct_data.rb", 21, 10, "accuracy_struct_data.rb", 17],
   ["data pattern matching",                "accuracy_struct_data.rb", 28, 14, "accuracy_struct_data.rb", 29],
+
+  # W2.2: Multi-level AR Relation chain
+  ["chain where -> order -> first",        "accuracy_relation_chain.rb", 21, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> joins -> last",         "accuracy_relation_chain.rb", 25, 4, "accuracy_relation_chain.rb", 2],
+  ["chain includes -> order -> find",      "accuracy_relation_chain.rb", 29, 4, "accuracy_relation_chain.rb", 12],
+  ["chain where -> find_by",               "accuracy_relation_chain.rb", 33, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> pluck",                 "accuracy_relation_chain.rb", 37, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> take",                  "accuracy_relation_chain.rb", 41, 4, "accuracy_relation_chain.rb", 2],
+
+  # W2.3: &method(:foo) proc-as-block
+  ["method ref &method(:double)",          "accuracy_method_ref.rb", 10, 18, "accuracy_method_ref.rb", 2],
+  ["method ref &method(:stringify)",       "accuracy_method_ref.rb", 14, 18, "accuracy_method_ref.rb", 6],
 ]
 
 def basename_of(uri)
@@ -153,7 +165,8 @@ client.initialize!
 fixture_files = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb
                     accuracy_block_return.rb accuracy_rails_assoc.rb accuracy_pattern_match.rb accuracy_concern.rb
                     accuracy_block_advanced.rb accuracy_pattern_advanced.rb accuracy_assoc_extended.rb
-                    accuracy_enumerator.rb accuracy_splat_kwargs.rb accuracy_struct_data.rb]
+                    accuracy_enumerator.rb accuracy_splat_kwargs.rb accuracy_struct_data.rb
+                    accuracy_relation_chain.rb accuracy_method_ref.rb]
 opens = {}
 fixture_files.each do |file|
   abs = File.join(root, file)
@@ -219,3 +232,12 @@ puts JSON.generate({
   stdlib_total: tallies[:stdlib_total],
   detail: rows,
 })
+
+# CI gate: when ACCURACY_BASELINE_HIT is set, exit non-zero if the current
+# hit count regresses below the baseline. Allows the harness to be run as a
+# scored regression check without requiring a separate compare step.
+baseline = ENV["ACCURACY_BASELINE_HIT"]
+if baseline && tallies[:hit] < baseline.to_i
+  warn "ACCURACY REGRESSION: hit=#{tallies[:hit]} < baseline=#{baseline}"
+  exit 1
+end

@@ -1,6 +1,10 @@
 const std = @import("std");
 const server = @import("server.zig");
 
+const macos_exe = struct {
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+};
+
 /// Refract plugin protocol version. Bumped on breaking changes.
 pub const PROTOCOL_VERSION: []const u8 = "0.1";
 
@@ -260,18 +264,42 @@ pub const Plugin = struct {
             try std.fs.path.join(alloc, &.{ plugin_dir, manifest.entry });
         errdefer alloc.free(entry);
 
-        // Sandbox advisory: v0.1.0 ships without OS-level enforcement. Plugin
-        // manifest `sandbox.allow_network` / `sandbox.allow_fs_write` are
-        // recorded but not enforced. Linux seccomp-bpf + macOS sandbox_init
-        // are tracked for 0.2.0. Emit a one-line stderr notice so operators
-        // know plugins run with the spawning process's full privileges.
-        std.debug.print("refract: plugin '{s}' running unsandboxed (v0.1.0; sandbox enforcement deferred to 0.2.0)\n", .{manifest.id});
+        // Sandbox enforcement (v0.1.0):
+        //   Linux  → seccomp-bpf (network block) + Landlock (fs scope, ≥5.13) + setrlimit
+        //   macOS  → sandbox_init SBPL profile + setrlimit
+        // Applied via the trampoline pattern: refract spawns itself with
+        // --sandbox-exec, which installs the filter then execve's the plugin
+        // entry. seccomp / Landlock / rlimits persist across exec.
+        //
+        // Manifest validation has already refused allow_network=true and
+        // non-empty allow_fs_write for v0.1.0 (fail-closed posture). When
+        // 0.1.1 loosens the manifest gate, the same trampoline flags wire up
+        // through here without any other change.
+        var self_buf: [4096]u8 = undefined;
+        const self_path = selfExePath(&self_buf) orelse return error.SelfExePath;
 
-        const argv = [_][]const u8{entry};
+        var argv_list = std.ArrayList([]const u8).empty;
+        defer argv_list.deinit(alloc);
+        try argv_list.append(alloc, self_path);
+        try argv_list.append(alloc, "--sandbox-exec");
+        if (manifest.allow_network) try argv_list.append(alloc, "--allow-network");
+        var fs_write_args = std.ArrayList([]u8).empty;
+        defer {
+            for (fs_write_args.items) |a| alloc.free(a);
+            fs_write_args.deinit(alloc);
+        }
+        for (manifest.allow_fs_write) |p| {
+            const flag = try std.fmt.allocPrint(alloc, "--allow-fs-write={s}", .{p});
+            try fs_write_args.append(alloc, flag);
+            try argv_list.append(alloc, flag);
+        }
+        try argv_list.append(alloc, "--");
+        try argv_list.append(alloc, entry);
+
         const cwd_z = try alloc.dupeZ(u8, plugin_dir);
         defer alloc.free(cwd_z);
         const child = try std.process.spawn(std.Options.debug_io, .{
-            .argv = &argv,
+            .argv = argv_list.items,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .pipe,
@@ -286,6 +314,21 @@ pub const Plugin = struct {
             .next_id = 1,
             .alloc = alloc,
         };
+    }
+
+    fn selfExePath(buf: []u8) ?[]const u8 {
+        if (@import("builtin").os.tag == .macos) {
+            var len: u32 = @intCast(buf.len);
+            const rv = macos_exe._NSGetExecutablePath(buf.ptr, &len);
+            if (rv == 0) {
+                const slen = std.mem.indexOfScalar(u8, buf[0..@min(buf.len, len)], 0) orelse @as(usize, @intCast(len));
+                return buf[0..slen];
+            }
+            return null;
+        }
+        const n = std.c.readlink("/proc/self/exe", buf.ptr, buf.len);
+        if (n > 0 and n < buf.len) return buf[0..@intCast(n)];
+        return null;
     }
 
     pub fn deinit(self: *Plugin) void {

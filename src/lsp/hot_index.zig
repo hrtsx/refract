@@ -142,6 +142,14 @@ pub const HotIndex = struct {
     /// `name_map` (single def/classdef entry). Lookup-only after build;
     /// freed with the arena.
     pre_rendered_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Pre-rendered LocationLink JSON fragment (LSP 3.14+) for goto-definition.
+    /// Stored *without* enclosing braces; navigation handler wraps with
+    /// `{...,"originSelectionRange":{...}}` per request.
+    pre_def_link_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Pre-rendered legacy Location JSON object for goto-definition on clients
+    /// that did not negotiate definition-link. Fully self-contained — emit
+    /// verbatim.
+    pre_def_loc_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
     symbol_count: u32,
     file_count: u32,
     file_cache: FileCache = .{},
@@ -154,6 +162,8 @@ pub const HotIndex = struct {
         self.classes_by_file.deinit(child);
         self.methods_by_parent.deinit(child);
         self.pre_rendered_by_name.deinit(child);
+        self.pre_def_link_by_name.deinit(child);
+        self.pre_def_loc_by_name.deinit(child);
         self.arena.deinit();
     }
 
@@ -169,6 +179,24 @@ pub const HotIndex = struct {
     /// lifetime.
     pub fn putPreRendered(self: *HotIndex, name: []const u8, body: []const u8) !void {
         try self.pre_rendered_by_name.put(self.arena.child_allocator, name, body);
+    }
+
+    /// LocationLink fragment (no enclosing braces) for goto-definition.
+    pub fn lookupPreDefLink(self: *const HotIndex, name: []const u8) ?[]const u8 {
+        return self.pre_def_link_by_name.get(name);
+    }
+
+    /// Legacy Location object (fully self-contained, includes braces).
+    pub fn lookupPreDefLoc(self: *const HotIndex, name: []const u8) ?[]const u8 {
+        return self.pre_def_loc_by_name.get(name);
+    }
+
+    pub fn putPreDefLink(self: *HotIndex, name: []const u8, body: []const u8) !void {
+        try self.pre_def_link_by_name.put(self.arena.child_allocator, name, body);
+    }
+
+    pub fn putPreDefLoc(self: *HotIndex, name: []const u8, body: []const u8) !void {
+        try self.pre_def_loc_by_name.put(self.arena.child_allocator, name, body);
     }
 
     pub fn lookupName(self: *const HotIndex, name: []const u8) []const HotSymbol {

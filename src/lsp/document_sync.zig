@@ -118,6 +118,13 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         .string => |s| s,
         else => return,
     };
+    // PR4 cap: refuse pathological didChange payloads. Mirrors the 16 MiB
+    // single-message limit in transport.zig and prevents a runaway editor
+    // (or malicious client) from forcing refract to allocate unbounded.
+    if (text.len > 16 * 1024 * 1024) {
+        self.sendLogMessage(2, "refract: didChange text exceeds 16 MiB cap, dropping");
+        return;
+    }
 
     const real_path = uriToPath(self.alloc, uri) catch return;
     defer self.alloc.free(real_path);

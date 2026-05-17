@@ -766,6 +766,31 @@ fn tryEmitFromHotIndex(
     defer self.hot_mu.unlock(std.Options.debug_io);
     const hot = self.hot.load(.acquire) orelse return 0;
 
+    // Fast-fast path: pre-rendered def JSON, populated at warmup for the top-N
+    // most-referenced unambiguous-def names. Skips the SQL+UTF-16-column work.
+    if (self.client_caps_def_link) {
+        if (hot.lookupPreDefLink(name)) |link_body| {
+            if (found_any.*) try w.writeByte(',');
+            found_any.* = true;
+            try w.writeByte('{');
+            try w.writeAll(link_body);
+            if (origin) |orig| {
+                try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                    orig.line, orig.start_char, orig.line, orig.end_char,
+                });
+            }
+            try w.writeByte('}');
+            return 1;
+        }
+    } else {
+        if (hot.lookupPreDefLoc(name)) |loc_body| {
+            if (found_any.*) try w.writeByte(',');
+            found_any.* = true;
+            try w.writeAll(loc_body);
+            return 1;
+        }
+    }
+
     var emitted: u32 = 0;
     var seen: std.AutoHashMap(u64, void) = .init(self.alloc);
     defer seen.deinit();
@@ -803,7 +828,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
     const stmt_exact = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ?
+        \\WHERE s.name = ? LIMIT 20
     );
     defer stmt_exact.reset();
     stmt_exact.bind_text(1, name);

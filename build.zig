@@ -188,6 +188,7 @@ pub fn build(b: *std.Build) void {
         .{ "src/tests/mcp_test.zig", "test:mcp" },
         .{ "src/tests/edge_case_test.zig", "test:edge" },
         .{ "src/tests/navigation_hierarchy_test.zig", "test:nav" },
+        .{ "src/tests/concurrency_stress_test.zig", "test:stress" },
     };
 
     inline for (proto_test_files) |entry| {
