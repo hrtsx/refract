@@ -1151,4 +1151,5 @@ test {
     _ = @import("lsp/otlp_exporter.zig");
     _ = @import("lsp/sorbet_worker.zig");
     _ = @import("lsp/navigation.zig");
+    _ = @import("lsp/limits.zig");
 }

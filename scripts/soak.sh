@@ -63,22 +63,37 @@ CRASH_AFTER=$(ls -1 "$CRASH_DIR"/crash-*.log 2>/dev/null | wc -l)
 NEW_CRASHES=$((CRASH_AFTER - CRASH_BEFORE))
 DRIFT_PCT=$(awk -v b="${BASELINE_RSS:-1}" -v p="$PEAK_RSS" 'BEGIN { if (b<=0) print 0; else printf "%d", (p-b)*100/b }')
 
+# PR9: fd count + WAL size at end.
+FD_END=$(ls /proc/"$REFRACT_PID"/fd 2>/dev/null | wc -l || echo 0)
+WAL_KB=$(stat -c%s "$WORKSPACE"/*.refract.db-wal 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+WAL_KB=${WAL_KB:-0}
+
 echo "soak: ticks = $TICKS"
 echo "soak: peak RSS (kB) = $PEAK_RSS"
 echo "soak: drift vs baseline = ${DRIFT_PCT}%"
 echo "soak: new crashes = $NEW_CRASHES"
+echo "soak: end fd count = $FD_END"
+echo "soak: WAL size (kB) = $WAL_KB"
 
 if [ "$NEW_CRASHES" -gt 0 ]; then
   echo "soak: FAIL — refract crashed during run" >&2
   exit 4
 fi
-if [ "$DRIFT_PCT" -gt 10 ]; then
-  echo "soak: FAIL — RSS drift exceeds 10%" >&2
+if [ "$DRIFT_PCT" -gt 5 ]; then
+  echo "soak: FAIL — RSS drift exceeds 5% (was ${DRIFT_PCT}%)" >&2
   exit 5
 fi
 if grep -q "SQLITE_BUSY\|database is locked" "$LOG_DIR/refract.stderr" 2>/dev/null; then
   echo "soak: FAIL — SQLite contention detected" >&2
   exit 6
+fi
+if [ "$FD_END" -gt 200 ]; then
+  echo "soak: FAIL — end-of-run fd count ${FD_END} > 200 (suspected fd leak)" >&2
+  exit 7
+fi
+if [ "$WAL_KB" -gt 262144 ]; then
+  echo "soak: FAIL — WAL ${WAL_KB} kB > 256 MiB ceiling" >&2
+  exit 8
 fi
 
 echo "soak: PASS"

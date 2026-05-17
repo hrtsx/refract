@@ -64,10 +64,10 @@ jobs:
             echo "FAIL: index time ${elapsed_sec}s > 300s ceiling"
             exit 1
           fi
-          # RSS ceiling: 1 GB (1048576 KB).
+          # PR9: RSS ceiling 600 MiB (was 1 GiB). Hover p95 ≤ 25 ms.
           peak_kb=$(awk -F': ' '/Maximum resident set size/{print $2}' /tmp/index.time)
-          if [ "$peak_kb" -gt 1048576 ]; then
-            echo "FAIL: peak RSS ${peak_kb} KB > 1 GB ceiling"
+          if [ "$peak_kb" -gt 614400 ]; then
+            echo "FAIL: peak RSS ${peak_kb} KB > 600 MiB ceiling"
             exit 1
           fi
           echo "PASS: index ${elapsed_sec}s, peak ${peak_kb} KB"
