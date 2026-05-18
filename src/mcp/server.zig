@@ -177,7 +177,7 @@ pub const Server = struct {
     audit_lock_err_logged: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Real (symlink-resolved) absolute path of the workspace root. Used to
     /// containment-check fpaths read by grep_source / get_symbol_source.
-    workspace_root: ?[]u8 = null,
+    workspace_root: ?[:0]u8 = null,
 
     pub fn init(db: db_mod.Db, alloc: std.mem.Allocator) Server {
         var s = Server{ .db = db, .alloc = alloc };
@@ -3643,9 +3643,9 @@ fn splitQualified(s: []const u8) ?QualifiedSymbol {
     return .{ .class_name = s[0..i], .method_name = s[i + 1 ..] };
 }
 
-fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[]u8 {
+fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[:0]u8 {
     if (file.len == 0) return null;
-    if (file[0] == '/') return alloc.dupe(u8, file) catch null;
+    if (file[0] == '/') return alloc.dupeZ(u8, file) catch null;
     return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, file, alloc) catch null;
 }
 

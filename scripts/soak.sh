@@ -19,23 +19,28 @@ LOG_DIR="${TMPDIR:-/tmp}/refract-soak-$$"
 mkdir -p "$LOG_DIR"
 
 [ -x "$REFRACT" ] || { echo "soak: $REFRACT not executable. Run 'zig build' first." >&2; exit 2; }
+REFRACT=$(readlink -f "$REFRACT")
 [ -d "$WORKSPACE" ] || { echo "soak: workspace not found: $WORKSPACE" >&2; exit 2; }
 
 CRASH_DIR="${HOME}/.local/state/refract"
-CRASH_BEFORE=$(ls -1 "$CRASH_DIR"/crash-*.log 2>/dev/null | wc -l)
+CRASH_BEFORE=$(ls -1 "$CRASH_DIR"/crash-*.log 2>/dev/null | wc -l || true)
 
 echo "soak: log dir = $LOG_DIR"
 echo "soak: duration = ${DURATION}s"
 echo "soak: workspace = $WORKSPACE"
 
 # Spawn refract in --mcp mode so it auto-indexes; soak harness drives via JSON-RPC over stdio.
-(cd "$WORKSPACE" && "$REFRACT" --mcp >"$LOG_DIR/refract.stdout" 2>"$LOG_DIR/refract.stderr") &
+# Keep stdin open via a FIFO so refract doesn't EOF-exit before the soak loop runs.
+mkfifo "$LOG_DIR/stdin"
+# Open FIFO read+write to avoid blocking until subshell reader attaches.
+exec 9<>"$LOG_DIR/stdin"
+(cd "$WORKSPACE" && "$REFRACT" --mcp <"$LOG_DIR/stdin" >"$LOG_DIR/refract.stdout" 2>"$LOG_DIR/refract.stderr") &
 REFRACT_PID=$!
-trap 'kill -TERM "$REFRACT_PID" 2>/dev/null || true; wait "$REFRACT_PID" 2>/dev/null || true' EXIT
+trap 'exec 9>&- 2>/dev/null || true; kill -TERM "$REFRACT_PID" 2>/dev/null || true; sleep 2; kill -KILL "$REFRACT_PID" 2>/dev/null || true; wait "$REFRACT_PID" 2>/dev/null || true' EXIT
 
 # Sample baseline RSS at minute 5; then track drift.
 sleep 300 || true
-BASELINE_RSS=$(ps -o rss= -p "$REFRACT_PID" 2>/dev/null | awk '{print $1+0}')
+BASELINE_RSS=$(ps -o rss= -p "$REFRACT_PID" 2>/dev/null | awk '{print $1+0}' || true)
 echo "soak: baseline RSS (kB) = ${BASELINE_RSS:-0}"
 
 START=$(date +%s)
@@ -48,9 +53,10 @@ while [ "$(date +%s)" -lt "$END" ]; do
     echo "soak: refract pid $REFRACT_PID disappeared at t=$(($(date +%s) - START))s" >&2
     exit 3
   fi
-  CUR_RSS=$(ps -o rss= -p "$REFRACT_PID" 2>/dev/null | awk '{print $1+0}')
+  CUR_RSS=$(ps -o rss= -p "$REFRACT_PID" 2>/dev/null | awk '{print $1+0}' || true)
   [ -n "$CUR_RSS" ] && [ "$CUR_RSS" -gt "$PEAK_RSS" ] && PEAK_RSS=$CUR_RSS
   TICKS=$((TICKS + 1))
+  echo "soak: tick $TICKS @ t=$(($(date +%s) - START))s RSS=${CUR_RSS:-?}kB"
 
   # Mutate a random .rb file (touch only — change mtime to trigger reindex).
   MUT=$(find "$WORKSPACE" -name "*.rb" -type f 2>/dev/null | shuf -n 1 || true)
@@ -59,13 +65,13 @@ while [ "$(date +%s)" -lt "$END" ]; do
   sleep 30
 done
 
-CRASH_AFTER=$(ls -1 "$CRASH_DIR"/crash-*.log 2>/dev/null | wc -l)
+CRASH_AFTER=$(ls -1 "$CRASH_DIR"/crash-*.log 2>/dev/null | wc -l || true)
 NEW_CRASHES=$((CRASH_AFTER - CRASH_BEFORE))
 DRIFT_PCT=$(awk -v b="${BASELINE_RSS:-1}" -v p="$PEAK_RSS" 'BEGIN { if (b<=0) print 0; else printf "%d", (p-b)*100/b }')
 
 # PR9: fd count + WAL size at end.
 FD_END=$(ls /proc/"$REFRACT_PID"/fd 2>/dev/null | wc -l || echo 0)
-WAL_KB=$(stat -c%s "$WORKSPACE"/*.refract.db-wal 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+WAL_KB=$(stat -c%s "$WORKSPACE"/*.refract.db-wal 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}' || true)
 WAL_KB=${WAL_KB:-0}
 
 echo "soak: ticks = $TICKS"

@@ -29,13 +29,6 @@ jobs:
         if: steps.zig-bin-cache.outputs.cache-hit != 'true'
         run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
       - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/zig
-            .zig-cache
-          key: linux-zig-soak-${{ hashFiles('build.zig.zon') }}
-          restore-keys: linux-zig-soak-
       - run: sudo apt-get update && sudo apt-get install -y sqlite3 git
       - name: Build refract
         run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"

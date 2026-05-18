@@ -92,7 +92,7 @@ jobs:
       matrix:
         suite: [lsp, mcp, edge]
     steps:
-      - run: apk add --no-cache git curl xz sqlite tar
+      - run: apk add --no-cache git curl xz sqlite tar ruby
       - uses: actions/checkout@v4
       - name: Cache Zig binary
         id: zig-bin-cache
@@ -188,7 +188,8 @@ jobs:
           key: linux-zig-debug-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-debug-
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"      - uses: actions/cache@v5
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - uses: actions/cache@v5
         with:
           path: /tmp/refract_test_stdlib_template.db
           key: linux-rbs-template-${{ hashFiles('src/indexer/**', 'src/main.zig') }}
@@ -198,7 +199,7 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "-Doptimize=Debug" test:${{ matrix.suite }}
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
 
   valgrind:
     runs-on: ubuntu-latest
@@ -222,7 +223,8 @@ jobs:
           key: linux-zig-valgrind-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-valgrind-
       - run: sudo apt-get update && sudo apt-get install -y valgrind sqlite3
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"      - name: valgrind --self-test (catches C-boundary leaks at SQLite/Prism)
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - name: valgrind --self-test (catches C-boundary leaks at SQLite/Prism)
         run: |
           valgrind \
             --error-exitcode=1 \

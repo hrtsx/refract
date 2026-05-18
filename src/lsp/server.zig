@@ -271,7 +271,10 @@ fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !
     var frc: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer {
         var it = frc.iterator();
-        while (it.next()) |e| self.alloc.free(e.value_ptr.*);
+        while (it.next()) |e| {
+            self.alloc.free(e.key_ptr.*);
+            self.alloc.free(e.value_ptr.*);
+        }
         frc.deinit(self.alloc);
     }
 

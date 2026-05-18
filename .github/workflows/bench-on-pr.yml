@@ -56,8 +56,8 @@ jobs:
 
       - name: Build head + base
         run: |
-          (cd head && zig build -Doptimize=ReleaseSafe)
-          (cd base && zig build -Doptimize=ReleaseSafe)
+          (cd head && zig build -Drelease=true)
+          (cd base && zig build -Drelease=true)
 
       - name: Generate synthetic corpus (10k for PR speed)
         run: |
