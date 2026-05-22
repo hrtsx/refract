@@ -30,7 +30,7 @@ const isRubyIdent = S.isRubyIdent;
 const empty_json_array = S.empty_json_array;
 
 pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.flushDirtyUrisDebounced();
+    // Background flush worker drains dirty URIs; query path stays read-only.
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
@@ -231,7 +231,6 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.flushDirtyUrisDebounced();
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
@@ -1478,16 +1477,18 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
     try w.writeAll("[");
     var first = true;
 
+    const def_stmt = try self.cachedStmt(
+        \\SELECT s.name, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
+        \\WHERE s.name = ? AND s.kind = 'def' LIMIT 1
+    );
+    defer def_stmt.reset();
+
     var iter = ref_names.iterator();
     while (iter.next()) |entry| {
         const ref_name = entry.key_ptr.*;
         const ref_positions = entry.value_ptr.*;
 
-        const def_stmt = try self.cachedStmt(
-            \\SELECT s.name, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
-            \\WHERE s.name = ? AND s.kind = 'def' LIMIT 1
-        );
-        defer def_stmt.reset();
+        def_stmt.reset();
         def_stmt.bind_text(1, ref_name);
         if (!(try def_stmt.step())) continue;
 

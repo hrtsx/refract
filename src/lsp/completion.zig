@@ -797,23 +797,49 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
         }
     }
 
-    // Then global symbols (methods, classes, constants)
-    const stmt = self.cachedStmt(
-        \\SELECT DISTINCT name, kind FROM symbols WHERE kind IN ('def','classdef','class','module','constant') ORDER BY length(name), name LIMIT 200
-    ) catch null;
-    if (stmt) |s| {
-        defer s.reset();
-        while (s.step() catch false) {
-            if (!first) try w.writeByte(',');
-            first = false;
-            const cname = s.column_text(0);
-            const ckind_str = s.column_text(1);
-            const ckind_num: u8 = if (std.mem.eql(u8, ckind_str, "class")) 7 else if (std.mem.eql(u8, ckind_str, "module")) 9 else if (std.mem.eql(u8, ckind_str, "def") or std.mem.eql(u8, ckind_str, "classdef")) 3 else if (std.mem.eql(u8, ckind_str, "constant")) 21 else 1;
-            try w.writeAll("{\"label\":");
-            try writeEscapedJson(w, cname);
-            try w.print(",\"kind\":{d},\"sortText\":\"1_", .{ckind_num});
-            try writeEscapedJsonContent(w, cname);
-            try w.writeAll("\"}");
+    // Then global symbols (methods, classes, constants). Hot path: serve
+    // first 200 from the in-mem index using pre-rendered bodies.
+    var served_from_hot = false;
+    if (self.hot_index_enabled.load(.monotonic)) {
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        defer self.hot_mu.unlock(std.Options.debug_io);
+        if (self.hot.load(.acquire)) |hot| {
+            var count_h: usize = 0;
+            for (hot.sorted_by_name) |sym| {
+                if (count_h >= 200) break;
+                if (sym.name.len == 0) continue;
+                switch (sym.kind) {
+                    .def, .classdef, .class_, .module, .constant => {},
+                    else => continue,
+                }
+                const pre_body = hot.lookupPreCompletion(sym.name) orelse continue;
+                if (!first) try w.writeByte(',');
+                first = false;
+                count_h += 1;
+                try w.writeAll(pre_body);
+                try w.writeByte('}');
+            }
+            served_from_hot = count_h > 0;
+        }
+    }
+    if (!served_from_hot) {
+        const stmt = self.cachedStmt(
+            \\SELECT DISTINCT name, kind FROM symbols WHERE kind IN ('def','classdef','class','module','constant') ORDER BY length(name), name LIMIT 200
+        ) catch null;
+        if (stmt) |s| {
+            defer s.reset();
+            while (s.step() catch false) {
+                if (!first) try w.writeByte(',');
+                first = false;
+                const cname = s.column_text(0);
+                const ckind_str = s.column_text(1);
+                const ckind_num: u8 = if (std.mem.eql(u8, ckind_str, "class")) 7 else if (std.mem.eql(u8, ckind_str, "module")) 9 else if (std.mem.eql(u8, ckind_str, "def") or std.mem.eql(u8, ckind_str, "classdef")) 3 else if (std.mem.eql(u8, ckind_str, "constant")) 21 else 1;
+                try w.writeAll("{\"label\":");
+                try writeEscapedJson(w, cname);
+                try w.print(",\"kind\":{d},\"sortText\":\"1_", .{ckind_num});
+                try writeEscapedJsonContent(w, cname);
+                try w.writeAll("\"}");
+            }
         }
     }
 
@@ -822,6 +848,50 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
 }
 
 pub fn completeAllSymbols(self: *Server, msg: types.RequestMessage) !types.ResponseMessage {
+    // Hot-index fast path: empty-word completion fires on every keystroke at
+    // line starts. Skip the 500-row SQL scan + per-row format when the in-mem
+    // index is available.
+    if (self.hot_index_enabled.load(.monotonic)) {
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        defer self.hot_mu.unlock(std.Options.debug_io);
+        if (self.hot.load(.acquire)) |hot| {
+            var items_aw_hot = std.Io.Writer.Allocating.init(self.alloc);
+            const wh = &items_aw_hot.writer;
+            var first_h = true;
+            var count_h: usize = 0;
+            for (hot.sorted_by_name) |sym| {
+                if (count_h >= 500) break;
+                if (sym.name.len == 0) continue;
+                switch (sym.kind) {
+                    .def, .classdef, .class_, .module, .constant => {},
+                    else => continue,
+                }
+                const pre_body = hot.lookupPreCompletion(sym.name) orelse continue;
+                if (!first_h) try wh.writeByte(',');
+                first_h = false;
+                count_h += 1;
+                try wh.writeAll(pre_body);
+                try wh.writeByte('}');
+            }
+            const items_h = try items_aw_hot.toOwnedSlice();
+            defer self.alloc.free(items_h);
+            var aw_h = std.Io.Writer.Allocating.init(self.alloc);
+            const w_h = &aw_h.writer;
+            try w_h.writeAll(if (count_h >= 500) "{\"isIncomplete\":true,\"items\":[" else "{\"isIncomplete\":false,\"items\":[");
+            try w_h.writeAll(items_h);
+            try w_h.writeAll("]}");
+            if (count_h > 0) {
+                return types.ResponseMessage{
+                    .id = msg.id,
+                    .result = null,
+                    .raw_result = try aw_h.toOwnedSlice(),
+                    .@"error" = null,
+                };
+            }
+            aw_h.deinit();
+        }
+    }
+
     const stmt2 = try self.cachedStmt(
         \\SELECT DISTINCT name, kind FROM symbols ORDER BY length(name), name LIMIT 500
     );
@@ -1121,10 +1191,12 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
         const hot = hot_opt.?;
         var ranked = std.ArrayList(RankedSymbol).empty;
         defer ranked.deinit(self.alloc);
+        // HotSymbol names are arena-stable until rebuildHotIndex, and we hold
+        // hot_mu across this loop — safe to key `seen` directly on the slice.
         for (hot.lookupPrefix(word)) |sym| {
             if (sym.name.len == 0) continue;
             if (seen.contains(sym.name)) continue;
-            try seen.put(try seen_arena.allocator().dupe(u8, sym.name), {});
+            try seen.put(sym.name, {});
             try ranked.append(self.alloc, .{ .sym = sym, .tier = 0 });
         }
         // Substring fallback runs only when prefix scan came back thin.
@@ -1138,17 +1210,38 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
             for (sub_buf.items) |sym| {
                 if (sym.name.len == 0) continue;
                 if (seen.contains(sym.name)) continue;
-                try seen.put(try seen_arena.allocator().dupe(u8, sym.name), {});
+                try seen.put(sym.name, {});
                 try ranked.append(self.alloc, .{ .sym = sym, .tier = 1 });
             }
         }
-        std.mem.sort(RankedSymbol, ranked.items, {}, lessRanked);
+        const had_substring_tier = blk: {
+            for (ranked.items) |r| if (r.tier != 0) break :blk true;
+            break :blk false;
+        };
+        if (had_substring_tier) std.mem.sort(RankedSymbol, ranked.items, {}, lessRanked);
         const cap = @min(ranked.items.len, @as(usize, 200));
+        const te_start_char = @as(u32, @intCast(character)) -| @as(u32, @intCast(word.len));
         for (ranked.items[0..cap]) |entry| {
             const sym = entry.sym;
             if (!first) try w.writeByte(',');
             first = false;
             symbol_count += 1;
+
+            const is_exact = std.mem.eql(u8, sym.name, word);
+            // Fast path: pre-rendered body baked the non-exact sortText prefix.
+            // Exact-match needs the `0_0_` etc. tier — fall through to dynamic.
+            const pre_body = if (is_exact) null else hot.lookupPreCompletion(sym.name);
+            if (pre_body) |body| {
+                try w.writeAll(body);
+                try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
+                    line, te_start_char, line, character,
+                });
+                try writeEscapedJson(w, sym.name);
+                try w.writeByte('}');
+                try w.writeByte('}');
+                continue;
+            }
+
             const sig: []const u8 = sym.params_sig orelse "";
             const doc: []const u8 = sym.doc orelse "";
             const kind_str = kindStr(sym.kind);
@@ -1163,7 +1256,6 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
             }
             try w.writeAll(")\"");
             const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
-            const is_exact = std.mem.eql(u8, sym.name, word);
             const sort_prefix: []const u8 = if (is_deprecated) "8_" else switch (sym.kind) {
                 .def, .classdef => if (is_exact) "0_0_" else "0_1_",
                 .class_, .module => if (is_exact) "1_0_" else "1_1_",
@@ -1187,7 +1279,6 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
                 try writeEscapedJson(w, doc);
                 try w.writeByte('}');
             }
-            const te_start_char = @as(u32, @intCast(character)) -| @as(u32, @intCast(word.len));
             try w.print(",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":", .{
                 line, te_start_char, line, character,
             });
@@ -1470,7 +1561,7 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
 
 pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.flushDirtyUrisDebounced();
+    // Background flush worker drains dirty URIs; query path stays read-only.
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const indexing_in_progress = !self.bg_started_event.load(.acquire);

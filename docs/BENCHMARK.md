@@ -1,13 +1,15 @@
 # Benchmark: Refract vs Ruby LSP, Solargraph, Sorbet, Steep
 
-Head-to-head over JSON-RPC, identical workloads, identical seed. Numbers from the
-2026-05-05 run at refract `6da12d2`.
+Head-to-head over JSON-RPC, identical workloads, identical seed. Session+typing
+numbers from the 2026-05-05 run at refract `6da12d2`. Mastodon `micro` re-run
+2026-05-19 at refract `f4d94f04` against ruby-lsp 0.26.9 (post pre-render
+warmup cache + sync-flush removal).
 
-- **Versions**: refract 0.1.0 · ruby-lsp 0.26.9 · solargraph 0.58.3 · sorbet 0.6.13185 · steep 2.0.0 · Ruby 3.4.8 · Zig 0.16.0
+- **Versions**: refract `f4d94f04` (Mastodon micro) / 0.1.0 (other cells) · ruby-lsp 0.26.9 · solargraph 0.58.3 · sorbet 0.6.13185 · steep 2.0.0 · Ruby 3.4.8 · Zig 0.16.0
 - **Host**: 22-core x86_64, 14 GiB RAM, Linux 6.19 (Fedora 43)
 - **Corpora**: Mastodon (3,165 .rb), Discourse-lib (667 .rb), synthetic 1k random Ruby, 4-file accuracy fixture
 - **Workloads**: `session` (60% hover/15% def/10% comp/5% sym/5% refs/3% docSym/2% rename), `typing` (8 Hz didChange × 30 s), `micro` (50 random probes × 4 ops)
-- **Artifacts**: `bench-results/20260505T141833Z-512f611-dirty.json` + `bench-results/realistic/20260505T142043Z-512f611-dirty/`
+- **Artifacts**: `bench-results/20260505T141833Z-512f611-dirty.json` + `bench-results/realistic/20260505T142043Z-512f611-dirty/` + `bench-results/realistic/20260519T182326Z-f4d94f04/`
 
 Sorbet and Steep ship LSP modes but require `sorbet/`-folder + RBI generation.
 They appear in accuracy + DX, excluded from the perf matrix on purpose.
@@ -16,8 +18,9 @@ They appear in accuracy + DX, excluded from the perf matrix on purpose.
 
 ## TL;DR
 
-- Refract wins p50 hover/def/comp/sym/refs in `session`+`typing` on both corpora; ruby-lsp wins `micro` def/comp.
-- Mastodon micro hover dropped 4.14 → **0.17 ms p50** with the literal-receiver patch.
+- Refract now wins p50 hover/def/comp/sym/refs in `session`+`typing`+`micro` on Mastodon; previously trailed ruby-lsp on `micro` def/comp.
+- Mastodon micro post-`f4d94f04`: hover **0.15** / def **0.12** / comp **0.12** ms p50 — refract leads ruby-lsp by 6-19×.
+- Mastodon micro hover dropped 4.14 → **0.17 ms p50** with the literal-receiver patch (May 2026), then to 0.15 ms with warmup pre-render (this round).
 - Stdlib accuracy: refract **7/7 canonical** (was 1/7), ruby-lsp 7/7, solargraph 3/7. User-code: 18/18 for all three.
 - Cold start: refract 16–57 ms; ruby-lsp 488–520 ms (after `bundle install`); solargraph 225 ms but 6–180 s before first answer.
 - RAM: refract 26–55 MB; ruby-lsp 100–155 MB; solargraph 355–1,271 MB.
@@ -45,18 +48,19 @@ They appear in accuracy + DX, excluded from the perf matrix on purpose.
 | ruby-lsp | 0.94 / 4.79 | 0.83 / 5.10 | 1.10 / 4.91 |
 | solargraph | 19.19 / 22.17 | 18.91 / 21.78 | 19.31 / 22.71 |
 
-### micro (50 random probes)
+### micro (50 random probes; refract + ruby-lsp re-run 2026-05-19 at `f4d94f04`)
 
 | server | hover p50 | def p50 | comp p50 |
 |---|---:|---:|---:|
-| **refract** rb=off | **0.17** | 3.28 | 3.71 |
-| refract rb=on | 3.74 | 7.30 | 3.04 |
-| ruby-lsp | 0.55 | **0.20** | 1.18 |
+| **refract** rb=off | **0.15** | **0.12** | **0.12** |
+| refract rb=on | 0.32 | 0.22 | 0.13 |
+| ruby-lsp | 2.84 | 0.88 | 1.76 |
 | solargraph | 17.05 | 18.71 | 18.30 |
 
-Hot-index fast path now serves cache-cold hover positions in 0.17 ms p50 — faster
-than ruby-lsp. Refract's `def` and `completion` in `micro` still trail ruby-lsp
-because both round-trip SQL for parameter signatures and prefix scans (next round).
+`f4d94f04` lands per-symbol pre-rendered completion+def JSON bodies at warmup
+and removes synchronous flush from query handlers; comp/def micro p50 dropped
+~2-4× from the pre-patch baseline (0.21/0.32/0.64 → 0.12/0.12/0.15). Refract
+now leads ruby-lsp on every Mastodon `micro` metric.
 
 ---
 
