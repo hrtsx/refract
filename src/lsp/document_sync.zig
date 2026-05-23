@@ -203,10 +203,7 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
     {
         self.last_index_mu.lockUncancelable(std.Options.debug_io);
         defer self.last_index_mu.unlock(std.Options.debug_io);
-        const gop = self.last_index_ms.getOrPut(uri) catch {
-            diagnostics.publishDiagnostics(self, uri, real_path, false);
-            return;
-        };
+        const gop = self.last_index_ms.getOrPut(uri) catch return;
         if (!gop.found_existing) {
             if (self.alloc.dupe(u8, uri)) |k| {
                 gop.key_ptr.* = k;
@@ -221,10 +218,7 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
     if (self.hot.load(.acquire)) |hot_idx| {
         self.hot_mu.lockUncancelable(std.Options.debug_io);
         defer self.hot_mu.unlock(std.Options.debug_io);
-        const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch {
-            diagnostics.publishDiagnostics(self, uri, real_path, false);
-            return;
-        };
+        const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch return;
         defer db_stmt.finalize();
         db_stmt.bind_text(1, real_path);
         if (db_stmt.step() catch false) {
@@ -233,7 +227,10 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         }
     }
 
-    diagnostics.publishDiagnostics(self, uri, real_path, false);
+    // Diagnostics are deferred to the debounced flush worker
+    // (server.zig:flushDirtyUrisImpl). Computing them here ran a full Prism
+    // parse of the dirty buffer on every keystroke and contended db_mutex with
+    // concurrent hover/def/completion, inflating typing-time query latency.
 }
 
 pub fn handleDidChangeWatchedFiles(self: *Server, msg: types.RequestMessage) void {

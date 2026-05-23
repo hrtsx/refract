@@ -194,14 +194,16 @@ pub const Server = struct {
     }
 
     /// Returns true if `fpath` (after symlink resolution) lies under the
-    /// workspace root. Always returns true if workspace_root could not be
-    /// resolved (fail-open for compatibility — server still relies on indexer
-    /// to populate only safe paths).
+    /// workspace root. Falls back to fail-open when workspace_root could not
+    /// be resolved during init() — the indexer's own path scoping (only
+    /// scans the workspace) is the primary defense; this is defense-in-depth.
     fn pathInWorkspace(self: *Server, fpath: []const u8) bool {
         const root = self.workspace_root orelse return true;
         const real = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, fpath, self.alloc) catch return false;
         defer self.alloc.free(real);
-        return std.mem.startsWith(u8, real, root);
+        if (!std.mem.startsWith(u8, real, root)) return false;
+        // Tighten prefix match: avoid /workspace-evil matching /workspace.
+        return real.len == root.len or real[root.len] == '/';
     }
 
     pub fn run(self: *Server, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
@@ -3645,8 +3647,27 @@ fn splitQualified(s: []const u8) ?QualifiedSymbol {
 
 fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[:0]u8 {
     if (file.len == 0) return null;
+    // Reject parent-dir traversal segments outright. Even though SQL bindings
+    // and file reads are downstream-scoped to the indexed workspace, refusing
+    // "../" up front gives a uniform answer regardless of where the value
+    // flows.
+    if (containsTraversalSegment(file)) return null;
+    // Absolute paths: trust as-is (indexer records absolute paths and we
+    // look them up parametrized). Relative paths: resolve against cwd.
     if (file[0] == '/') return alloc.dupeZ(u8, file) catch null;
     return std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, file, alloc) catch null;
+}
+
+fn containsTraversalSegment(file: []const u8) bool {
+    var i: usize = 0;
+    while (i < file.len) {
+        const start = i;
+        while (i < file.len and file[i] != '/') i += 1;
+        const seg = file[start..i];
+        if (std.mem.eql(u8, seg, "..")) return true;
+        if (i < file.len) i += 1;
+    }
+    return false;
 }
 
 fn getIntArg(args: ?std.json.ObjectMap, key: []const u8) ?i64 {

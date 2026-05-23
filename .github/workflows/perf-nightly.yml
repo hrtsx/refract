@@ -20,10 +20,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Zig 0.16
-        uses: mlugg/setup-zig@v1
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
         with:
-          version: 0.16.0
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
 
       - name: Setup Ruby 3.4
         uses: ruby/setup-ruby@v1
