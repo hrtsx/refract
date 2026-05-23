@@ -2360,10 +2360,53 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     }
                 }
             }
-            // Rails delegate synthesis
+            // Rails delegate synthesis (PR6).
+            //   delegate :foo, :bar, to: :other                  → defs foo, bar
+            //   delegate :foo, to: :other, prefix: true          → def other_foo
+            //   delegate :foo, to: :other, prefix: :alt          → def alt_foo
+            //   delegate :foo, to: :other, allow_nil: true       → noted (no symbol-shape change)
             if (cn.receiver == null and std.mem.eql(u8, mname, "delegate")) {
                 if (cn.arguments) |args_node| {
                     const del_args = args_node.*.arguments;
+
+                    // First pass: extract `to:` target + `prefix:` value out of
+                    // the trailing keyword hash, if any.
+                    var to_sym: ?[]const u8 = null;
+                    var prefix_true = false;
+                    var prefix_sym: ?[]const u8 = null;
+                    for (0..del_args.size) |di| {
+                        const arg = del_args.nodes[di];
+                        if (arg.*.type != prism.NODE_KEYWORD_HASH) continue;
+                        const kh: *const prism.KeywordHashNode = @ptrCast(@alignCast(arg));
+                        for (0..kh.elements.size) |kj| {
+                            const elem = kh.elements.nodes[kj];
+                            if (elem.*.type != prism.NODE_ASSOC) continue;
+                            const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
+                            if (assoc.key.*.type != prism.NODE_SYMBOL) continue;
+                            const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
+                            if (ksym.unescaped.source == null) continue;
+                            const kname = ksym.unescaped.source[0..ksym.unescaped.length];
+                            if (std.mem.eql(u8, kname, "to")) {
+                                if (assoc.value.*.type == prism.NODE_SYMBOL) {
+                                    const vsym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.value));
+                                    if (vsym.unescaped.source) |src| to_sym = src[0..vsym.unescaped.length];
+                                }
+                            } else if (std.mem.eql(u8, kname, "prefix")) {
+                                if (assoc.value.*.type == prism.NODE_TRUE) {
+                                    prefix_true = true;
+                                } else if (assoc.value.*.type == prism.NODE_SYMBOL) {
+                                    const psym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.value));
+                                    if (psym.unescaped.source) |src| prefix_sym = src[0..psym.unescaped.length];
+                                }
+                            }
+                        }
+                    }
+
+                    // Second pass: emit one def per delegated symbol, prefixed
+                    // when requested. Prefix from explicit symbol wins over
+                    // `prefix: true`+`to:` fallback.
+                    const effective_prefix: ?[]const u8 = if (prefix_sym) |ps| ps else if (prefix_true) to_sym else null;
+
                     for (0..del_args.size) |di| {
                         const arg = del_args.nodes[di];
                         if (arg.*.type == prism.NODE_KEYWORD_HASH) continue;
@@ -2372,9 +2415,23 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (sn.unescaped.source == null) continue;
                         const dname = sn.unescaped.source[0..sn.unescaped.length];
                         const dlc = locationLineCol(ctx.parser, arg.*.location.start);
-                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
-                            ctx.error_count += 1;
-                        };
+
+                        if (effective_prefix) |ep| {
+                            var nbuf: [192]u8 = undefined;
+                            const prefixed = std.fmt.bufPrint(&nbuf, "{s}_{s}", .{ ep, dname }) catch {
+                                insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                                    ctx.error_count += 1;
+                                };
+                                continue;
+                            };
+                            insertSymbol(ctx, "def", prefixed, dlc.line, dlc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
+                        } else {
+                            insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                                ctx.error_count += 1;
+                            };
+                        }
                     }
                 }
             }

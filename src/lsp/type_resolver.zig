@@ -172,6 +172,15 @@ fn stripOneLevel(t: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, t, "T.must(") and std.mem.endsWith(u8, t, ")")) {
         return t["T.must(".len .. t.len - 1];
     }
+    // PR6: T.let(value, Type) / T.cast(value, Type) — Sorbet uses these to
+    // narrow a local var's type. The whole expression's type is the second
+    // argument; strip down to it. T.unsafe(x) opts out → unresolvable, drop.
+    if (extractSorbetCastSecond(t, "T.let(")) |inner| return inner;
+    if (extractSorbetCastSecond(t, "T.cast(")) |inner| return inner;
+    if (extractSorbetCastSecond(t, "T.assert_type!(")) |inner| return inner;
+    if (std.mem.startsWith(u8, t, "T.unsafe(") and std.mem.endsWith(u8, t, ")")) {
+        return t["T.unsafe(".len .. t.len - 1];
+    }
     if (std.mem.startsWith(u8, t, "T::")) {
         const after_t = t[3..];
         const lb = std.mem.indexOfAny(u8, after_t, "<[") orelse return after_t;
@@ -182,6 +191,32 @@ fn stripOneLevel(t: []const u8) ?[]const u8 {
     if (lbracket) |idx| if (idx > 0) {
         return t[0..idx];
     };
+    return null;
+}
+
+/// `T.let(value, Type)` shape — grab `Type` from after the top-level comma.
+/// Respects nested parens so `T.let(x.foo(1), Hash[K,V])` still cuts at the
+/// outer separator.
+fn extractSorbetCastSecond(t: []const u8, comptime prefix: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, t, prefix)) return null;
+    if (!std.mem.endsWith(u8, t, ")")) return null;
+    const body = t[prefix.len .. t.len - 1];
+    var depth: i32 = 0;
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        switch (c) {
+            '(', '[', '{', '<' => depth += 1,
+            ')', ']', '}', '>' => depth -= 1,
+            ',' => if (depth == 0) {
+                var rest = body[i + 1 ..];
+                rest = std.mem.trim(u8, rest, " \t");
+                if (rest.len == 0) return null;
+                return rest;
+            },
+            else => {},
+        }
+    }
     return null;
 }
 

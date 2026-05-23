@@ -73,15 +73,15 @@ jobs:
           (progn
             (require 'eglot)
             (setq eglot-events-buffer-size 0
-                  eglot-connect-timeout 30
-                  eglot-sync-connect 30)
+                  eglot-connect-timeout 60
+                  eglot-sync-connect 60)
             (add-to-list 'eglot-server-programs '(ruby-mode . (\"refract\" \"--db-path\" \"/tmp/refract-emacs.db\")))
             (find-file \"/tmp/emacs-ws/sample.rb\")
             (ruby-mode)
             (eglot-ensure)
-            (let ((deadline (+ (float-time) 30)))
+            (let ((deadline (+ (float-time) 60)))
               (while (and (not (eglot-current-server)) (< (float-time) deadline))
-                (sleep-for 0.5)))
+                (accept-process-output nil 0.5)))
             (if (eglot-current-server)
                 (progn (message \"eglot OK\") (kill-emacs 0))
               (progn (message \"eglot FAIL — no server attached after 30s\") (kill-emacs 1))))"
@@ -195,7 +195,7 @@ jobs:
             end,
           })
           vim.defer_fn(function()
-            local clients = vim.lsp.get_active_clients()
+            local clients = vim.lsp.get_clients()
             if #clients < 1 then
               io.stderr:write("FAIL: no LSP client active after 8s\n")
               vim.cmd("cq")

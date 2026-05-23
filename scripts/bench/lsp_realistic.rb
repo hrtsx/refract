@@ -166,6 +166,17 @@ else
 end
 warm_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - warm_t0) * 1000).round(1)
 
+# Refract-specific: block until the bg indexer + hot-index rebuild are idle.
+# Symbol probe above only proves the cold SQL path is queryable — hot index
+# (def pre-render, params_sig cache, ...) may still be empty, which gives
+# false-low cold p50s in micro mode. waitForIdle waits up to 10 s.
+if NAME == "refract"
+  idle_t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  client.request("$/refract/__waitForIdle", {}, timeout: 30)
+  idle_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - idle_t0) * 1000).round(1)
+  warm_ms = (warm_ms || 0) + idle_ms
+end
+
 # ---------- Workload: session ----------------------------------------------
 
 # Industry-derived editor-session mix (single session, ~200 ops total):
