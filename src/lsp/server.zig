@@ -123,9 +123,19 @@ pub fn rebuildHotIndex(self: *Server) void {
     // Pre-render goto-definition JSON for the same top-N hot symbols. Cuts
     // micro-def p50 down to the hover path's ballpark by skipping the
     // mutex+SQL+toClientColFromPath round-trip on hot names. (W1.2 / PR1)
-    preRenderHotDef(self, new_idx, ro_db) catch |e| {
+    preRenderHotDef(self, new_idx) catch |e| {
         var pbuf: [256]u8 = undefined;
         const pmsg = std.fmt.bufPrint(&pbuf, "refract: def pre-render skipped: {s}", .{@errorName(e)}) catch "refract: def pre-render skipped";
+        self.sendLogMessage(3, pmsg);
+    };
+
+    // Pre-render completion item bodies (everything except `textEdit`) for
+    // unambiguous symbols. Cuts micro-completion p50 by collapsing the per-item
+    // JSON build (~10 writes, kind/sort branching, snippet generator) down to
+    // one memcpy + a 3-print textEdit suffix.
+    preRenderHotCompletion(self, new_idx) catch |e| {
+        var pbuf: [256]u8 = undefined;
+        const pmsg = std.fmt.bufPrint(&pbuf, "refract: completion pre-render skipped: {s}", .{@errorName(e)}) catch "refract: completion pre-render skipped";
         self.sendLogMessage(3, pmsg);
     };
 
@@ -261,12 +271,7 @@ fn preRenderRelPath(sym_path: []const u8, root_path: ?[]u8) []const u8 {
 ///     with `{...,"originSelectionRange":{...}}` per request.
 ///   - Legacy Location (full object including braces): emit verbatim.
 /// Skipped on multi-def names (rendering would be ambiguous).
-fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !void {
-    const stmt = db.prepare(
-        "SELECT name, COUNT(*) AS c FROM refs GROUP BY name ORDER BY c DESC LIMIT " ++ std.fmt.comptimePrint("{d}", .{PRE_RENDER_TOP_N}),
-    ) catch return;
-    defer stmt.finalize();
-
+fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex) !void {
     const arena = hot.arena.allocator();
     var frc: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer {
@@ -278,11 +283,15 @@ fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !
         frc.deinit(self.alloc);
     }
 
+    // Iterate every unambiguous def-like name in the hot index, not just the
+    // top-N most-referenced. Covers the long tail of micro-bench probe
+    // positions for free — file I/O for UTF-16 columns is amortized by `frc`.
     var rendered: u32 = 0;
-    while (stmt.step() catch false) {
-        const name = stmt.column_text(0);
+    var nm_it = hot.name_map.iterator();
+    while (nm_it.next()) |entry| {
+        const name = entry.key_ptr.*;
         if (name.len == 0) continue;
-        const syms = hot.lookupName(name);
+        const syms = entry.value_ptr.*;
         if (syms.len == 0) continue;
 
         var picked: ?hot_index_mod.HotSymbol = null;
@@ -333,6 +342,96 @@ fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex, db: db_mod.Db) !
 
     var lbuf: [128]u8 = undefined;
     const lmsg = std.fmt.bufPrint(&lbuf, "refract: def pre-rendered {d} top symbols", .{rendered}) catch "refract: def pre-rendered";
+    self.sendLogMessage(3, lmsg);
+}
+
+/// Pre-render the static portion of a completion item — everything from `{`
+/// through `"documentation"`, with no `textEdit` and no closing `}`. Hot path
+/// appends a compact `,"textEdit":{...}}` suffix per request. Only stored when
+/// the name is unambiguous in `name_map` (single def/classdef/class/module/
+/// constant) so the bake-in of kind/sig/doc is correct.
+fn preRenderHotCompletion(self: *Server, hot: *hot_index_mod.HotIndex) !void {
+    const arena = hot.arena.allocator();
+    var rendered: u32 = 0;
+
+    var nm_it = hot.name_map.iterator();
+    while (nm_it.next()) |entry| {
+        const syms = entry.value_ptr.*;
+        if (syms.len != 1) continue;
+        const sym = syms[0];
+        if (sym.name.len == 0) continue;
+        const kind_is_renderable = switch (sym.kind) {
+            .def, .classdef, .class_, .module, .constant => true,
+            else => false,
+        };
+        if (!kind_is_renderable) continue;
+
+        const sig: []const u8 = sym.params_sig orelse "";
+        const doc: []const u8 = sym.doc orelse "";
+        const is_deprecated = std.mem.startsWith(u8, doc, "**Deprecated:**");
+        const is_def_like = sym.kind == .def or sym.kind == .classdef;
+        const kind_num: u8 = switch (sym.kind) {
+            .class_ => 7,
+            .module => 9,
+            .def, .classdef => 3,
+            .constant => 21,
+            else => 1,
+        };
+        const kind_str: []const u8 = switch (sym.kind) {
+            .def => "def",
+            .classdef => "classdef",
+            .class_ => "class",
+            .module => "module",
+            .constant => "constant",
+            else => "other",
+        };
+        // Bake non-exact sort prefix (`0_1_` etc); exact-match path falls back
+        // to dynamic render (rare in practice — user has typed a prefix, not
+        // the full name).
+        const sort_prefix: []const u8 = if (is_deprecated) "8_" else switch (sym.kind) {
+            .def, .classdef => "0_1_",
+            .class_, .module => "1_1_",
+            else => "2_1_",
+        };
+
+        var aw = std.Io.Writer.Allocating.init(arena);
+        defer aw.deinit();
+        const w = &aw.writer;
+
+        w.writeAll("{\"label\":") catch continue;
+        writeEscapedJson(w, sym.name) catch continue;
+        w.print(",\"kind\":{d},\"detail\":\"(", .{kind_num}) catch continue;
+        if (is_def_like and sig.len > 0) {
+            writeEscapedJsonContent(w, sig) catch continue;
+        } else {
+            writeEscapedJsonContent(w, kind_str) catch continue;
+        }
+        w.writeAll(")\",\"sortText\":\"") catch continue;
+        writeEscapedJsonContent(w, sort_prefix) catch continue;
+        writeEscapedJsonContent(w, sym.name) catch continue;
+        w.writeAll("\",\"filterText\":\"") catch continue;
+        writeEscapedJsonContent(w, sym.name) catch continue;
+        w.writeByte('"') catch continue;
+        if (is_def_like) {
+            w.writeAll(",\"commitCharacters\":[\"(\"]") catch continue;
+        }
+        if (is_def_like and sig.len > 0) {
+            completion.writeInsertTextSnippet(w, sym.name, sig) catch continue;
+        }
+        if (doc.len > 0) {
+            w.writeAll(",\"documentation\":{\"kind\":\"markdown\",\"value\":") catch continue;
+            writeEscapedJson(w, doc) catch continue;
+            w.writeByte('}') catch continue;
+        }
+
+        const body_owned = arena.dupe(u8, aw.written()) catch continue;
+        const name_owned = arena.dupe(u8, sym.name) catch continue;
+        hot.putPreCompletion(name_owned, body_owned) catch continue;
+        rendered += 1;
+    }
+
+    var lbuf: [128]u8 = undefined;
+    const lmsg = std.fmt.bufPrint(&lbuf, "refract: completion pre-rendered {d} symbols", .{rendered}) catch "refract: completion pre-rendered";
     self.sendLogMessage(3, lmsg);
 }
 

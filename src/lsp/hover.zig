@@ -32,7 +32,9 @@ const utf8ColToUtf16 = S.utf8ColToUtf16;
 
 pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.flushDirtyUrisDebounced();
+    // Background flush worker (server.zig:flushWorkerFn) drains dirty URIs on a
+    // tick. Query handlers must not flush synchronously — the indexSource call
+    // under db_mutex stalls the request thread for tens of ms on large files.
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const indexing_in_progress = !self.bg_started_event.load(.acquire);

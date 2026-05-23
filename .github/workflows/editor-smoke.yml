@@ -175,8 +175,13 @@ jobs:
         run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
       - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
-      - name: Install Neovim
-        run: sudo apt-get update && sudo apt-get install -y neovim
+      - name: Install Neovim (>=0.10 AppImage for vim.lsp.get_clients)
+        run: |
+          curl -sL https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.appimage -o /tmp/nvim.appimage
+          chmod +x /tmp/nvim.appimage
+          (cd /tmp && ./nvim.appimage --appimage-extract >/dev/null)
+          sudo ln -sf /tmp/squashfs-root/usr/bin/nvim /usr/local/bin/nvim
+          nvim --version | head -1
       - name: Neovim LSP smoke
         env:
           REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
@@ -191,19 +196,18 @@ jobs:
           # uses lspconfig — that path is verified by end users with a plugin
           # manager, not in CI.
           cat > /tmp/nvim-smoke.lua <<'LUA'
-          -- nvim --headless -u NONE disables filetype detection. Re-enable so
-          -- the FileType autocmd fires when sample.rb is loaded.
-          vim.cmd("filetype on")
-          vim.api.nvim_create_autocmd("FileType", {
-            pattern = { "ruby", "eruby" },
-            callback = function()
-              vim.lsp.start({
-                name = "refract",
-                cmd = { "refract", "--db-path", "/tmp/refract-nvim.db" },
-                root_dir = vim.fs.dirname(vim.fn.expand("%:p")),
-              })
-            end,
+          -- nvim --headless -u NONE disables filetype detection AND skips
+          -- FileType autocmds for the file opened on the cmdline. Start the
+          -- LSP client directly against the already-loaded buffer.
+          local bufnr = vim.api.nvim_get_current_buf()
+          vim.bo[bufnr].filetype = "ruby"
+          local ok, err = pcall(vim.lsp.start, {
+            name = "refract",
+            cmd = { "refract", "--db-path", "/tmp/refract-nvim.db" },
+            root_dir = "/tmp/nvim-ws",
+            bufnr = bufnr,
           })
+          io.stderr:write("vim.lsp.start ok=" .. tostring(ok) .. " err=" .. tostring(err) .. "\n")
           vim.defer_fn(function()
             local clients = (vim.lsp.get_clients or vim.lsp.get_active_clients)()
             if #clients < 1 then

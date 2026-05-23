@@ -150,6 +150,12 @@ pub const HotIndex = struct {
     /// that did not negotiate definition-link. Fully self-contained — emit
     /// verbatim.
     pre_def_loc_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Pre-rendered completion item JSON body up through `documentation` (no
+    /// `textEdit` and no closing brace). Hot completion path appends a single
+    /// dynamic `textEdit` suffix + `}` and writes verbatim. Populated only
+    /// when `name_map[name].len == 1` (unambiguous) and the kind is one of
+    /// def / classdef / class / module / constant.
+    pre_completion_by_name: std.StringHashMapUnmanaged([]const u8) = .empty,
     symbol_count: u32,
     file_count: u32,
     file_cache: FileCache = .{},
@@ -164,6 +170,7 @@ pub const HotIndex = struct {
         self.pre_rendered_by_name.deinit(child);
         self.pre_def_link_by_name.deinit(child);
         self.pre_def_loc_by_name.deinit(child);
+        self.pre_completion_by_name.deinit(child);
         self.arena.deinit();
     }
 
@@ -197,6 +204,15 @@ pub const HotIndex = struct {
 
     pub fn putPreDefLoc(self: *HotIndex, name: []const u8, body: []const u8) !void {
         try self.pre_def_loc_by_name.put(self.arena.child_allocator, name, body);
+    }
+
+    /// Pre-rendered completion item body (no `textEdit`, no outer braces close).
+    pub fn lookupPreCompletion(self: *const HotIndex, name: []const u8) ?[]const u8 {
+        return self.pre_completion_by_name.get(name);
+    }
+
+    pub fn putPreCompletion(self: *HotIndex, name: []const u8, body: []const u8) !void {
+        try self.pre_completion_by_name.put(self.arena.child_allocator, name, body);
     }
 
     pub fn lookupName(self: *const HotIndex, name: []const u8) []const HotSymbol {
