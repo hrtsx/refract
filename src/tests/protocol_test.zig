@@ -10576,9 +10576,6 @@ test "scope DSL kind is def not classdef" {
 }
 
 test "outgoingCalls returns called methods" {
-    // FIXME: malformed JSON in response stream on Alpine/musl only; tracked
-    // separately. Glibc + macOS pass. Skip until root cause is isolated.
-    if (@import("builtin").target.abi == .musl) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p24_t730";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};

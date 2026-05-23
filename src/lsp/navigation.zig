@@ -1462,11 +1462,16 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
     var ref_names = std.StringHashMap(std.ArrayList(RefPos)).init(a);
 
     while (try ref_stmt.step()) {
+        // column_text aliases SQLite's row buffer — invalidated on the next
+        // step()/reset(). These keys outlive the ref_stmt loop (used during
+        // serialization below), so dupe into the arena. Without this, musl's
+        // allocator reuses the buffer and emits garbage method names.
         const ref_name = ref_stmt.column_text(0);
         const ref_line = ref_stmt.column_int(1);
         const ref_col = ref_stmt.column_int(2);
         const gop = try ref_names.getOrPut(ref_name);
         if (!gop.found_existing) {
+            gop.key_ptr.* = try a.dupe(u8, ref_name);
             gop.value_ptr.* = std.ArrayList(RefPos).empty;
         }
         try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
@@ -1507,7 +1512,7 @@ pub fn handleCallHierarchyOutgoingCalls(self: *Server, msg: types.RequestMessage
         try w.print("\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
             def_line - 1, def_col, def_line - 1, def_col,
         });
-        try w.print(",\"selectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{
+        try w.print(",\"selectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
             def_line - 1, def_col, def_line - 1, def_col + @as(i64, @intCast(def_name.len)),
         });
         try w.writeAll("},\"fromRanges\":[");
