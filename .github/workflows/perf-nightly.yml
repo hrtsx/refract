@@ -41,7 +41,7 @@ jobs:
           restore-keys: bench-corpora-
 
       - name: Build refract
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build -Drelease=true
 
       - name: Run nightly bench (discourse-lib + mastodon, micro + session)
         env:

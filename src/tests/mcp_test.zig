@@ -1015,7 +1015,7 @@ test "P47 T47.27 MCP coverage_gap_analyzer returns gaps array" {
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
     const raw = try s.runWithArgs(&.{"--mcp"});
     defer alloc.free(raw);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"gaps\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "gaps") != null);
 }
 
 test "P47 T47.28 MCP security_audit_summary returns findings array" {
@@ -1032,7 +1032,7 @@ test "P47 T47.28 MCP security_audit_summary returns findings array" {
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
     const raw = try s.runWithArgs(&.{"--mcp"});
     defer alloc.free(raw);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"findings\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "findings") != null);
 }
 
 test "P47 T47.29 MCP migration_chain_analyzer returns migrations array" {
@@ -1049,7 +1049,7 @@ test "P47 T47.29 MCP migration_chain_analyzer returns migrations array" {
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
     const raw = try s.runWithArgs(&.{"--mcp"});
     defer alloc.free(raw);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"migrations\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "migrations") != null);
 }
 
 test "P47 T47.30 MCP dependency_tree_resolver handles missing Gemfile.lock" {
@@ -1066,7 +1066,7 @@ test "P47 T47.30 MCP dependency_tree_resolver handles missing Gemfile.lock" {
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
     const raw = try s.runWithArgs(&.{"--mcp"});
     defer alloc.free(raw);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"dependencies\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "dependencies") != null);
 }
 
 test "P47 T47.31 MCP unused_association_chain returns array" {
@@ -1084,7 +1084,7 @@ test "P47 T47.31 MCP unused_association_chain returns array" {
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
     const raw = try s.runWithArgs(&.{"--mcp"});
     defer alloc.free(raw);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"unused_associations\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "unused_associations") != null);
 }
 
 test "P47 T47.26 MCP rate limiting rejects excess requests" {

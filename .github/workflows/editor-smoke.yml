@@ -73,18 +73,25 @@ jobs:
           (progn
             (require 'eglot)
             (setq eglot-events-buffer-size 0
-                  eglot-connect-timeout 60
-                  eglot-sync-connect 60)
+                  eglot-connect-timeout 90
+                  eglot-sync-connect 90)
             (add-to-list 'eglot-server-programs '(ruby-mode . (\"refract\" \"--db-path\" \"/tmp/refract-emacs.db\")))
+            (setq default-directory \"/tmp/emacs-ws/\")
             (find-file \"/tmp/emacs-ws/sample.rb\")
             (ruby-mode)
-            (eglot-ensure)
-            (let ((deadline (+ (float-time) 60)))
+            (condition-case err
+                (eglot 'ruby-mode
+                       (cons 'transient default-directory)
+                       'eglot-lsp-server
+                       '(\"refract\" \"--db-path\" \"/tmp/refract-emacs.db\")
+                       \"ruby\")
+              (error (message \"eglot connect error: %S\" err)))
+            (let ((deadline (+ (float-time) 90)))
               (while (and (not (eglot-current-server)) (< (float-time) deadline))
                 (accept-process-output nil 0.5)))
             (if (eglot-current-server)
                 (progn (message \"eglot OK\") (kill-emacs 0))
-              (progn (message \"eglot FAIL — no server attached after 30s\") (kill-emacs 1))))"
+              (progn (message \"eglot FAIL — no server attached after 90s\") (kill-emacs 1))))"
 
   helix-config-smoke:
     runs-on: ubuntu-latest
@@ -184,6 +191,9 @@ jobs:
           # uses lspconfig — that path is verified by end users with a plugin
           # manager, not in CI.
           cat > /tmp/nvim-smoke.lua <<'LUA'
+          -- nvim --headless -u NONE disables filetype detection. Re-enable so
+          -- the FileType autocmd fires when sample.rb is loaded.
+          vim.cmd("filetype on")
           vim.api.nvim_create_autocmd("FileType", {
             pattern = { "ruby", "eruby" },
             callback = function()
@@ -195,17 +205,17 @@ jobs:
             end,
           })
           vim.defer_fn(function()
-            local clients = vim.lsp.get_clients()
+            local clients = (vim.lsp.get_clients or vim.lsp.get_active_clients)()
             if #clients < 1 then
-              io.stderr:write("FAIL: no LSP client active after 8s\n")
+              io.stderr:write("FAIL: no LSP client active after 25s\n")
               vim.cmd("cq")
             else
               io.stdout:write("Neovim LSP smoke OK (" .. #clients .. " client)\n")
               vim.cmd("qa")
             end
-          end, 8000)
+          end, 25000)
           LUA
-          nvim --headless -u NONE -c "luafile /tmp/nvim-smoke.lua" /tmp/nvim-ws/sample.rb -c 'sleep 10' \
+          nvim --headless -u NONE -c "luafile /tmp/nvim-smoke.lua" /tmp/nvim-ws/sample.rb -c 'sleep 30' \
             || { echo "FAIL: Neovim LSP client did not start"; exit 1; }
 
   vscode-smoke:

@@ -38,7 +38,7 @@ jobs:
           restore-keys: linux-zig-scale-
       - run: sudo apt-get update && sudo apt-get install -y sqlite3 ruby coreutils time
       - name: Build refract (ReleaseSafe)
-        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Doptimize=ReleaseSafe
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Drelease=true
       - name: Generate synthetic corpus
         env:
           SIZE: ${{ github.event.inputs.corpus_size || '100000' }}

@@ -159,6 +159,10 @@ pub const Session = struct {
 
 pub fn extractResponses(alloc: std.mem.Allocator, raw: []const u8) ![]std.json.Parsed(std.json.Value) {
     var results = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
+    errdefer {
+        for (results.items) |*p| p.deinit();
+        results.deinit(alloc);
+    }
     var i: usize = 0;
     while (i < raw.len) {
         if (!std.mem.startsWith(u8, raw[i..], "Content-Length: ")) break;
