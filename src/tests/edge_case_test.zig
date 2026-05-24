@@ -158,6 +158,7 @@ test "P49 T49.2 Template: routes file with nested resources" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/routes.rb", .data = "Rails.application.routes.draw do\n  namespace :admin do\n    resources :users do\n      resources :posts do\n        resources :comments, only: [:create, :destroy]\n      end\n      collection do\n        get :active\n        post :bulk_update\n      end\n    end\n  end\n  scope 'api/v1' do\n    resources :products\n    resources :orders\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/routes.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"route_map\",\"arguments\":{}}}");
@@ -178,6 +179,7 @@ test "P49 T49.3 Template: locale file with i18n keys" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/locales/en.yml", .data = "en:\n  activerecord:\n    models:\n      user: User\n      post: Post\n    attributes:\n      user:\n        name: Name\n        email: Email Address\n        password: Password\n      post:\n        title: Post Title\n        content: Content\n  errors:\n    messages:\n      taken: has already been taken\n      invalid: is invalid\n  views:\n    users:\n      show: User Profile\n      edit: Edit User\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/locales/en.yml\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"i18n_lookup\",\"arguments\":{\"query\":\"activerecord\"}}}");

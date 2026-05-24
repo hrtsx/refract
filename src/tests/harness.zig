@@ -36,6 +36,12 @@ pub const Session = struct {
     alloc: std.mem.Allocator,
     input: std.ArrayList(u8),
     db_path: []u8,
+    /// Working directory for the spawned child. MCP mode derives its workspace
+    /// root from cwd (`realpath(".")`), so MCP tests must point this at their
+    /// own fixture dir; otherwise the child indexes the test runner's cwd (the
+    /// repo) and any large tree sitting there. `null` => inherit (LSP tests
+    /// pass `rootUri` and are unaffected by cwd).
+    cwd: ?[]const u8 = null,
 
     pub fn init(alloc: std.mem.Allocator) !Session {
         const ts = std.Io.Timestamp.now(std.Options.debug_io, .real).toMicroseconds();
@@ -92,6 +98,7 @@ pub const Session = struct {
         for (extra_args) |a| try argv.append(self.alloc, a);
         var child = try std.process.spawn(std.testing.io, .{
             .argv = argv.items,
+            .cwd = if (self.cwd) |c| .{ .path = c } else .inherit,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .pipe,

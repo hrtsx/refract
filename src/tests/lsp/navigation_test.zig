@@ -15,7 +15,7 @@ const base_exit = harness.base_exit;
 test "workspace/symbol returns array" {
     const alloc = std.testing.allocator;
 
-    const ws = "/tmp/refract_test_symbol";
+    const ws = "/tmp/refract_test_nav_batch_ws1";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
@@ -32,15 +32,25 @@ test "workspace/symbol returns array" {
         \\
         ,
     });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/const_test.rb",
+        .data = "MYCONST = 42\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/attr_test.rb",
+        .data = "class Dog\n  attr_accessor :name\nend\n",
+    });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sample.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sample.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/const_test.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/attr_test.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Test\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MYCONST\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"name\"}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -63,12 +73,62 @@ test "workspace/symbol returns array" {
         .array => |arr| try std.testing.expect(arr.items.len > 0),
         else => return error.ResultNotArray,
     }
+
+    const sym_resp3 = getResponseById(responses, 3) orelse return error.NoSymbolResponse;
+    const obj3 = switch (sym_resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result3 = obj3.get("result") orelse return error.NoResult;
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    try std.testing.expect(arr3.items.len > 0);
+    const first_sym = switch (arr3.items[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const kind = first_sym.get("kind") orelse return error.NoKind;
+    const kind_int = switch (kind) {
+        .integer => |i| i,
+        else => return error.KindNotInt,
+    };
+    try std.testing.expectEqual(@as(i64, 13), kind_int);
+
+    const sym_resp4 = getResponseById(responses, 4) orelse return error.NoSymbolResponse;
+    const obj4 = switch (sym_resp4) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result4 = obj4.get("result") orelse return error.NoResult;
+    const arr4 = switch (result4) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    var found_name = false;
+    for (arr4.items) |item| {
+        const it = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const n = it.get("name") orelse continue;
+        const ns = switch (n) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (std.mem.eql(u8, ns, "name")) {
+            found_name = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_name);
 }
 
 test "definition returns location" {
     const alloc = std.testing.allocator;
 
-    const ws = "/tmp/refract_test_def";
+    const ws = "/tmp/refract_test_nav_batch_def1";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
@@ -77,15 +137,33 @@ test "definition returns location" {
         .sub_path = ws ++ "/def_test.rb",
         .data = "class DefTarget; end\n",
     });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/doc_test.rb",
+        .data =
+        \\module TestMod
+        \\  class TestClass
+        \\    TESTCONST = 1
+        \\    def test_method; end
+        \\  end
+        \\end
+        \\
+        ,
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/hier_test.rb",
+        .data = "class HierFoo\n  def hier_bar\n  end\nend\n",
+    });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/def_test.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/def_test.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/doc_test.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/def_test.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/doc_test.rb\"}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\"}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -114,6 +192,64 @@ test "definition returns location" {
         else => return error.NotObject,
     };
     try std.testing.expect(first.get("uri") != null);
+
+    const resp3 = getResponseById(responses, 3) orelse return error.NoDocSymResponse;
+    const obj3 = switch (resp3) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result3 = obj3.get("result") orelse return error.NoResult;
+    const arr3 = switch (result3) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    try std.testing.expect(arr3.items.len > 0);
+
+    const resp4 = getResponseById(responses, 4) orelse return error.NoDocSymResponse;
+    const obj4 = switch (resp4) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result4 = obj4.get("result") orelse return error.NoResult;
+    const arr4 = switch (result4) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    var found_bar_as_child = false;
+    for (arr4.items) |item| {
+        const item_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const nm = item_obj.get("name") orelse continue;
+        const nm_str = switch (nm) {
+            .string => |sv| sv,
+            else => continue,
+        };
+        if (!std.mem.eql(u8, nm_str, "HierFoo")) continue;
+        const children_val = item_obj.get("children") orelse continue;
+        const children = switch (children_val) {
+            .array => |a| a,
+            else => continue,
+        };
+        for (children.items) |child| {
+            const child_obj = switch (child) {
+                .object => |o| o,
+                else => continue,
+            };
+            const cnm = child_obj.get("name") orelse continue;
+            const cnm_str = switch (cnm) {
+                .string => |sv| sv,
+                else => continue,
+            };
+            if (std.mem.eql(u8, cnm_str, "hier_bar")) {
+                found_bar_as_child = true;
+                break;
+            }
+        }
+        if (found_bar_as_child) break;
+    }
+    try std.testing.expect(found_bar_as_child);
 }
 
 test "documentSymbol returns symbols" {
@@ -229,124 +365,6 @@ test "delete event removes symbol" {
         else => return error.ResultNotArray,
     };
     try std.testing.expectEqual(@as(usize, 0), after_arr.items.len);
-}
-
-test "constant symbol has kind 13" {
-    const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_const";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/const_test.rb",
-        .data = "MYCONST = 42\n",
-    });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/const_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"MYCONST\"}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) {
-        .array => |a| a,
-        else => return error.ResultNotArray,
-    };
-    try std.testing.expect(arr.items.len > 0);
-    const first_sym = switch (arr.items[0]) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const kind = first_sym.get("kind") orelse return error.NoKind;
-    const kind_int = switch (kind) {
-        .integer => |i| i,
-        else => return error.KindNotInt,
-    };
-    try std.testing.expectEqual(@as(i64, 13), kind_int);
-}
-
-test "attr_accessor creates navigable symbols" {
-    const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_attr";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/attr_test.rb",
-        .data = "class Dog\n  attr_accessor :name\nend\n",
-    });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/attr_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"name\"}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
-    const obj = switch (sym_resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) {
-        .array => |a| a,
-        else => return error.ResultNotArray,
-    };
-    var found_name = false;
-    for (arr.items) |item| {
-        const it = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const n = it.get("name") orelse continue;
-        const ns = switch (n) {
-            .string => |sv| sv,
-            else => continue,
-        };
-        if (std.mem.eql(u8, ns, "name")) {
-            found_name = true;
-            break;
-        }
-    }
-    try std.testing.expect(found_name);
 }
 
 test "documentHighlight returns ranges in file" {
@@ -703,85 +721,6 @@ test "didChangeWatchedFiles delete removes symbols" {
         };
         try std.testing.expect(!std.mem.eql(u8, nm_str, "ToBeDeleted"));
     }
-}
-
-test "documentSymbol returns hierarchy" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_dochier";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/hier_test.rb",
-        .data = "class HierFoo\n  def hier_bar\n  end\nend\n",
-    });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/hier_test.rb\"}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoDocSymResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const arr = switch (result) {
-        .array => |a| a,
-        else => return error.ResultNotArray,
-    };
-    var found_bar_as_child = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const nm = item_obj.get("name") orelse continue;
-        const nm_str = switch (nm) {
-            .string => |sv| sv,
-            else => continue,
-        };
-        if (!std.mem.eql(u8, nm_str, "HierFoo")) continue;
-        const children_val = item_obj.get("children") orelse continue;
-        const children = switch (children_val) {
-            .array => |a| a,
-            else => continue,
-        };
-        for (children.items) |child| {
-            const child_obj = switch (child) {
-                .object => |o| o,
-                else => continue,
-            };
-            const cnm = child_obj.get("name") orelse continue;
-            const cnm_str = switch (cnm) {
-                .string => |sv| sv,
-                else => continue,
-            };
-            if (std.mem.eql(u8, cnm_str, "hier_bar")) {
-                found_bar_as_child = true;
-                break;
-            }
-        }
-        if (found_bar_as_child) break;
-    }
-    try std.testing.expect(found_bar_as_child);
 }
 
 test "server initializes and responds to workspace/symbol" {

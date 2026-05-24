@@ -1,5 +1,5 @@
 module AccuracyBlockReturn
-  class Service
+  class BrService
     def map_strings
       [1, 2, 3].map { |x| x.to_s }
     end

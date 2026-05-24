@@ -36,6 +36,12 @@ pub const SymbolKind = enum(u8) {
             else => false,
         };
     }
+
+    /// Kinds that behave as callable members reachable via `receiver.name`
+    /// (methods + synthesized association readers).
+    pub fn isCallableMember(self: SymbolKind) bool {
+        return self == .def or self == .classdef or self == .association;
+    }
 };
 
 pub const HotSymbol = struct {
@@ -264,7 +270,7 @@ pub const HotIndex = struct {
         var first_match: ?HotSymbol = null;
         for (candidates) |s| {
             if (!std.mem.eql(u8, s.name, method_name)) continue;
-            if (s.kind != .def and s.kind != .classdef) continue;
+            if (!s.kind.isCallableMember()) continue;
             if (count == 0) first_match = s;
             count += 1;
         }
@@ -281,7 +287,7 @@ pub const HotIndex = struct {
             var first_nonbundled: ?HotSymbol = null;
             for (candidates) |s| {
                 if (!std.mem.eql(u8, s.name, method_name)) continue;
-                if (s.kind != .def and s.kind != .classdef) continue;
+                if (!s.kind.isCallableMember()) continue;
                 if (!s.is_bundled) {
                     if (s.doc != null) return s;
                     if (first_nonbundled == null) first_nonbundled = s;
@@ -291,7 +297,7 @@ pub const HotIndex = struct {
             // All are bundled — prefer one with doc, fall back to first.
             for (candidates) |s| {
                 if (!std.mem.eql(u8, s.name, method_name)) continue;
-                if (s.kind != .def and s.kind != .classdef) continue;
+                if (!s.kind.isCallableMember()) continue;
                 if (s.doc != null) return s;
             }
             return first_match;
@@ -302,7 +308,7 @@ pub const HotIndex = struct {
         var best_score: u32 = 0;
         for (candidates) |s| {
             if (!std.mem.eql(u8, s.name, method_name)) continue;
-            if (s.kind != .def and s.kind != .classdef) continue;
+            if (!s.kind.isCallableMember()) continue;
             const s_score = score(s, query);
             if (best == null or s_score > best_score or
                 (s_score == best_score and scoreOrder(query, s, best.?)))
@@ -518,10 +524,22 @@ pub fn buildFromDb(parent: std.mem.Allocator, db: db_mod.Db) !*HotIndex {
                 if (!seen) try cgop.value_ptr.append(parent, owned_name);
             }
 
-            if ((kind == .def or kind == .classdef) and owned_parent != null) {
-                const mgop = try methods_lists.getOrPut(parent, owned_parent.?);
+            if (kind.isCallableMember() and owned_parent != null) {
+                const full_parent = owned_parent.?;
+                const mgop = try methods_lists.getOrPut(parent, full_parent);
                 if (!mgop.found_existing) mgop.value_ptr.* = .empty;
                 try mgop.value_ptr.append(parent, sym);
+                // Also key by the short class name (after the last "::") so a
+                // bare receiver type (`post` → "RaPost") resolves members of a
+                // module-nested class (`AccuracyRailsAssoc::RaPost`).
+                if (std.mem.lastIndexOf(u8, full_parent, "::")) |pos| {
+                    const short = full_parent[pos + 2 ..];
+                    if (short.len > 0) {
+                        const sgop = try methods_lists.getOrPut(parent, short);
+                        if (!sgop.found_existing) sgop.value_ptr.* = .empty;
+                        try sgop.value_ptr.append(parent, sym);
+                    }
+                }
             }
 
             idx.symbol_count += 1;

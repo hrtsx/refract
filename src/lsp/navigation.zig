@@ -114,6 +114,41 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
             const recv_w = extractWord(source, recv_off);
             if (recv_w.len > 0 and std.ascii.isUpper(recv_w[0])) recv_type = recv_w;
         }
+        // Local-var receiver: `u = User.new; u.method` — resolve the receiver's
+        // inferred type from local_vars so receiver-scoped definition lookup can
+        // find class methods (incl. synthesized delegate/attachment defs). Hover
+        // already does this; navigation must match.
+        var localvar_recv_owned: ?[]u8 = null;
+        defer if (localvar_recv_owned) |b| self.alloc.free(b);
+        if (recv_type == null) {
+            const recv_off = if (word_start_offset >= 2) word_start_offset - 2 else 0;
+            const recv_w = extractWord(source, recv_off);
+            if (recv_w.len > 0 and !std.ascii.isUpper(recv_w[0])) {
+                const cursor_line: i64 = @intCast(line + 1);
+                const fstmt = self.cachedStmt("SELECT id FROM files WHERE path = ?") catch null;
+                if (fstmt) |fs| {
+                    defer fs.reset();
+                    fs.bind_text(1, path);
+                    if ((fs.step() catch false)) {
+                        const fid = fs.column_int(0);
+                        const lv = self.cachedStmt("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1") catch null;
+                        if (lv) |lvs| {
+                            defer lvs.reset();
+                            lvs.bind_int(1, fid);
+                            lvs.bind_text(2, recv_w);
+                            lvs.bind_int(3, cursor_line);
+                            if ((lvs.step() catch false)) {
+                                const t = lvs.column_text(0);
+                                if (t.len > 0) {
+                                    localvar_recv_owned = self.alloc.dupe(u8, t) catch null;
+                                    if (localvar_recv_owned) |b| recv_type = b;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Sorbet/Steep receiver fallback: when no literal/constant detected,
         // ask the type bridge for the receiver word's class.
         var sorbet_recv_owned: ?[]u8 = null;
@@ -137,17 +172,10 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
         }
     }
 
-    if (!found_any) {
-        try queryAndEmitDefinitions(self, w, word, &found_any, &frc_def, def_origin);
-    }
-
-    if (!found_any) {
-        const qualified = extractQualifiedName(source, offset);
-        if (!std.mem.eql(u8, qualified, word)) {
-            try queryAndEmitDefinitions(self, w, qualified, &found_any, &frc_def, def_origin);
-        }
-    }
-
+    // Resolve a same-file, in-scope local variable BEFORE the global symbol
+    // table. A local (incl. pattern-match bindings) shadows a same-named global
+    // def — without this, `x` used in a method resolves to an unrelated class's
+    // `x` method in another file instead of the local binding.
     if (!found_any) {
         const cursor_line: i64 = @intCast(line + 1);
 
@@ -205,6 +233,8 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                 const lv_col = lv_stmt.column_int(2);
                 const lv_line_src = getLineSlice(source, @intCast(lv_line - 1));
                 const lv_start = self.toClientCol(lv_line_src, @intCast(lv_col));
+                if (found_any) try w.writeByte(',');
+                found_any = true;
                 try w.writeAll("{\"uri\":\"file://");
                 try writePathAsUri(w, path);
                 try w.writeAll("\",\"range\":{\"start\":{\"line\":");
@@ -217,6 +247,17 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                 try w.print("{d}", .{lv_start + @as(u32, @intCast(lv_name.len))});
                 try w.writeAll("}}}");
             }
+        }
+    }
+
+    if (!found_any) {
+        try queryAndEmitDefinitions(self, w, word, &found_any, &frc_def, def_origin, path);
+    }
+
+    if (!found_any) {
+        const qualified = extractQualifiedName(source, offset);
+        if (!std.mem.eql(u8, qualified, word)) {
+            try queryAndEmitDefinitions(self, w, qualified, &found_any, &frc_def, def_origin, path);
         }
     }
 
@@ -820,17 +861,21 @@ fn hashSymbol(sym: hot_index_mod.HotSymbol) u64 {
     return (@as(u64, sym.file_id) << 32) ^ (@as(u64, sym.line) << 16) ^ @as(u64, sym.col);
 }
 
-pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u8, found_any: *bool, frc: *std.StringHashMapUnmanaged([]const u8), origin: ?DefOrigin) !void {
+pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u8, found_any: *bool, frc: *std.StringHashMapUnmanaged([]const u8), origin: ?DefOrigin, cursor_path: []const u8) !void {
     const hot_hits = tryEmitFromHotIndex(self, w, name, found_any, frc, origin) catch 0;
     if (hot_hits > 0) return;
 
+    // Prefer a definition in the cursor's own file when the name collides across
+    // files (e.g. same-named classes in different namespaces). A local definition
+    // shadows; without this tie-break the first row is arbitrary (rowid order).
     const stmt_exact = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ? LIMIT 20
+        \\WHERE s.name = ? ORDER BY (f.path = ?) DESC LIMIT 20
     );
     defer stmt_exact.reset();
     stmt_exact.bind_text(1, name);
+    stmt_exact.bind_text(2, cursor_path);
 
     var found_count: usize = 0;
     while (try stmt_exact.step()) {

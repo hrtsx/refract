@@ -1,5 +1,5 @@
 module AccuracyRelationChain
-  class User
+  class RcUser
     def self.where(*); end
     def self.order(*); end
     def self.joins(*); end
@@ -9,7 +9,7 @@ module AccuracyRelationChain
     def self.last; end
   end
 
-  class Post
+  class RcPost
     def self.where(*); end
     def self.includes(*); end
     def self.order(*); end
@@ -17,26 +17,26 @@ module AccuracyRelationChain
   end
 
   def test_chain_where_order
-    User.where(active: true).order(:name).first
+    RcUser.where(active: true).order(:name).first
   end
 
   def test_chain_where_joins
-    User.where(active: true).joins(:posts).last
+    RcUser.where(active: true).joins(:posts).last
   end
 
   def test_chain_includes_order
-    Post.includes(:comments).order(:created_at).find
+    RcPost.includes(:comments).order(:created_at).find
   end
 
   def test_chain_find_by
-    User.where(role: :admin).find_by(email: "x@y")
+    RcUser.where(role: :admin).find_by(email: "x@y")
   end
 
   def test_chain_pluck
-    User.where(active: true).pluck(:email)
+    RcUser.where(active: true).pluck(:email)
   end
 
   def test_chain_take
-    User.where(deleted_at: nil).take
+    RcUser.where(deleted_at: nil).take
   end
 end

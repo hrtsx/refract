@@ -1627,4 +1627,3 @@ test "textDocumentSync advertises change:1" {
     };
     try std.testing.expectEqual(@as(i64, 1), change);
 }
-

@@ -1,4 +1,11 @@
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']         # all branches, no tags — tags are handled by release.yml
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -71,7 +78,7 @@ jobs:
           key: linux-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" --release=safe
       - uses: actions/cache@v5
         with:
           path: /tmp/refract_test_stdlib_template.db
@@ -82,9 +89,10 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" --release=safe test:${{ matrix.suite }}
 
   test-alpine:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     container: alpine:latest
     strategy:
@@ -125,11 +133,25 @@ jobs:
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
 
   test-macos:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: macos-latest
+    timeout-minutes: 45      # types cell ~27min; guard against runner hangs
     strategy:
       fail-fast: false
+      # Balanced into 5 cells (= free-plan macOS concurrency cap) so the lsp
+      # suite runs in a single wave; wall-clock falls to the slowest cell.
       matrix:
-        suite: [lsp, mcp, edge]
+        include:
+          - name: types-cli-misc-edge
+            steps: test:lsp-types test:lsp-cli test:lsp-misc test:edge
+          - name: types2-rename
+            steps: test:lsp-types2 test:lsp-rename
+          - name: nav-completion-mcp
+            steps: test:lsp-navigation test:lsp-completion test:mcp
+          - name: robustness-indexing2
+            steps: test:lsp-robustness test:lsp-indexing2
+          - name: indexing-hover-life-editing-diag
+            steps: test:lsp-indexing test:lsp-hover test:lsp-lifecycle test:lsp-editing test:lsp-diagnostics
     steps:
       - uses: actions/checkout@v4
       - name: Cache Zig binary
@@ -147,7 +169,7 @@ jobs:
           path: |
             ~/.cache/zig
             .zig-cache
-          key: macos-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          key: macos-zig-${{ matrix.name }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: macos-zig-
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
       - uses: actions/cache@v5
@@ -160,14 +182,26 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" ${{ matrix.steps }}
 
   test-debug:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Same 5-cell split as test-macos so the Debug suite parallelizes too.
       matrix:
-        suite: [lsp, mcp, edge]
+        include:
+          - name: types-cli-misc-edge
+            steps: test:lsp-types test:lsp-cli test:lsp-misc test:edge
+          - name: types2-rename
+            steps: test:lsp-types2 test:lsp-rename
+          - name: nav-completion-mcp
+            steps: test:lsp-navigation test:lsp-completion test:mcp
+          - name: robustness-indexing2
+            steps: test:lsp-robustness test:lsp-indexing2
+          - name: indexing-hover-life-editing-diag
+            steps: test:lsp-indexing test:lsp-hover test:lsp-lifecycle test:lsp-editing test:lsp-diagnostics
     steps:
       - uses: actions/checkout@v4
       - name: Cache Zig binary
@@ -185,7 +219,7 @@ jobs:
           path: |
             ~/.cache/zig
             .zig-cache
-          key: linux-zig-debug-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
+          key: linux-zig-debug-${{ matrix.name }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-debug-
       - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
@@ -199,10 +233,12 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" test:${{ matrix.suite }}
+      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" ${{ matrix.steps }}
 
   valgrind:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15      # self-test normally <1min; guard against runner hangs
     steps:
       - uses: actions/checkout@v4
       - name: Cache Zig binary

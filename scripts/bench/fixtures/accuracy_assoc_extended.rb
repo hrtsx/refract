@@ -1,25 +1,25 @@
 module AccuracyAssocExtended
-  class Article
+  class ExArticle
     has_many :comments, as: :commentable
-    belongs_to :author, class_name: "User"
+    belongs_to :author, class_name: "ExUser"
   end
 
   class Video
     has_many :comments, as: :commentable
   end
 
-  class Comment
+  class ExComment
     belongs_to :commentable, polymorphic: true
     belongs_to :user
   end
 
-  class User
+  class ExUser
     has_many :posts
     has_many :comments
     has_many :articles, through: :comments, source: :article
   end
 
-  class Post
+  class ExPost
     belongs_to :user
     has_many :reactions
   end
@@ -29,14 +29,16 @@ module AccuracyAssocExtended
   end
 
   def test_associations
-    user = User.first
+    user = ExUser.first
     user.posts
     user.comments
     user.articles
-    article = Article.first
+    article = ExArticle.first
     article.comments
     article.author
-    comment = Comment.first
+    comment = ExComment.first
     comment.commentable
+    post = ExPost.first
+    post.reactions
   end
 end

@@ -1,5 +1,5 @@
 module AccuracyPatternMatch
-  class Service
+  class PmService
     def match_record(obj)
       case obj
       in Foo => bar

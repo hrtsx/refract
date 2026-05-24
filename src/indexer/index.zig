@@ -2045,6 +2045,10 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             };
                         } else |_| {}
                     }
+                    // Members are accessor methods on the assigned constant
+                    // (e.g. `Point = Struct.new(:x)` → `Point#x`), so parent must
+                    // be the constant name for receiver-typed `point.x` lookup.
+                    const struct_parent = resolveConstant(ctx.parser, cn.name);
                     if (call.arguments != null) {
                         const args = call.arguments[0].arguments;
                         for (0..args.size) |ai| {
@@ -2054,7 +2058,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                 if (sym.unescaped.source) |src| {
                                     const sym_name = src[0..sym.unescaped.length];
                                     const alc = locationLineCol(ctx.parser, arg.*.location.start);
-                                    insertSymbol(ctx, "def", sym_name, alc.line, alc.col, null) catch {
+                                    insertSymbolWithReturn(ctx, "def", sym_name, alc.line, alc.col, null, null, struct_parent, null) catch {
                                         ctx.error_count += 1;
                                     };
                                     if (is_struct_new) {
@@ -2062,7 +2066,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                                         defer ctx.alloc.free(writer_name);
                                         @memcpy(writer_name[0..sym_name.len], sym_name);
                                         writer_name[sym_name.len] = '=';
-                                        insertSymbol(ctx, "def", writer_name, alc.line, alc.col, null) catch {
+                                        insertSymbolWithReturn(ctx, "def", writer_name, alc.line, alc.col, null, null, struct_parent, null) catch {
                                             ctx.error_count += 1;
                                         };
                                     }
@@ -2407,6 +2411,12 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                     // `prefix: true`+`to:` fallback.
                     const effective_prefix: ?[]const u8 = if (prefix_sym) |ps| ps else if (prefix_true) to_sym else null;
 
+                    // Delegated methods are instance methods of the enclosing
+                    // class; carry its namespace as parent so receiver-typed
+                    // goto/hover (`user.profile_name`) can find them.
+                    var del_ns_buf: [256]u8 = undefined;
+                    const del_parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &del_ns_buf) else null;
+
                     for (0..del_args.size) |di| {
                         const arg = del_args.nodes[di];
                         if (arg.*.type == prism.NODE_KEYWORD_HASH) continue;
@@ -2419,16 +2429,16 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (effective_prefix) |ep| {
                             var nbuf: [192]u8 = undefined;
                             const prefixed = std.fmt.bufPrint(&nbuf, "{s}_{s}", .{ ep, dname }) catch {
-                                insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                                insertSymbolWithReturn(ctx, "def", dname, dlc.line, dlc.col, null, "delegate", del_parent, null) catch {
                                     ctx.error_count += 1;
                                 };
                                 continue;
                             };
-                            insertSymbol(ctx, "def", prefixed, dlc.line, dlc.col, null) catch {
+                            insertSymbolWithReturn(ctx, "def", prefixed, dlc.line, dlc.col, null, "delegate", del_parent, null) catch {
                                 ctx.error_count += 1;
                             };
                         } else {
-                            insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                            insertSymbolWithReturn(ctx, "def", dname, dlc.line, dlc.col, null, "delegate", del_parent, null) catch {
                                 ctx.error_count += 1;
                             };
                         }
@@ -2442,6 +2452,8 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             {
                 if (cn.arguments) |args_node| {
                     const fwd_args = args_node.*.arguments;
+                    var fwd_ns_buf: [256]u8 = undefined;
+                    const fwd_parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &fwd_ns_buf) else null;
                     var fj: usize = 1; // skip first arg (the delegate target, e.g. :@engine)
                     while (fj < fwd_args.size) : (fj += 1) {
                         const arg = fwd_args.nodes[fj];
@@ -2450,7 +2462,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                         if (sn.unescaped.source == null) continue;
                         const dname = sn.unescaped.source[0..sn.unescaped.length];
                         const dlc = locationLineCol(ctx.parser, arg.*.location.start);
-                        insertSymbol(ctx, "def", dname, dlc.line, dlc.col, null) catch {
+                        insertSymbolWithReturn(ctx, "def", dname, dlc.line, dlc.col, null, "def_delegator", fwd_parent, null) catch {
                             ctx.error_count += 1;
                         };
                     }
@@ -3626,28 +3638,11 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const ap: *const prism.ArrayPatternNode = @ptrCast(@alignCast(n));
             if (ap.requireds.size > 0) {
                 for (0..ap.requireds.size) |i| {
-                    const elem = ap.requireds.nodes[i];
-                    if (elem.*.type == prism.NODE_CAPTURE_PATTERN) {
-                        const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(elem));
-                        const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
-                        const elem_name = resolveConstant(ctx.parser, target.name);
-                        const elem_lc = locationLineCol(ctx.parser, elem.*.location.start);
-                        insertLocalVar(ctx.db, ctx.file_id, elem_name, elem_lc.line, elem_lc.col, "Object", 85, ctx.scope_id) catch {
-                            ctx.error_count += 1;
-                        };
-                    }
+                    indexPatternTarget(ctx, ap.requireds.nodes[i], "Object");
                 }
             }
             if (ap.rest) |rest_pat| {
-                if (rest_pat.*.type == prism.NODE_CAPTURE_PATTERN) {
-                    const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(rest_pat));
-                    const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
-                    const rest_name = resolveConstant(ctx.parser, target.name);
-                    const rest_lc = locationLineCol(ctx.parser, rest_pat.*.location.start);
-                    insertLocalVar(ctx.db, ctx.file_id, rest_name, rest_lc.line, rest_lc.col, "[Object]", 85, ctx.scope_id) catch {
-                        ctx.error_count += 1;
-                    };
-                }
+                indexPatternTarget(ctx, rest_pat, "[Object]");
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
             return false;
@@ -3657,18 +3652,26 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (hp.elements.size > 0) {
                 for (0..hp.elements.size) |i| {
                     const elem = hp.elements.nodes[i];
-                    if (elem.*.type == prism.NODE_ASSOC) {
-                        const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
-                        if (assoc.value.*.type == prism.NODE_CAPTURE_PATTERN) {
-                            const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(assoc.value));
-                            const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
-                            const hash_key_name = resolveConstant(ctx.parser, target.name);
-                            const hash_lc = locationLineCol(ctx.parser, assoc.value.*.location.start);
-                            insertLocalVar(ctx.db, ctx.file_id, hash_key_name, hash_lc.line, hash_lc.col, "Object", 85, ctx.scope_id) catch {
-                                ctx.error_count += 1;
-                            };
+                    if (elem.*.type != prism.NODE_ASSOC) continue;
+                    const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
+                    const vt = assoc.value.*.type;
+                    if (vt == prism.NODE_CAPTURE_PATTERN or vt == prism.NODE_LOCAL_VARIABLE_TARGET) {
+                        // `{k: Type => name}` or `{k: name}` — the value is the binding.
+                        indexPatternTarget(ctx, assoc.value, "Object");
+                    } else if (vt == prism.NODE_IMPLICIT) {
+                        // Shorthand `{name:}` — the key symbol IS the bound local.
+                        if (assoc.key.*.type == prism.NODE_SYMBOL) {
+                            const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
+                            if (ksym.unescaped.source) |src| {
+                                const kname = src[0..ksym.unescaped.length];
+                                const hash_lc = locationLineCol(ctx.parser, assoc.key.*.location.start);
+                                insertLocalVar(ctx.db, ctx.file_id, kname, hash_lc.line, hash_lc.col, "Object", 85, ctx.scope_id) catch {
+                                    ctx.error_count += 1;
+                                };
+                            }
                         }
                     }
+                    // Nested array/hash patterns are handled by visit_child_nodes below.
                 }
             }
             prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
@@ -3748,6 +3751,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
             const name = resolveConstant(ctx.parser, rp.name);
             const lc = locationLineCol(ctx.parser, rp.base.location.start);
             try insertParam(ctx.db, symbol_id, position, name, "required", null, 0);
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 90, symbol_id) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
         }
         position += 1;
@@ -3760,6 +3766,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
             const name = resolveConstant(ctx.parser, op.name);
             const lc = locationLineCol(ctx.parser, op.base.location.start);
             try insertParam(ctx.db, symbol_id, position, name, "optional", null, 0);
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 90, symbol_id) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
         }
         position += 1;
@@ -3773,6 +3782,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
                 const name = resolveConstant(ctx.parser, rp.name);
                 const lc = locationLineCol(ctx.parser, rp.base.location.start);
                 try insertParam(ctx.db, symbol_id, position, name, "rest", "Array", 0);
+                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, "Array", 90, symbol_id) catch {
+                    ctx.error_count += 1;
+                };
                 addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
             } else {
                 try insertParam(ctx.db, symbol_id, position, "*", "rest", "Array", 0);
@@ -3788,6 +3800,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
             const name = resolveConstant(ctx.parser, rk.name);
             const lc = locationLineCol(ctx.parser, rk.base.location.start);
             try insertParam(ctx.db, symbol_id, position, name, "keyword", null, 0);
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 90, symbol_id) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
         } else if (n.*.type == prism.NODE_OPTIONAL_KW_PARAM) {
             const ok: *const prism.OptionalKwParamNode = @ptrCast(@alignCast(n));
@@ -3804,6 +3819,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
                 else => null,
             } else null;
             try insertParam(ctx.db, symbol_id, position, name, "keyword", kw_type, 0);
+            insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, kw_type, 90, symbol_id) catch {
+                ctx.error_count += 1;
+            };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
         }
         position += 1;
@@ -3817,6 +3835,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
                 const name = resolveConstant(ctx.parser, kr.name);
                 const lc = locationLineCol(ctx.parser, kr.base.location.start);
                 try insertParam(ctx.db, symbol_id, position, name, "keyword_rest", "Hash", 0);
+                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, "Hash", 90, symbol_id) catch {
+                    ctx.error_count += 1;
+                };
                 addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
             } else {
                 try insertParam(ctx.db, symbol_id, position, "**", "keyword_rest", "Hash", 0);
@@ -3833,6 +3854,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
                 const name = resolveConstant(ctx.parser, bp.name);
                 const lc = locationLineCol(ctx.parser, bp.base.location.start);
                 try insertParam(ctx.db, symbol_id, position, name, "block", null, 0);
+                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, null, 90, symbol_id) catch {
+                    ctx.error_count += 1;
+                };
                 addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 3);
             } else {
                 try insertParam(ctx.db, symbol_id, position, "&", "block", null, 0);
@@ -3999,6 +4023,37 @@ fn insertParam(db: db_mod.Db, symbol_id: i64, position: u32, name: []const u8, k
     if (type_hint) |th| stmt.bind_text(5, th) else stmt.bind_null(5);
     stmt.bind_int(6, @intCast(confidence));
     _ = try stmt.step();
+}
+
+/// Index a pattern-match binding target. Handles `pattern => name`
+/// (CapturePatternNode, type from the pattern's constant) and a bare
+/// `name` binding (LocalVariableTargetNode, type from `default_type`).
+fn indexPatternTarget(ctx: *VisitCtx, node: *const prism.Node, default_type: ?[]const u8) void {
+    if (node.*.type == prism.NODE_CAPTURE_PATTERN) {
+        const cap: *const prism.CapturePatternNode = @ptrCast(@alignCast(node));
+        const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(cap.target));
+        const name = resolveConstant(ctx.parser, target.name);
+        var pat_type: ?[]const u8 = default_type;
+        if (cap.value.*.type == prism.NODE_CONSTANT) {
+            const cn2: *const prism.ConstReadNode = @ptrCast(@alignCast(cap.value));
+            pat_type = resolveConstant(ctx.parser, cn2.name);
+        }
+        const lc = locationLineCol(ctx.parser, node.*.location.start);
+        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, pat_type, 85, ctx.scope_id) catch {
+            ctx.error_count += 1;
+        };
+    } else if (node.*.type == prism.NODE_LOCAL_VARIABLE_TARGET) {
+        const target: *const prism.LocalVarTargetNode = @ptrCast(@alignCast(node));
+        const name = resolveConstant(ctx.parser, target.name);
+        const lc = locationLineCol(ctx.parser, node.*.location.start);
+        insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, default_type, 85, ctx.scope_id) catch {
+            ctx.error_count += 1;
+        };
+    } else if (node.*.type == prism.NODE_SPLAT) {
+        // `*rest` binding in an array pattern — unwrap to the inner target.
+        const sp: *const prism.SplatNode = @ptrCast(@alignCast(node));
+        if (sp.expression) |inner| indexPatternTarget(ctx, inner, default_type);
+    }
 }
 
 fn insertLocalVar(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, type_hint: ?[]const u8, confidence: u8, scope_id: ?i64) !void {

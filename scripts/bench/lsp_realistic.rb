@@ -166,10 +166,17 @@ else
 end
 warm_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - warm_t0) * 1000).round(1)
 
-# Refract-specific: block until the bg indexer + hot-index rebuild are idle.
-# Symbol probe above only proves the cold SQL path is queryable — hot index
-# (def pre-render, params_sig cache, ...) may still be empty, which gives
-# false-low cold p50s in micro mode. waitForIdle waits up to 10 s.
+# `first_query_ms` is the time until the server first answers a real query —
+# measured identically for every server. This is the fair cold-start metric.
+first_query_ms = warm_ms
+idle_ms = 0.0
+
+# Refract-specific: also block until the bg indexer + hot-index rebuild are
+# idle. Symbol probe above only proves the cold SQL path is queryable — hot
+# index (def pre-render, params_sig cache, ...) may still be empty, which gives
+# false-low cold p50s in micro mode. waitForIdle waits up to 30 s. This idle
+# time is background work that does NOT block queries, so it is reported
+# separately rather than folded into the cold-start number.
 if NAME == "refract"
   idle_t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   client.request("$/refract/__waitForIdle", {}, timeout: 30)
@@ -344,6 +351,8 @@ result = {
   files_opened: files.length,
   initialize_ms: init_ms,
   warmup_first_def_ms: warm_ms,
+  warmup_first_query_ms: first_query_ms,
+  warmup_idle_ms: idle_ms,
   warmup_ok: warm_ok,
   seed: SEED,
 }
