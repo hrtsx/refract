@@ -258,9 +258,9 @@ test "rename is scope-aware: only renames within same method" {
     var s = try Session.init(alloc);
     defer s.deinit();
 
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/scope_rename_test.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/scope_rename_test.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"def foo\\n  x = 1\\n  x\\nend\\ndef bar\\n  x = 2\\n  x\\nend\\n\"}}}");
     try s.waitIdle(100);
     // Rename x inside foo (line 1, col 2)
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/scope_rename_test.rb\"},\"position\":{\"line\":1,\"character\":2},\"newName\":\"y\"}}");

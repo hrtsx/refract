@@ -163,6 +163,10 @@ pub const PinnedVariableNode = c.pm_pinned_variable_node_t;
 pub const NODE_PINNED_VARIABLE = c.PM_PINNED_VARIABLE_NODE;
 pub const HashPatternNode = c.pm_hash_pattern_node_t;
 pub const NODE_HASH_PATTERN = c.PM_HASH_PATTERN_NODE;
+pub const NODE_LOCAL_VARIABLE_TARGET = c.PM_LOCAL_VARIABLE_TARGET_NODE;
+pub const NODE_IMPLICIT = c.PM_IMPLICIT_NODE;
+pub const NODE_SPLAT = c.PM_SPLAT_NODE;
+pub const SplatNode = c.pm_splat_node_t;
 
 // Loop & conditional nodes (Phase 29)
 pub const WhileNode = c.pm_while_node_t;

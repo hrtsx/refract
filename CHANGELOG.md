@@ -1,52 +1,74 @@
 # Changelog
 
-## [0.1.0-beta.1] - 2026-05-26
+## [0.1.0-beta.1] - 2026-06-15
 
-Single release candidate. Hardening on top of the public alpha.1 surface;
-verified against the existing 1 000+ test suite.
+Hardening on top of the alpha.1 surface. Green across the lsp/mcp/edge suites
+on Linux, Alpine (musl), macOS, and the debug build, plus the valgrind
+self-test.
+
+### Navigation & types
+
+- Go-to-definition resolves method parameters: each named parameter is mirrored
+  into `local_vars`, so references in the body — including `case/in` arms —
+  navigate to the declaration.
+- Receiver-aware navigation for association, `delegate`, pattern-match binding,
+  and `Struct` members.
+- Route helper indexing: `member`/`collection` `:id`, namespace/scope
+  separators, hash-rocket form, helper-name sanitization.
+- `delegate(prefix:, to:)` parsing; ActiveRecord relation chains unwrap
+  `.first`/`.last`/`.find`, `pluck` → `Array`; `&method(:foo)` resolves like
+  `&:foo`.
 
 ### Reliability
 
-- LSP `callHierarchy/outgoingCalls` UAF fix on musl (commit 2bccb65d). The
-  former Alpine-only "malformed JSON in response stream" was caused by an
-  arena buffer being freed before serialization; the offending handler now
-  duplicates the def-statement view into its own arena. The musl CI skip
-  introduced during dogfooding is removed.
-- LSP query handlers no longer drive synchronous index flushes
-  (`flushDirtyUrisDebounced`); the flush runs on the background worker
-  exclusively, eliminating tail-latency cliffs on cold queries.
-- Pre-rendered method and completion bodies; sort/dedup cost dropped from
-  the per-query path.
+- `$/refract/__waitForIdle` waits out any in-flight background reindex before
+  returning, making `didChangeWatchedFiles → query` deterministic on every
+  platform (was an intermittent macOS/debug miss).
+- `didChange` diagnostics debounced off the query hot path; query handlers no
+  longer drive synchronous index flushes.
+- `callHierarchy/outgoingCalls` use-after-free fixed on musl (per-iteration
+  def-statement arena); the Alpine CI skip is removed.
+- DB self-heal on corruption with a `$/refract/recovered` notification; cache
+  key and MCP realpath free leaks closed.
 
 ### Security
 
-- MCP `normalizeFileArg` rejects parent-directory traversal segments
-  outright (`../`). SQL was already parametrized and file reads keyed off
-  DB-indexed paths, so this is defense-in-depth, but it gives a uniform
-  answer at the API boundary instead of relying on indexer scoping.
-- MCP `pathInWorkspace` tightens prefix matching so `/workspace-evil` no
-  longer matches `/workspace`.
-- New regression test (`MCP rejects path-traversal in file argument`).
+- Plugin sandbox enforced via the `refract --sandbox-exec` trampoline (Linux
+  seccomp + Landlock + setrlimit; macOS `sandbox_init` + setrlimit), manifest
+  fail-closed on `allow_network` / `allow_fs_write`.
+- MCP file arguments reject `../` traversal; `pathInWorkspace` prefix match
+  tightened so `/workspace-evil` no longer matches `/workspace`.
+- Secret-redaction module, plugin env-gating, elevated-capability refusal;
+  `runTest` path-bounds and a 16 MiB `didChange` cap.
 
-### Soak / CI
+### Performance
 
-- Soak corpus expanded from `discourse/lib` (one directory) to full
-  Discourse + full Mastodon repositories.
-- Weekly Sunday cron added: 5 h deep soak with the same RSS-drift,
-  fd-leak, WAL-bloat, and SQLITE_BUSY assertions as the nightly 2 h
-  broad-corpus run. (GitHub-hosted runner cap is 6 h; a 24 h soak path
-  needs self-hosted infra and is deferred to 0.1.1.)
-- `perf-nightly.yml` switched off `mlugg/setup-zig@v1` (whose mirror
-  routing has been 404-ing for several days) to the same `curl` cache
-  pattern used by `ci.yml` and `soak.yml`. Restores nightly bench signal.
+- Pre-prepared def/completion SQL and pre-rendered hover/def/completion bodies;
+  sort/dedup dropped from the per-query path; hot LRU 8 → 32.
 
-### Docs
+### CLI & diagnostics
 
-- CHANGELOG `Deferred to 0.2.0` no longer claims plugin sandboxing is
-  deferred — the OS-level filter (Linux seccomp + Landlock + setrlimit;
-  macOS `sandbox_init` + setrlimit) has shipped via the
-  `refract --sandbox-exec` trampoline. Manifest validation is fail-closed
-  on `allow_network: true` / non-empty `allow_fs_write` in 0.1.0.
+- `doctor` gains WAL/Bundler/TMPDIR/crash/plugin checks, explicit exit codes,
+  and warns on unknown init keys; OTLP export redacts secrets.
+
+### Benchmarks & accuracy
+
+- Go-to-definition accuracy re-baselined on the 76-case user-code + 24-case
+  stdlib fixture vs ruby-lsp 0.26.9 and solargraph 0.58.3; seven broken probes
+  corrected and the suite re-run identically for all three servers.
+- `docs/BENCHMARK.md`: the shipped binary is `--release=safe` and is the build
+  benchmarked. ReleaseSafe keeps runtime safety checks (refract indexes
+  arbitrary Ruby — malformed input panics cleanly instead of corrupting a
+  long-lived server); ReleaseFast is within noise on the hot query paths.
+
+### Tests & CI
+
+- 27k-line `protocol_test.zig` split into per-area `src/tests/lsp/*` modules;
+  the `test:lsp` aggregate step restored so `ci.yml`'s `[lsp, mcp, edge]` matrix
+  drives it.
+- `--mcp` test workspaces isolated from the inherited cwd.
+- Added test-debug + valgrind matrix, a concurrency burst test, and fuzz/soak
+  nightlies; soak corpus expanded to full Discourse + Mastodon.
 
 ## [0.1.0-alpha.1] - 2026-05-14
 

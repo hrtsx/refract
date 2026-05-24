@@ -1,4 +1,11 @@
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]         # skip feature-branch WIP and tags
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

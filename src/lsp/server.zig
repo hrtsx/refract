@@ -454,14 +454,28 @@ fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
     const stdlib_const = alloc.alloc([]const u8, stdlib_paths.len) catch return;
     defer alloc.free(stdlib_const);
     for (stdlib_paths, 0..) |p, si| stdlib_const[si] = p;
-    ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-    indexer.reindex(db, stdlib_const, true, alloc, ctx.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
-        var ebuf3: [256]u8 = undefined;
-        const emsg3 = std.fmt.bufPrint(&ebuf3, "refract: stdlib reindex failed: {s}", .{@errorName(e)}) catch "refract: stdlib reindex failed";
-        ctx.server_ptr.sendLogMessage(2, emsg3);
+    // Index in small batches, releasing db_mutex between each so query handlers
+    // can interleave. Holding the mutex across the whole stdlib reindex (~hundreds
+    // of .rbs files) would stall every query for several seconds during cold
+    // start — the workspace cold-index avoids this with per-file locking, and the
+    // stdlib path must too.
+    const max_size = ctx.server_ptr.max_file_size.load(.monotonic);
+    const BATCH = 16;
+    var bi: usize = 0;
+    while (bi < stdlib_const.len) : (bi += BATCH) {
+        if (ctx.server_ptr.bg_cancelled.load(.acquire)) return;
+        const end = @min(bi + BATCH, stdlib_const.len);
+        ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+        indexer.reindex(db, stdlib_const[bi..end], true, alloc, max_size, null) catch |e| {
+            var ebuf3: [256]u8 = undefined;
+            const emsg3 = std.fmt.bufPrint(&ebuf3, "refract: stdlib reindex failed: {s}", .{@errorName(e)}) catch "refract: stdlib reindex failed";
+            ctx.server_ptr.sendLogMessage(2, emsg3);
+            ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            return;
+        };
         ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
-        return;
-    };
+    }
+    ctx.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
     setMetaInt(db, "stdlib_rbs_indexed", 1, alloc);
     ctx.server_ptr.db_mutex.unlock(std.Options.debug_io);
     var sbuf: [128]u8 = undefined;

@@ -26,5 +26,6 @@ module AccuracySplatKwargs
     method_with_kwargs(key: "value")
     opts = {key: "value"}
     method_with_kwargs(**opts)
+    method_with_rest(1, 2, 3)
   end
 end

@@ -308,4 +308,3 @@ test "P33 T33.13 class_methods do block promotes inner defs to class-level" {
     // Expect the symbol indexed (workspace/symbol returns it regardless of kind).
     try std.testing.expect(std.mem.indexOf(u8, raw, "search_by_title") != null);
 }
-

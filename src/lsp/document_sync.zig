@@ -753,7 +753,21 @@ pub fn handleWaitForIdle(self: *Server, msg: types.RequestMessage) !?types.Respo
         }
     }
 
-    self.flushIncrPaths();
+    // Drain queued watched-file reindexes, then close the race where the bg
+    // worker grabbed the batch before us and is still mid-reindex: acquiring
+    // `db_mutex` blocks until any in-flight reindex cycle finishes (it holds the
+    // mutex for the whole `indexer.reindex` call). Re-check the queue under lock
+    // and loop until it is observed empty while no reindex is in flight, so the
+    // following query is guaranteed to see the new symbols on every platform.
+    while (true) {
+        self.flushIncrPaths();
+        self.db_mutex.lockUncancelable(std.Options.debug_io);
+        self.incr_paths_mu.lockUncancelable(std.Options.debug_io);
+        const drained = self.incr_paths.items.len == 0;
+        self.incr_paths_mu.unlock(std.Options.debug_io);
+        self.db_mutex.unlock(std.Options.debug_io);
+        if (drained) break;
+    }
 
     const raw = try self.alloc.dupe(u8, "null");
     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw, .@"error" = null };

@@ -10,6 +10,7 @@ test "P46 T46.1 MCP tools/list returns tools" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -26,6 +27,7 @@ test "P46 T46.2 MCP workspace_health returns metrics" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"workspace_health\",\"arguments\":{}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -43,6 +45,7 @@ test "P46 T46.3 MCP resolve_type returns type hint" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def full_name\n    name = \"John\"\n    name\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"resolve_type\",\"arguments\":{\"file\":\"" ++ ws ++ "/user.rb\",\"line\":3}}}");
@@ -61,6 +64,7 @@ test "P46 T46.4 MCP class_summary returns methods" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def full_name\n    \"John\"\n  end\n  def normalize_name\n    self.name = name.strip\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"class_summary\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -79,6 +83,7 @@ test "P46 T46.5 MCP method_signature returns signature" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def greet(name, greeting = 'Hello')\n    \"#{greeting} #{name}\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"method_signature\",\"arguments\":{\"class_name\":\"User\",\"method_name\":\"greet\"}}}");
@@ -97,6 +102,7 @@ test "P46 T46.6 MCP find_callers returns call sites" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def helper_method\n    \"test\"\n  end\n  def use_it\n    helper_method\n    helper_method\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_callers\",\"arguments\":{\"method_name\":\"helper_method\"}}}");
@@ -115,6 +121,7 @@ test "P46 T46.7 MCP find_implementations finds method implementations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/base.rb", .data = "class Base\n  def process\n    \"base\"\n  end\nend\nclass Child < Base\n  def process\n    \"child\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/base.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_implementations\",\"arguments\":{\"method_name\":\"process\"}}}");
@@ -133,6 +140,7 @@ test "P46 T46.8 MCP workspace_symbols searches symbols" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def user_id\n    42\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"workspace_symbols\",\"arguments\":{\"query\":\"User\"}}}");
@@ -151,6 +159,7 @@ test "P46 T46.9 MCP type_hierarchy returns ancestors and descendants" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/hierarchy.rb", .data = "class Animal\nend\nclass Dog < Animal\n  def bark\n    \"woof\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/hierarchy.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"type_hierarchy\",\"arguments\":{\"class_name\":\"Dog\"}}}");
@@ -169,6 +178,7 @@ test "P46 T46.10 MCP association_graph returns ActiveRecord associations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User < ApplicationRecord\n  has_many :posts\n  belongs_to :organization\n  has_one :profile\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"association_graph\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -187,6 +197,7 @@ test "P46 T46.11 MCP route_map lists Rails routes" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/routes.rb", .data = "Rails.application.routes.draw do\n  resources :users\n  get 'home', to: 'pages#home'\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/routes.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"route_map\",\"arguments\":{}}}");
@@ -205,6 +216,7 @@ test "P46 T46.12 MCP diagnostics returns file diagnostics" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def broken\n    x = 1\n    y = 2\n    z\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"file\":\"" ++ ws ++ "/app.rb\"}}}");
@@ -223,6 +235,7 @@ test "P46 T46.13 MCP get_symbol_source returns method source" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def full_name\n    \"John Doe\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_symbol_source\",\"arguments\":{\"class_name\":\"User\",\"method_name\":\"full_name\"}}}");
@@ -241,6 +254,7 @@ test "P46 T46.14 MCP grep_source searches source files" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/code.rb", .data = "class User\n  def email_address\n    \"user@example.com\"\n  end\n  def show_email\n    puts email_address\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/code.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"grep_source\",\"arguments\":{\"query\":\"email\"}}}");
@@ -261,6 +275,7 @@ test "P46 T46.15 MCP i18n_lookup searches translations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/locales/en.yml", .data = "en:\n  models:\n    user:\n      name: \"User Name\"\n      email: \"Email Address\"\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/locales/en.yml\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"i18n_lookup\",\"arguments\":{\"query\":\"models\"}}}");
@@ -279,6 +294,7 @@ test "P46 T46.16 MCP list_by_kind lists symbols by kind" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class User\n  def process\n    true\n  end\nend\nclass Post\n  def publish\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_by_kind\",\"arguments\":{\"kind\":\"class\"}}}");
@@ -297,6 +313,7 @@ test "P46 T46.17 MCP find_unused finds dead code" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def used_method\n    true\n  end\n  def unused_method\n    false\n  end\nend\nApp.new.used_method\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_unused\",\"arguments\":{\"kind\":\"def\"}}}");
@@ -315,6 +332,7 @@ test "P46 T46.18 MCP get_file_overview lists symbols in file" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def initialize(name)\n    @name = name\n  end\n  def display_name\n    @name\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_file_overview\",\"arguments\":{\"file\":\"" ++ ws ++ "/user.rb\"}}}");
@@ -333,6 +351,7 @@ test "P46 T46.19 MCP list_validations lists ActiveRecord validations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User < ApplicationRecord\n  validates :name, presence: true\n  validates :email, presence: true, uniqueness: true\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_validations\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -351,6 +370,7 @@ test "P46 T46.20 MCP list_callbacks lists callbacks" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User < ApplicationRecord\n  before_save :normalize_name\n  after_create :send_welcome_email\n  before_destroy :cleanup\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_callbacks\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -369,6 +389,7 @@ test "P46 T46.21 MCP concern_usage finds concern usages" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/code.rb", .data = "module Timestampable\n  def created_at; end\n  def updated_at; end\nend\nclass User\n  include Timestampable\nend\nclass Post\n  include Timestampable\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/code.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"concern_usage\",\"arguments\":{\"module_name\":\"Timestampable\"}}}");
@@ -387,6 +408,7 @@ test "P46 T46.22 MCP find_references finds method references" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class User\n  def create\n    true\n  end\n  def handle\n    create\n    create\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_references\",\"arguments\":{\"name\":\"create\"}}}");
@@ -405,6 +427,7 @@ test "P46 T46.24 MCP find_references filters by ref_kind" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/mixed.rb", .data = "class Test\n  def foo\n    42\n  end\n  def bar\n    foo\n    foo\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/mixed.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_references\",\"arguments\":{\"name\":\"foo\"}}}");
@@ -424,6 +447,7 @@ test "P46 T46.23 MCP explain_symbol explains method" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def greet\n    \"Hello\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_symbol\",\"arguments\":{\"class_name\":\"User\",\"method_name\":\"greet\"}}}");
@@ -442,6 +466,7 @@ test "P46 T46.24 MCP batch_resolve resolves multiple positions" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def run\n    x = 1\n    y = 2\n    x + y\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"batch_resolve\",\"arguments\":{\"positions\":[{\"file\":\"" ++ ws ++ "/app.rb\",\"line\":2}]}}}");
@@ -460,6 +485,7 @@ test "P46 T46.25 MCP test_summary lists test methods" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user_test.rb", .data = "class UserTest < Minitest::Test\n  def test_create\n    true\n  end\n  def test_update\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user_test.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"test_summary\",\"arguments\":{\"file\":\"" ++ ws ++ "/user_test.rb\"}}}");
@@ -478,6 +504,7 @@ test "P46 T46.26 MCP list_routes lists route helpers" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/routes.rb", .data = "Rails.application.routes.draw do\n  resources :users\n  resources :posts do\n    resources :comments\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/routes.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_routes\",\"arguments\":{}}}");
@@ -496,6 +523,7 @@ test "P46 T46.27 MCP refactor extracts method" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def run\n    x = 1\n    y = 2\n    z = x + y\n    z\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"refactor\",\"arguments\":{\"file\":\"" ++ ws ++ "/app.rb\",\"start_line\":2,\"end_line\":4,\"kind\":\"extract_method\"}}}");
@@ -514,6 +542,7 @@ test "P46 T46.28 MCP available_code_actions returns actions" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def test\n    x = 1\n    y = 2\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"available_code_actions\",\"arguments\":{\"file\":\"" ++ ws ++ "/app.rb\",\"line\":1}}}");
@@ -532,6 +561,7 @@ test "P46 T46.29 MCP diagnostic_summary summarizes diagnostics" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\n  def broken\n    x = 1\n    y = 2\n    z\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostic_summary\",\"arguments\":{}}}");
@@ -550,6 +580,7 @@ test "P47 T47.1 MCP get_file_overview empty file" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/empty.rb", .data = "" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/empty.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_file_overview\",\"arguments\":{\"file\":\"" ++ ws ++ "/empty.rb\"}}}");
@@ -568,6 +599,7 @@ test "P47 T47.2 MCP list_by_kind with comments only" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/comments.rb", .data = "# This is a comment\n# Another comment\n# Just comments\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/comments.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_by_kind\",\"arguments\":{\"kind\":\"def\"}}}");
@@ -586,6 +618,7 @@ test "P47 T47.3 MCP workspace_symbols deeply nested modules" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/nested.rb", .data = "module A\nmodule B\nmodule C\nmodule D\nmodule E\nmodule F\nmodule G\nmodule H\nclass DeepClass\nend\nend\nend\nend\nend\nend\nend\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/nested.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"workspace_symbols\",\"arguments\":{\"query\":\"DeepClass\"}}}");
@@ -604,6 +637,7 @@ test "P47 T47.4 MCP diagnostics with syntax errors" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/syntax.rb", .data = "class Broken\n  def method\n    if true\n      puts \"missing end\"\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/syntax.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"diagnostics\",\"arguments\":{\"file\":\"" ++ ws ++ "/syntax.rb\"}}}");
@@ -625,6 +659,7 @@ test "P47 T47.5 MCP grep_source with long method names" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/longnames.rb", .data = content });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/longnames.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"grep_source\",\"arguments\":{\"query\":\"very_long\"}}}");
@@ -643,6 +678,7 @@ test "P47 T47.6 MCP workspace_symbols with unicode identifiers" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/unicode.rb", .data = "class Café\n  def service_naïve\n    \"test\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/unicode.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"workspace_symbols\",\"arguments\":{\"query\":\"Caf\"}}}");
@@ -661,6 +697,7 @@ test "P47 T47.7 MCP type_hierarchy cyclic includes" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/cyclic.rb", .data = "module ModuleA\n  include ModuleB\nend\nmodule ModuleB\n  include ModuleA\nend\nclass CyclicClass\n  include ModuleA\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/cyclic.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"type_hierarchy\",\"arguments\":{\"class_name\":\"CyclicClass\"}}}");
@@ -679,6 +716,7 @@ test "P47 T47.8 MCP list_validations no validations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/simple.rb", .data = "class Simple < ApplicationRecord\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/simple.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_validations\",\"arguments\":{\"class_name\":\"Simple\"}}}");
@@ -697,6 +735,7 @@ test "P47 T47.9 MCP find_unused multiple symbols" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/unused.rb", .data = "class Controller\n  def used_one\n    true\n  end\n  def used_two\n    true\n  end\n  def unused_three\n    false\n  end\n  def unused_four\n    false\n  end\nend\nController.new.used_one\nController.new.used_two\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/unused.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_unused\",\"arguments\":{\"kind\":\"def\"}}}");
@@ -715,6 +754,7 @@ test "P47 T47.10 MCP route_map empty routes" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/routes.rb", .data = "Rails.application.routes.draw do\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/routes.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"route_map\",\"arguments\":{}}}");
@@ -735,6 +775,7 @@ test "P47 T47.11 MCP i18n_lookup empty locale file" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/config/locales/en.yml", .data = "" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/locales/en.yml\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"i18n_lookup\",\"arguments\":{\"query\":\"test\"}}}");
@@ -753,6 +794,7 @@ test "P47 T47.12 MCP list_callbacks multiple callbacks" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User < ApplicationRecord\n  before_validate :set_defaults\n  before_save :normalize_name\n  before_save :hash_password\n  after_create :send_welcome_email\n  after_update :log_changes\n  after_destroy :cleanup_files\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_callbacks\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -771,6 +813,7 @@ test "P47 T47.13 MCP concern_usage no concerns" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/code.rb", .data = "module UnusedModule\n  def helper\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/code.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"concern_usage\",\"arguments\":{\"module_name\":\"UnusedModule\"}}}");
@@ -790,6 +833,7 @@ test "P47 T47.14 MCP find_references across files" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/user.rb", .data = "class User\n  def display\n    Helper.format_name(\"test\")\n    Helper.format_name(\"another\")\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/helper.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/user.rb\",\"type\":1}]}}");
@@ -809,6 +853,7 @@ test "P47 T47.15 MCP explain_symbol class" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/product.rb", .data = "class Product < ApplicationRecord\n  belongs_to :category\n  has_many :reviews\n  def display_name\n    \"Product: #{name}\"\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/product.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_symbol\",\"arguments\":{\"class_name\":\"Product\"}}}");
@@ -828,6 +873,7 @@ test "P47 T47.16 MCP batch_resolve multiple files" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/file2.rb", .data = "class Second\n  def method_b\n    true\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/file1.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/file2.rb\",\"type\":1}]}}");
@@ -847,6 +893,7 @@ test "P47 T47.17 MCP test_summary test file" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app_test.rb", .data = "require 'test_helper'\nclass AppTest < Minitest::Test\n  def test_setup\n    assert true\n  end\n  def test_calculation\n    assert_equal 2, 1 + 1\n  end\n  def test_failure\n    assert false\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/app_test.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"test_summary\",\"arguments\":{\"file\":\"" ++ ws ++ "/app_test.rb\"}}}");
@@ -865,6 +912,7 @@ test "P47 T47.18 MCP list_routes nested resources" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/routes.rb", .data = "Rails.application.routes.draw do\n  namespace :api do\n    namespace :v1 do\n      resources :users do\n        resources :posts do\n          resources :comments\n        end\n      end\n    end\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/routes.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_routes\",\"arguments\":{}}}");
@@ -883,6 +931,7 @@ test "P47 T47.19 MCP refactor extract variable" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/refactor.rb", .data = "class Calculator\n  def compute\n    x = 5\n    y = 10\n    (x + y) * 2\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/refactor.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"refactor\",\"arguments\":{\"file\":\"" ++ ws ++ "/refactor.rb\",\"start_line\":3,\"end_line\":5,\"kind\":\"extract_variable\"}}}");
@@ -901,6 +950,7 @@ test "P47 T47.20 MCP available_code_actions multiple actions" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/actions.rb", .data = "class Actions\n  def unused_var\n    unused = 1\n    y = 2\n    unused_too = 3\n    y\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/actions.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"available_code_actions\",\"arguments\":{\"file\":\"" ++ ws ++ "/actions.rb\",\"line\":2}}}");
@@ -919,6 +969,7 @@ test "P47 T47.21 MCP association_graph multiple associations" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/models.rb", .data = "class User < ApplicationRecord\n  has_many :posts\n  has_many :comments\n  has_one :profile\n  belongs_to :organization\n  has_and_belongs_to_many :groups\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/models.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"association_graph\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -937,6 +988,7 @@ test "P47 T47.22 MCP explain_type_chain returns chain" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/typed.rb", .data = "class Typed\n  def run\n    name = \"hello\"\n    name.upcase\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/typed.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_type_chain\",\"arguments\":{\"file\":\"" ++ ws ++ "/typed.rb\",\"line\":3}}}");
@@ -955,6 +1007,7 @@ test "P47 T47.23 MCP suggest_types returns suggestions" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/untyped.rb", .data = "class Untyped\n  def process(x)\n    x.to_s\n  end\n  def compute(a, b)\n    a + b\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/untyped.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"suggest_types\",\"arguments\":{\"file\":\"" ++ ws ++ "/untyped.rb\"}}}");
@@ -973,6 +1026,7 @@ test "P47 T47.24 MCP type_coverage returns metrics" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/coverage.rb", .data = "class Coverage\n  def typed_method\n    name = \"hello\"\n    name\n  end\n  def untyped_method(x)\n    x\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/coverage.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"type_coverage\",\"arguments\":{}}}");
@@ -991,6 +1045,7 @@ test "P47 T47.25 MCP find_similar returns matches" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/similar.rb", .data = "class Similar\n  def calculate_total\n    100\n  end\n  def calculate_totals\n    [100, 200]\n  end\n  def compute_total\n    50\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/similar.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"find_similar\",\"arguments\":{\"method_name\":\"calculate_total\"}}}");
@@ -1009,6 +1064,7 @@ test "P47 T47.27 MCP coverage_gap_analyzer returns gaps array" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/lib.rb", .data = "class Lib\n  def untested_method\n    42\n  end\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"coverage_gap_analyzer\",\"arguments\":{}}}");
@@ -1027,6 +1083,7 @@ test "P47 T47.28 MCP security_audit_summary returns findings array" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/app.rb", .data = "class App\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"security_audit_summary\",\"arguments\":{}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -1044,6 +1101,7 @@ test "P47 T47.29 MCP migration_chain_analyzer returns migrations array" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/dummy.rb", .data = "class App\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"migration_chain_analyzer\",\"arguments\":{}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -1061,6 +1119,7 @@ test "P47 T47.30 MCP dependency_tree_resolver handles missing Gemfile.lock" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/dummy.rb", .data = "class App\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"dependency_tree_resolver\",\"arguments\":{}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
@@ -1078,6 +1137,7 @@ test "P47 T47.31 MCP unused_association_chain returns array" {
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/model.rb", .data = "class User\n  has_many :posts\nend\n" });
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/model.rb\",\"type\":1}]}}");
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"unused_association_chain\",\"arguments\":{\"class_name\":\"User\"}}}");
@@ -1095,6 +1155,7 @@ test "P47 T47.26 MCP rate limiting rejects excess requests" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     for (2..112) |i| {
         var id_buf: [128]u8 = undefined;
@@ -1115,6 +1176,7 @@ test "P47 T47.32 MCP rejects path-traversal in file argument" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     var s = try Session.init(alloc);
     defer s.deinit();
+    s.cwd = ws;
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     // Attacker-supplied "file" arg with parent-dir segments must be rejected
     // before any SQL binding or filesystem read takes place. The error path

@@ -12,95 +12,31 @@ const base_initialized = harness.base_initialized;
 const base_shutdown = harness.base_shutdown;
 const base_exit = harness.base_exit;
 
-test "completion respects trigger" {
+test "batch: completion respects trigger and includes local vars" {
     const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_compl";
+    const ws = "/tmp/refract_test_batch_1";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/completion_test.rb",
+        .sub_path = ws ++ "/f1.rb",
         .data = "class Referable; end\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/completion_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_test.rb\"},\"position\":{\"line\":0,\"character\":9}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (std.mem.eql(u8, label_str, "Referable")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
-}
-
-test "completion includes local vars" {
-    const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_complv";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/completion_lv.rb",
+        .sub_path = ws ++ "/f2.rb",
         .data = "my_special_var = 42\n",
     });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/completion_lv.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/f1.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f2.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
-    // Trigger completion on "my_s" (character 4)
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_lv.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f1.rb\"},\"position\":{\"line\":0,\"character\":9}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f2.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -113,187 +49,114 @@ test "completion includes local vars" {
         alloc.free(responses);
     }
 
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
+    {
+        const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
             .object => |o| o,
-            else => continue,
+            else => return error.NotObject,
         };
-        const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) {
-            .string => |ls| ls,
-            else => continue,
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
         };
-        if (std.mem.eql(u8, label_str, "my_special_var")) {
-            found = true;
-            // Should have kind=6 (variable)
-            const kind = item_obj.get("kind") orelse continue;
-            const kind_num = switch (kind) {
-                .integer => |i| i,
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
                 else => continue,
             };
-            try std.testing.expectEqual(@as(i64, 6), kind_num);
-            break;
+            const label = item_obj.get("label") orelse continue;
+            const label_str = switch (label) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (std.mem.eql(u8, label_str, "Referable")) {
+                found = true;
+                break;
+            }
         }
+        try std.testing.expect(found);
     }
-    try std.testing.expect(found);
+
+    {
+        const resp = getResponseById(responses, 3) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label = item_obj.get("label") orelse continue;
+            const label_str = switch (label) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (std.mem.eql(u8, label_str, "my_special_var")) {
+                found = true;
+                const kind = item_obj.get("kind") orelse continue;
+                const kind_num = switch (kind) {
+                    .integer => |i| i,
+                    else => continue,
+                };
+                try std.testing.expectEqual(@as(i64, 6), kind_num);
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
 }
 
-test "completion returns symbols at empty prefix" {
+test "batch: empty prefix, ivar, dedup completion" {
     const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_compemp";
+    const ws = "/tmp/refract_test_batch_2";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/completion_empty.rb",
+        .sub_path = ws ++ "/f1.rb",
         .data = "class EmptyPrefixTarget\n  def some_method\n    \n  end\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class EmptyPrefixTarget\\n  def some_method\\n    \\n  end\\nend\\n\"}}}");
-    // position inside method body on an indented blank line — extractWord returns ""
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/completion_empty.rb\"},\"position\":{\"line\":2,\"character\":4}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    try std.testing.expect(arr.items.len > 0);
-}
-
-test "instance var completion returns @-prefixed names" {
-    const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_icomp";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/ivar_completion.rb",
+        .sub_path = ws ++ "/f2.rb",
         .data = "class Foo\n  def init\n    @name = \"hello\"\n    @age = 42\n  end\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/ivar_completion.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    // Completion at line 2 col 5 — inside `@name`, triggers @-prefix completion
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ivar_completion.rb\"},\"position\":{\"line\":2,\"character\":5}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_name = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (std.mem.eql(u8, label_str, "@name")) {
-            found_name = true;
-            break;
-        }
-    }
-    try std.testing.expect(found_name);
-}
-
-test "completion no duplicate names" {
-    const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_dedup";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/dedup_test.rb",
+        .sub_path = ws ++ "/f3.rb",
         .data = "def unique_dedup_sym; end\ndef test_dedup\n  unique_dedup_sym = 1\nend\n",
     });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/dedup_test.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f1.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class EmptyPrefixTarget\\n  def some_method\\n    \\n  end\\nend\\n\"}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/f2.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f3.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/dedup_test.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f1.rb\"},\"position\":{\"line\":2,\"character\":4}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f2.rb\"},\"position\":{\"line\":2,\"character\":5}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f3.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -306,314 +169,137 @@ test "completion no duplicate names" {
         alloc.free(responses);
     }
 
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-
-    var count: usize = 0;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
+    {
+        const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
             .object => |o| o,
-            else => continue,
+            else => return error.NotObject,
         };
-        const lbl = item_obj.get("label") orelse continue;
-        const lbl_str = switch (lbl) {
-            .string => |s2| s2,
-            else => continue,
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
         };
-        if (std.mem.eql(u8, lbl_str, "unique_dedup_sym")) count += 1;
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        try std.testing.expect(arr.items.len > 0);
     }
-    try std.testing.expectEqual(@as(usize, 1), count);
+
+    {
+        const resp = getResponseById(responses, 3) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label = item_obj.get("label") orelse continue;
+            const label_str = switch (label) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (std.mem.eql(u8, label_str, "@name")) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+
+    {
+        const resp = getResponseById(responses, 4) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var count: usize = 0;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const lbl = item_obj.get("label") orelse continue;
+            const lbl_str = switch (lbl) {
+                .string => |s2| s2,
+                else => continue,
+            };
+            if (std.mem.eql(u8, lbl_str, "unique_dedup_sym")) count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), count);
+    }
 }
 
-test "completion returns prefix matches across files and excludes non-matches" {
+test "batch: prefix matches, format, snippet, MRO, sortText" {
     const alloc = std.testing.allocator;
-
-    const ws = "/tmp/refract_test_comp_prefix";
+    const ws = "/tmp/refract_test_batch_3";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/lib.rb",
+        .sub_path = ws ++ "/f1.rb",
         .data = "class AccountManager; end\nclass Account; end\nclass AccountBalance; end\nclass User; end\n",
     });
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/use.rb",
+        .sub_path = ws ++ "/f1b.rb",
         .data = "def go\n  Acco\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/lib.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/use.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/use.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var saw_account = false;
-    var saw_account_balance = false;
-    var saw_account_manager = false;
-    var saw_user = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const lbl = item_obj.get("label") orelse continue;
-        const lbl_str = switch (lbl) {
-            .string => |st| st,
-            else => continue,
-        };
-        if (std.mem.eql(u8, lbl_str, "Account")) saw_account = true;
-        if (std.mem.eql(u8, lbl_str, "AccountBalance")) saw_account_balance = true;
-        if (std.mem.eql(u8, lbl_str, "AccountManager")) saw_account_manager = true;
-        if (std.mem.eql(u8, lbl_str, "User")) saw_user = true;
-    }
-    try std.testing.expect(saw_account);
-    try std.testing.expect(saw_account_balance);
-    try std.testing.expect(saw_account_manager);
-    try std.testing.expect(!saw_user);
-}
-
-test "completion response is CompletionList not bare array" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_compllist";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/compl_list_test.rb",
+        .sub_path = ws ++ "/f2.rb",
         .data = "def listed_method; end\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/compl_list_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/compl_list_test.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    try std.testing.expect(result_obj.get("isIncomplete") != null);
-    try std.testing.expect(result_obj.get("items") != null);
-}
-
-test "insertText snippet in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_snippet";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/snippet_test.rb",
+        .sub_path = ws ++ "/f3.rb",
         .data = "def greet(name)\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/snippet_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/snippet_test.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_snippet = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (!std.mem.eql(u8, label_str, "greet")) continue;
-        if (item_obj.get("insertTextFormat") != null and item_obj.get("insertText") != null) {
-            found_snippet = true;
-            break;
-        }
-    }
-    try std.testing.expect(found_snippet);
-}
-
-test "MRO grandparent method via DOT completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_mro";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/mro_test.rb",
+        .sub_path = ws ++ "/f4.rb",
         .data = "class A\ndef foo\nend\nend\nclass B < A\nend\nb = B.new\nb.\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/mro_test.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label = item_obj.get("label") orelse continue;
-        const label_str = switch (label) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (std.mem.eql(u8, label_str, "foo")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
-}
-
-test "completion items have sortText" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_sorttext";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/sort_test.rb",
+        .sub_path = ws ++ "/f5.rb",
         .data = "class Sortable\n  def sort_method; end\nend\n",
     });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/sort_test.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/f1.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f1b.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f2.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f3.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f4.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f5.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sort_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f1b.rb\"},\"position\":{\"line\":1,\"character\":6}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f2.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f3.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f4.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f5.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -626,303 +312,206 @@ test "completion items have sortText" {
         alloc.free(responses);
     }
 
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_sort_text = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
+    // prefix matches
+    {
+        const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
             .object => |o| o,
-            else => continue,
+            else => return error.NotObject,
         };
-        if (item_obj.get("sortText") != null) {
-            found_sort_text = true;
-            break;
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var saw_account = false;
+        var saw_balance = false;
+        var saw_manager = false;
+        var saw_user = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const lbl = item_obj.get("label") orelse continue;
+            const lbl_str = switch (lbl) {
+                .string => |st| st,
+                else => continue,
+            };
+            if (std.mem.eql(u8, lbl_str, "Account")) saw_account = true;
+            if (std.mem.eql(u8, lbl_str, "AccountBalance")) saw_balance = true;
+            if (std.mem.eql(u8, lbl_str, "AccountManager")) saw_manager = true;
+            if (std.mem.eql(u8, lbl_str, "User")) saw_user = true;
         }
+        try std.testing.expect(saw_account);
+        try std.testing.expect(saw_balance);
+        try std.testing.expect(saw_manager);
+        try std.testing.expect(!saw_user);
     }
-    try std.testing.expect(found_sort_text);
+
+    // completion list format
+    {
+        const resp = getResponseById(responses, 3) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        try std.testing.expect(result_obj.get("isIncomplete") != null);
+        try std.testing.expect(result_obj.get("items") != null);
+    }
+
+    // snippet
+    {
+        const resp = getResponseById(responses, 4) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label = item_obj.get("label") orelse continue;
+            const label_str = switch (label) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, label_str, "greet")) continue;
+            if (item_obj.get("insertTextFormat") != null and item_obj.get("insertText") != null) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+
+    // MRO
+    {
+        const resp = getResponseById(responses, 5) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label = item_obj.get("label") orelse continue;
+            const label_str = switch (label) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (std.mem.eql(u8, label_str, "foo")) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+
+    // sortText
+    {
+        const resp = getResponseById(responses, 6) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            if (item_obj.get("sortText") != null) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
 }
 
-test "completion defs ranked before classes" {
+test "batch: ranking, commitCharacters, resolve, substring, filterText" {
     const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_rank_def";
+    const ws = "/tmp/refract_test_batch_4";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/rank_test.rb",
+        .sub_path = ws ++ "/f1.rb",
         .data = "class RankableClass\n  def rankable_def; end\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rank_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/rank_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_def_sort = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label_val = item_obj.get("label") orelse continue;
-        const label_str = switch (label_val) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (!std.mem.eql(u8, label_str, "rankable_def")) continue;
-        const st_val = item_obj.get("sortText") orelse continue;
-        const st_str = switch (st_val) {
-            .string => |sv| sv,
-            else => continue,
-        };
-        if (std.mem.startsWith(u8, st_str, "0_")) {
-            found_def_sort = true;
-            break;
-        }
-    }
-    try std.testing.expect(found_def_sort);
-}
-
-test "completion method has commitCharacters" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_commitchar";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/commit_test.rb",
+        .sub_path = ws ++ "/f2.rb",
         .data = "class CommitTarget\n  def commit_method; end\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/commit_test.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/commit_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_commit = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label_val = item_obj.get("label") orelse continue;
-        const label_str = switch (label_val) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (!std.mem.eql(u8, label_str, "commit_method")) continue;
-        if (item_obj.get("commitCharacters") != null) {
-            found_commit = true;
-            break;
-        }
-    }
-    try std.testing.expect(found_commit);
-}
-
-test "completionItem/resolve echoes item" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_resolve";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"completionItem/resolve\",\"params\":{\"label\":\"my_method\",\"kind\":3,\"detail\":\"(def)\"}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoResolveResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const label_val = result_obj.get("label") orelse return error.NoLabel;
-    const label_str = switch (label_val) {
-        .string => |ls| ls,
-        else => return error.LabelNotString,
-    };
-    try std.testing.expectEqualStrings("my_method", label_str);
-}
-
-test "substring completion matches non-prefix" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_substr";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/substr_test.rb",
+        .sub_path = ws ++ "/f3.rb",
         .data = "class SubstrUser\n  def find_user_record; end\n  def call\n    user_record\n  end\nend\n",
     });
-
-    var s = try Session.init(alloc);
-    defer s.deinit();
-
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class SubstrUser\\n  def find_user_record; end\\n  def call\\n    user_record\\n  end\\nend\\n\"}}}");
-    // cursor on "user_record" inside method body — non-prefix substring of "find_user_record"
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/substr_test.rb\"},\"position\":{\"line\":3,\"character\":15},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-
-    const raw = try s.run();
-    defer alloc.free(raw);
-
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const label_val = item_obj.get("label") orelse continue;
-        const label_str = switch (label_val) {
-            .string => |ls| ls,
-            else => continue,
-        };
-        if (std.mem.eql(u8, label_str, "find_user_record")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
-}
-
-test "completion items include filterText" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_filtertext";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
-        .sub_path = ws ++ "/filter_test.rb",
+        .sub_path = ws ++ "/f4.rb",
         .data = "class FilterTarget\n  def filter_method; end\nend\n",
     });
 
     var s = try Session.init(alloc);
     defer s.deinit();
 
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
     try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/filter_test.rb\",\"type\":1}]}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f3.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class SubstrUser\\n  def find_user_record; end\\n  def call\\n    user_record\\n  end\\nend\\n\"}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/f1.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f2.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/f4.rb\",\"type\":1}]}}");
     try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/filter_test.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f1.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f2.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"completionItem/resolve\",\"params\":{\"label\":\"my_method\",\"kind\":3,\"detail\":\"(def)\"}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f3.rb\"},\"position\":{\"line\":3,\"character\":15},\"context\":{\"triggerKind\":1}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/f4.rb\"},\"position\":{\"line\":1,\"character\":6},\"context\":{\"triggerKind\":1}}}");
     try s.send(base_shutdown);
     try s.send(base_exit);
 
@@ -935,33 +524,171 @@ test "completion items include filterText" {
         alloc.free(responses);
     }
 
-    const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
-    const obj = switch (resp) {
-        .object => |o| o,
-        else => return error.NotObject,
-    };
-    const result = obj.get("result") orelse return error.NoResult;
-    const result_obj = switch (result) {
-        .object => |o| o,
-        else => return error.ResultNotObject,
-    };
-    const items_val = result_obj.get("items") orelse return error.NoItems;
-    const arr = switch (items_val) {
-        .array => |a| a,
-        else => return error.ItemsNotArray,
-    };
-    var found_filter = false;
-    for (arr.items) |item| {
-        const item_obj = switch (item) {
+    // ranking (defs before classes)
+    {
+        const resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
             .object => |o| o,
-            else => continue,
+            else => return error.NotObject,
         };
-        if (item_obj.get("filterText") != null) {
-            found_filter = true;
-            break;
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label_val = item_obj.get("label") orelse continue;
+            const label_str = switch (label_val) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, label_str, "rankable_def")) continue;
+            const st_val = item_obj.get("sortText") orelse continue;
+            const st_str = switch (st_val) {
+                .string => |sv| sv,
+                else => continue,
+            };
+            if (std.mem.startsWith(u8, st_str, "0_")) {
+                found = true;
+                break;
+            }
         }
+        try std.testing.expect(found);
     }
-    try std.testing.expect(found_filter);
+
+    // commitCharacters
+    {
+        const resp = getResponseById(responses, 3) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label_val = item_obj.get("label") orelse continue;
+            const label_str = switch (label_val) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, label_str, "commit_method")) continue;
+            if (item_obj.get("commitCharacters") != null) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+
+    // resolve echoes item
+    {
+        const resp = getResponseById(responses, 4) orelse return error.NoResolveResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const label_val = result_obj.get("label") orelse return error.NoLabel;
+        const label_str = switch (label_val) {
+            .string => |ls| ls,
+            else => return error.LabelNotString,
+        };
+        try std.testing.expectEqualStrings("my_method", label_str);
+    }
+
+    // substring completion
+    {
+        const resp = getResponseById(responses, 5) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const label_val = item_obj.get("label") orelse continue;
+            const label_str = switch (label_val) {
+                .string => |ls| ls,
+                else => continue,
+            };
+            if (std.mem.eql(u8, label_str, "find_user_record")) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+
+    // filterText
+    {
+        const resp = getResponseById(responses, 6) orelse return error.NoCompletionResponse;
+        const obj = switch (resp) {
+            .object => |o| o,
+            else => return error.NotObject,
+        };
+        const result = obj.get("result") orelse return error.NoResult;
+        const result_obj = switch (result) {
+            .object => |o| o,
+            else => return error.ResultNotObject,
+        };
+        const items_val = result_obj.get("items") orelse return error.NoItems;
+        const arr = switch (items_val) {
+            .array => |a| a,
+            else => return error.ItemsNotArray,
+        };
+        var found = false;
+        for (arr.items) |item| {
+            const item_obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            if (item_obj.get("filterText") != null) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "completion documentation field" {

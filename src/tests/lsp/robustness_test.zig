@@ -2169,4 +2169,3 @@ test "P27 T27.4 URI with percent-encoded space is accepted" {
     };
     try std.testing.expect(obj2.get("error") == null);
 }
-

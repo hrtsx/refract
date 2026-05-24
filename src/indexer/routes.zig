@@ -52,7 +52,12 @@ const NamespaceContext = struct {
     }
 
     fn getFullPath(self: *const NamespaceContext, alloc: std.mem.Allocator, base_path: []const u8) ![]const u8 {
+        // Rails normalizes every path to a single leading slash. A bare path
+        // like `users/:id` (common in `get "users/:id" => ...`) must gain one,
+        // otherwise joining onto a `/admin` prefix yields `/adminusers/:id`.
+        const needs_sep = base_path.len > 0 and base_path[0] != '/';
         if (self.path_prefix_depth == 0) {
+            if (needs_sep) return try std.fmt.allocPrint(alloc, "/{s}", .{base_path});
             return try alloc.dupe(u8, base_path);
         }
         var parts: std.ArrayList([]const u8) = .empty;
@@ -60,6 +65,7 @@ const NamespaceContext = struct {
         for (0..self.path_prefix_depth) |i| {
             try parts.append(alloc, self.path_prefix_stack[i]);
         }
+        if (needs_sep) try parts.append(alloc, "/");
         try parts.append(alloc, base_path);
         return try std.mem.join(alloc, "", parts.items);
     }
@@ -234,6 +240,34 @@ fn insertRoute(db: db_mod.Db, file_id: i64, info: RouteInfo) !void {
     ins.bind_int(7, info.line);
     ins.bind_int(8, info.col);
     _ = try ins.step();
+}
+
+// Build a route helper name. Prefer an explicit `as:` option; otherwise
+// derive from the static path segments the way Rails does — dynamic
+// (`:id`) and glob (`*rest`) segments are dropped, the remainder joined by
+// `_`. Returns "" when no nameable segment remains (caller stores no helper)
+// rather than emitting junk like `users/:id/:username_path`.
+fn buildRouteHelper(alloc: std.mem.Allocator, path: []const u8, as_option: ?[]const u8) ![]const u8 {
+    if (as_option) |as_name| {
+        return std.fmt.allocPrint(alloc, "{s}_path", .{as_name});
+    }
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(alloc);
+    var it = std.mem.tokenizeScalar(u8, path, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0) continue;
+        // Drop any segment carrying a dynamic (`:id`), glob (`*rest`), or
+        // optional (`(.:format)`) marker — including inline ones like
+        // `svg-:theme_id` or `sitemap_:page` that don't start with the marker.
+        if (std.mem.indexOfScalar(u8, seg, ':') != null) continue;
+        if (std.mem.indexOfScalar(u8, seg, '*') != null) continue;
+        if (std.mem.indexOfScalar(u8, seg, '(') != null) continue;
+        try parts.append(alloc, seg);
+    }
+    if (parts.items.len == 0) return alloc.dupe(u8, "");
+    const joined = try std.mem.join(alloc, "_", parts.items);
+    defer alloc.free(joined);
+    return std.fmt.allocPrint(alloc, "{s}_path", .{joined});
 }
 
 fn extractAsOption(args_list: anytype) ?[]const u8 {
@@ -506,7 +540,7 @@ fn handleMemberCollection(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn
         const lc = locationLineCol(parser, verb_cn.base.location.start);
 
         const path_pattern = if (is_member)
-            std.fmt.allocPrint(alloc, "/{s}/:{s}_id/{s}", .{ resource_name, singular, action_name }) catch continue
+            std.fmt.allocPrint(alloc, "/{s}/:id/{s}", .{ resource_name, action_name }) catch continue
         else
             std.fmt.allocPrint(alloc, "/{s}/{s}", .{ resource_name, action_name }) catch continue;
         defer alloc.free(path_pattern);
@@ -545,6 +579,12 @@ fn handleSimpleRoute(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *co
         if (sn.unescaped.source) |src| {
             path_pattern = src[0..sn.unescaped.length];
         }
+    } else if (first_arg.*.type == prism.NODE_KEYWORD_HASH or first_arg.*.type == prism.NODE_HASH) {
+        // Hash-rocket form: `get "/path" => "controller#action"`. The path is a
+        // String key whose value is the "controller#action" target; symbol keys
+        // (e.g. `:page => /re/`) are route constraints — skip them.
+        try handleHashRocketRoute(db, file_id, first_arg, method, ns_ctx, alloc, lc.line, lc.col);
+        return;
     } else {
         return;
     }
@@ -555,19 +595,76 @@ fn handleSimpleRoute(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *co
         const full_controller = try ns_ctx.getFullController(alloc, to_arg.controller);
         defer alloc.free(full_controller);
 
-        var helper_name_buf: [256]u8 = undefined;
-        const helper_len = std.fmt.bufPrint(&helper_name_buf, "{s}_path", .{path_pattern}) catch return;
-        const helper_name = helper_len;
+        const helper_name = try buildRouteHelper(alloc, path_pattern, extractAsOption(args_list));
+        defer alloc.free(helper_name);
 
         try insertRoute(db, file_id, .{
             .http_method = method,
             .path_pattern = full_path,
-            .helper_name = try alloc.dupe(u8, helper_name),
+            .helper_name = helper_name,
             .controller = full_controller,
             .action = try alloc.dupe(u8, to_arg.action),
             .line = lc.line,
             .col = lc.col,
         });
+    }
+}
+
+fn handleHashRocketRoute(db: db_mod.Db, file_id: i64, hash_node: *const prism.Node, method: []const u8, ns_ctx: *const NamespaceContext, alloc: std.mem.Allocator, line: i32, col: u32) !void {
+    const elements = if (hash_node.*.type == prism.NODE_KEYWORD_HASH) blk: {
+        const kh: *const prism.KeywordHashNode = @ptrCast(@alignCast(hash_node));
+        break :blk kh.elements;
+    } else blk: {
+        const hn: *const prism.HashNode = @ptrCast(@alignCast(hash_node));
+        break :blk hn.elements;
+    };
+    // An `as:` option may ride in the same hash (`get "x" => "y#z", as: :foo`).
+    var as_option: ?[]const u8 = null;
+    for (0..elements.size) |i| {
+        const elem = elements.nodes[i];
+        if (elem.*.type != prism.NODE_ASSOC) continue;
+        const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
+        if (assoc.key.*.type != prism.NODE_SYMBOL) continue;
+        const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
+        const key = if (ksym.unescaped.source) |s| s[0..ksym.unescaped.length] else continue;
+        if (!std.mem.eql(u8, key, "as")) continue;
+        if (assoc.value.*.type == prism.NODE_SYMBOL) {
+            const vsym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.value));
+            if (vsym.unescaped.source) |vs| as_option = vs[0..vsym.unescaped.length];
+        } else if (assoc.value.*.type == prism.NODE_STRING) {
+            const vstr: *const prism.StringNode = @ptrCast(@alignCast(assoc.value));
+            if (vstr.unescaped.source) |vs| as_option = vs[0..vstr.unescaped.length];
+        }
+    }
+    for (0..elements.size) |i| {
+        const elem = elements.nodes[i];
+        if (elem.*.type != prism.NODE_ASSOC) continue;
+        const assoc: *const prism.AssocNode = @ptrCast(@alignCast(elem));
+        // Path key is a String; symbol keys are constraints — skip.
+        if (assoc.key.*.type != prism.NODE_STRING) continue;
+        if (assoc.value.*.type != prism.NODE_STRING) continue;
+        const ksn: *const prism.StringNode = @ptrCast(@alignCast(assoc.key));
+        const vsn: *const prism.StringNode = @ptrCast(@alignCast(assoc.value));
+        const path_pattern = if (ksn.unescaped.source) |s| s[0..ksn.unescaped.length] else continue;
+        const target = if (vsn.unescaped.source) |s| s[0..vsn.unescaped.length] else continue;
+        const sep = std.mem.indexOfScalar(u8, target, '#') orelse continue;
+
+        const full_path = try ns_ctx.getFullPath(alloc, path_pattern);
+        defer alloc.free(full_path);
+        const full_controller = try ns_ctx.getFullController(alloc, target[0..sep]);
+        defer alloc.free(full_controller);
+        const helper_name = try buildRouteHelper(alloc, path_pattern, as_option);
+        defer alloc.free(helper_name);
+        try insertRoute(db, file_id, .{
+            .http_method = method,
+            .path_pattern = full_path,
+            .helper_name = helper_name,
+            .controller = full_controller,
+            .action = try alloc.dupe(u8, target[sep + 1 ..]),
+            .line = line,
+            .col = col,
+        });
+        return; // one path per route call
     }
 }
 
@@ -683,13 +780,37 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             if (extractSymbolName(ctx.parser, first_arg)) |ns_name| {
                 const path_prefix = (std.fmt.allocPrint(ctx.alloc, "/{s}", .{ns_name}) catch return true);
                 const controller_prefix = (std.fmt.allocPrint(ctx.alloc, "{s}::", .{ns_name}) catch return true);
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| std.log.warn("routes: push ns path: {s}", .{@errorName(e)});
-                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch |e| std.log.warn("routes: push ns ctrl: {s}", .{@errorName(e)});
+                // Push, recurse into the block body, then pop. A flat walk gives
+                // no block-end signal, so manual recursion is required — otherwise
+                // every sibling namespace leaks a stack frame and routes past the
+                // 16th get wrong (accumulated) prefixes.
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| {
+                    std.log.warn("routes: push ns path: {s}", .{@errorName(e)});
+                    return true;
+                };
+                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch |e| {
+                    std.log.warn("routes: push ns ctrl: {s}", .{@errorName(e)});
+                    ctx.ns_ctx.popPathPrefix();
+                    return true;
+                };
+                prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+                ctx.ns_ctx.popControllerPrefix();
+                ctx.ns_ctx.popPathPrefix();
+                return false;
             }
         } else if (std.mem.eql(u8, mname, "scope")) {
             if (extractSymbolName(ctx.parser, first_arg)) |scope_path| {
-                const path_prefix = ctx.alloc.dupe(u8, scope_path) catch return true;
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| std.log.warn("routes: push scope: {s}", .{@errorName(e)});
+                const path_prefix = (if (scope_path.len > 0 and scope_path[0] != '/')
+                    std.fmt.allocPrint(ctx.alloc, "/{s}", .{scope_path})
+                else
+                    ctx.alloc.dupe(u8, scope_path)) catch return true;
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| {
+                    std.log.warn("routes: push scope: {s}", .{@errorName(e)});
+                    return true;
+                };
+                prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+                ctx.ns_ctx.popPathPrefix();
+                return false;
             }
         } else if (std.mem.eql(u8, mname, "resources")) {
             if (extractSymbolName(ctx.parser, first_arg)) |name| {

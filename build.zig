@@ -118,7 +118,7 @@ pub fn build(b: *std.Build) void {
     // LSP head-to-head bench: drives refract/solargraph/ruby-lsp via JSON-RPC,
     // captures perf + accuracy into bench-results/<ts>-<sha>.json,
     // prints a delta vs the previous snapshot. See docs/BENCHMARK.md.
-    const bench_lsp_cmd = b.addSystemCommand(&.{ "scripts/bench/snapshot.sh" });
+    const bench_lsp_cmd = b.addSystemCommand(&.{"scripts/bench/snapshot.sh"});
     bench_lsp_cmd.step.dependOn(b.getInstallStep());
     const bench_lsp_step = b.step("bench-lsp", "Run head-to-head LSP benchmark vs solargraph + ruby-lsp");
     bench_lsp_step.dependOn(&bench_lsp_cmd.step);
@@ -190,8 +190,10 @@ pub fn build(b: *std.Build) void {
         .{ "src/tests/lsp/navigation_test.zig", "test:lsp-navigation" },
         .{ "src/tests/lsp/rename_test.zig", "test:lsp-rename" },
         .{ "src/tests/lsp/types_test.zig", "test:lsp-types" },
+        .{ "src/tests/lsp/types2_test.zig", "test:lsp-types2" },
         .{ "src/tests/lsp/diagnostics_test.zig", "test:lsp-diagnostics" },
         .{ "src/tests/lsp/indexing_test.zig", "test:lsp-indexing" },
+        .{ "src/tests/lsp/indexing2_test.zig", "test:lsp-indexing2" },
         .{ "src/tests/lsp/editing_test.zig", "test:lsp-editing" },
         .{ "src/tests/lsp/cli_config_test.zig", "test:lsp-cli" },
         .{ "src/tests/lsp/robustness_test.zig", "test:lsp-robustness" },
@@ -201,6 +203,8 @@ pub fn build(b: *std.Build) void {
         .{ "src/tests/navigation_hierarchy_test.zig", "test:nav" },
         .{ "src/tests/concurrency_stress_test.zig", "test:stress" },
     };
+
+    const test_lsp_step = b.step("test:lsp", "Run all LSP protocol tests");
 
     inline for (proto_test_files) |entry| {
         const mod = b.createModule(.{
@@ -216,5 +220,8 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_t.step);
         const named_step = b.step(entry[1], "Run " ++ entry[1]);
         named_step.dependOn(&run_t.step);
+        if (comptime std.mem.startsWith(u8, entry[1], "test:lsp-")) {
+            test_lsp_step.dependOn(&run_t.step);
+        }
     }
 }

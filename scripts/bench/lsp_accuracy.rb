@@ -47,51 +47,51 @@ QUERIES = [
   ["stdlib chained String#upcase",         "accuracy_main.rb", 11, 13, "(stdlib)", nil],
 
   # B1: Block return types
-  ["block return type .map",               "accuracy_block_return.rb", 3, 14, "(stdlib)", nil],
-  ["block return type .tap",               "accuracy_block_return.rb", 7, 11, "(stdlib)", nil],
+  ["block return type .map",               "accuracy_block_return.rb", 3, 16, "(stdlib)", nil],
+  ["block return type .tap",               "accuracy_block_return.rb", 7, 9, "(stdlib)", nil],
   ["block return type .then",              "accuracy_block_return.rb", 11, 8, "(stdlib)", nil],
-  ["block return type .each_with_object",  "accuracy_block_return.rb", 15, 14, "(stdlib)", nil],
-  ["symbol to_proc &:to_s",                "accuracy_block_return.rb", 23, 14, "(stdlib)", nil],
-  ["symbol to_proc &:upcase",              "accuracy_block_return.rb", 27, 17, "(stdlib)", nil],
+  ["block return type .each_with_object",  "accuracy_block_return.rb", 15, 13, "(stdlib)", nil],
+  ["symbol to_proc &:to_s",                "accuracy_block_return.rb", 23, 22, "(stdlib)", nil],
+  ["symbol to_proc &:upcase",              "accuracy_block_return.rb", 27, 26, "(stdlib)", nil],
 
   # B2: Rails associations
-  ["association has_one author",           "accuracy_rails_assoc.rb", 24, 13, "accuracy_rails_assoc.rb", 2],
-  ["association has_many comments",        "accuracy_rails_assoc.rb", 25, 13, "accuracy_rails_assoc.rb", 2],
-  ["association through source",           "accuracy_rails_assoc.rb", 26, 13, "accuracy_rails_assoc.rb", 8],
-  ["association polymorphic user",         "accuracy_rails_assoc.rb", 27, 13, "accuracy_rails_assoc.rb", 10],
+  ["association has_one author",           "accuracy_rails_assoc.rb", 20, 13, "accuracy_rails_assoc.rb", 3],
+  ["association has_many comments",        "accuracy_rails_assoc.rb", 21, 13, "accuracy_rails_assoc.rb", 4],
+  ["association through source",           "accuracy_rails_assoc.rb", 22, 13, "accuracy_rails_assoc.rb", 5],
+  ["association polymorphic user",         "accuracy_rails_assoc.rb", 23, 13, "accuracy_rails_assoc.rb", 6],
 
   # B2: Pattern matching
-  ["pattern match capture",                "accuracy_pattern_match.rb", 7, 14, "accuracy_pattern_match.rb", 12],
-  ["pattern match hash destructure",       "accuracy_pattern_match.rb", 9, 14, "accuracy_pattern_match.rb", 12],
-  ["pattern match array destructure",      "accuracy_pattern_match.rb", 11, 14, "accuracy_pattern_match.rb", 12],
+  ["pattern match capture",                "accuracy_pattern_match.rb", 5, 8, "accuracy_pattern_match.rb", 5],
+  ["pattern match hash destructure",       "accuracy_pattern_match.rb", 7, 8, "accuracy_pattern_match.rb", 7],
+  ["pattern match array destructure",      "accuracy_pattern_match.rb", 9, 8, "accuracy_pattern_match.rb", 9],
 
   # B2: Concerning
   ["concern module mixin",                 "accuracy_concern.rb", 22, 19, "accuracy_concern.rb", 2],
   ["concern instance method call",         "accuracy_concern.rb", 28, 13, "accuracy_concern.rb", 9],
 
   # Extended Block Return Types
-  ["block yield_self single",              "accuracy_block_advanced.rb", 2, 18, "(stdlib)", nil],
-  ["block yield_self chain",               "accuracy_block_advanced.rb", 7, 18, "(stdlib)", nil],
-  ["proc new call",                        "accuracy_block_advanced.rb", 12, 10, "accuracy_block_advanced.rb", 13],
-  ["lambda call",                          "accuracy_block_advanced.rb", 17, 16, "accuracy_block_advanced.rb", 18],
-  ["each_with_object accumulator",         "accuracy_block_advanced.rb", 22, 20, "(stdlib)", nil],
-  ["where then chain",                     "accuracy_block_advanced.rb", 27, 22, "(stdlib)", nil],
-  ["map block return type",                "accuracy_block_advanced.rb", 12, 8, "accuracy_block_advanced.rb", 13],
+  ["block yield_self single",              "accuracy_block_advanced.rb", 2, 21, "(stdlib)", nil],
+  ["block yield_self chain",               "accuracy_block_advanced.rb", 7, 14, "(stdlib)", nil],
+  ["proc new call",                        "accuracy_block_advanced.rb", 13, 4, "accuracy_block_advanced.rb", 13],
+  ["lambda call",                          "accuracy_block_advanced.rb", 18, 4, "accuracy_block_advanced.rb", 18],
+  ["each_with_object accumulator",         "accuracy_block_advanced.rb", 22, 23, "(stdlib)", nil],
+  ["where then chain",                     "accuracy_block_advanced.rb", 28, 20, "(stdlib)", nil],
+  ["map block return type",                "accuracy_block_advanced.rb", 12, 4, "accuracy_block_advanced.rb", 13],
   ["map string receiver",                  "accuracy_block_advanced.rb", 2, 10, "(stdlib)", nil],
 
   # Extended Pattern Matching
-  ["pattern hash keys destructure",        "accuracy_pattern_advanced.rb", 2, 14, "accuracy_pattern_advanced.rb", 4],
-  ["pattern array with splat",             "accuracy_pattern_advanced.rb", 9, 14, "accuracy_pattern_advanced.rb", 11],
-  ["pattern class capture",                "accuracy_pattern_advanced.rb", 16, 14, "accuracy_pattern_advanced.rb", 18],
-  ["pattern nested hash",                  "accuracy_pattern_advanced.rb", 23, 14, "accuracy_pattern_advanced.rb", 25],
-  ["pattern with guard clause",            "accuracy_pattern_advanced.rb", 30, 14, "accuracy_pattern_advanced.rb", 32],
-  ["pattern alternative values",           "accuracy_pattern_advanced.rb", 37, 14, "accuracy_pattern_advanced.rb", 39],
+  ["pattern hash keys destructure",        "accuracy_pattern_advanced.rb", 4, 6, "accuracy_pattern_advanced.rb", 4],
+  ["pattern array with splat",             "accuracy_pattern_advanced.rb", 11, 6, "accuracy_pattern_advanced.rb", 11],
+  ["pattern class capture",                "accuracy_pattern_advanced.rb", 18, 6, "accuracy_pattern_advanced.rb", 18],
+  ["pattern nested hash",                  "accuracy_pattern_advanced.rb", 25, 6, "accuracy_pattern_advanced.rb", 25],
+  ["pattern with guard clause",            "accuracy_pattern_advanced.rb", 32, 6, "accuracy_pattern_advanced.rb", 30],
+  ["pattern alternative values",           "accuracy_pattern_advanced.rb", 49, 10, "accuracy_pattern_advanced.rb", 37],
 
   # Extended Rails Associations
   ["assoc polymorphic commentable",        "accuracy_assoc_extended.rb", 39, 13, "accuracy_assoc_extended.rb", 12],
   ["assoc through with source",            "accuracy_assoc_extended.rb", 34, 13, "accuracy_assoc_extended.rb", 19],
   ["assoc belongs_to author",              "accuracy_assoc_extended.rb", 37, 13, "accuracy_assoc_extended.rb", 4],
-  ["assoc has_many reactions",             "accuracy_assoc_extended.rb", 35, 13, "accuracy_assoc_extended.rb", 24],
+  ["assoc has_many reactions",             "accuracy_assoc_extended.rb", 41, 11, "accuracy_assoc_extended.rb", 24],
   ["assoc chained posts",                  "accuracy_assoc_extended.rb", 32, 13, "accuracy_assoc_extended.rb", 17],
   ["assoc chained comments",               "accuracy_assoc_extended.rb", 33, 13, "accuracy_assoc_extended.rb", 18],
   ["assoc articles through",               "accuracy_assoc_extended.rb", 34, 13, "accuracy_assoc_extended.rb", 19],
@@ -99,55 +99,55 @@ QUERIES = [
 
   # Enumerator Chains
   ["lazy chain map force",                 "accuracy_enumerator.rb", 2, 18, "(stdlib)", nil],
-  ["to_enum each iteration",               "accuracy_enumerator.rb", 7, 14, "(stdlib)", nil],
-  ["each with_index",                      "accuracy_enumerator.rb", 11, 18, "(stdlib)", nil],
-  ["zip elements",                         "accuracy_enumerator.rb", 15, 18, "(stdlib)", nil],
-  ["each_cons pairs",                      "accuracy_enumerator.rb", 19, 18, "(stdlib)", nil],
+  ["to_enum each iteration",               "accuracy_enumerator.rb", 6, 19, "(stdlib)", nil],
+  ["each with_index",                      "accuracy_enumerator.rb", 11, 20, "(stdlib)", nil],
+  ["zip elements",                         "accuracy_enumerator.rb", 15, 14, "(stdlib)", nil],
+  ["each_cons pairs",                      "accuracy_enumerator.rb", 19, 20, "(stdlib)", nil],
   ["lazy select map chain",                "accuracy_enumerator.rb", 23, 20, "(stdlib)", nil],
 
   # Splat & Kwargs
   ["splat method with args",               "accuracy_splat_kwargs.rb", 22, 21, "accuracy_splat_kwargs.rb", 2],
-  ["splat unpacking array",                "accuracy_splat_kwargs.rb", 24, 25, "accuracy_splat_kwargs.rb", 2],
+  ["splat unpacking array",                "accuracy_splat_kwargs.rb", 24, 10, "accuracy_splat_kwargs.rb", 2],
   ["kwargs method call",                   "accuracy_splat_kwargs.rb", 25, 14, "accuracy_splat_kwargs.rb", 6],
-  ["kwargs unpacking hash",                "accuracy_splat_kwargs.rb", 27, 29, "accuracy_splat_kwargs.rb", 6],
-  ["rest params count",                    "accuracy_splat_kwargs.rb", 22, 14, "accuracy_splat_kwargs.rb", 10],
+  ["kwargs unpacking hash",                "accuracy_splat_kwargs.rb", 27, 10, "accuracy_splat_kwargs.rb", 6],
+  ["rest params count",                    "accuracy_splat_kwargs.rb", 28, 10, "accuracy_splat_kwargs.rb", 10],
   ["kwargs passthrough",                   "accuracy_splat_kwargs.rb", 27, 14, "accuracy_splat_kwargs.rb", 6],
 
   # Struct & Data
   ["struct new creation",                  "accuracy_struct_data.rb", 4, 8, "accuracy_struct_data.rb", 2],
-  ["struct attribute access",              "accuracy_struct_data.rb", 5, 8, "accuracy_struct_data.rb", 2],
+  ["struct attribute access",              "accuracy_struct_data.rb", 5, 6, "accuracy_struct_data.rb", 2],
   ["data define creation",                 "accuracy_struct_data.rb", 11, 14, "accuracy_struct_data.rb", 9],
   ["data attribute access",                "accuracy_struct_data.rb", 12, 14, "accuracy_struct_data.rb", 9],
   ["frozen struct creation",                "accuracy_struct_data.rb", 21, 10, "accuracy_struct_data.rb", 17],
-  ["data pattern matching",                "accuracy_struct_data.rb", 28, 14, "accuracy_struct_data.rb", 29],
+  ["data pattern matching",                "accuracy_struct_data.rb", 29, 6, "accuracy_struct_data.rb", 29],
 
   # W2.2: Multi-level AR Relation chain
-  ["chain where -> order -> first",        "accuracy_relation_chain.rb", 21, 4, "accuracy_relation_chain.rb", 2],
-  ["chain where -> joins -> last",         "accuracy_relation_chain.rb", 25, 4, "accuracy_relation_chain.rb", 2],
-  ["chain includes -> order -> find",      "accuracy_relation_chain.rb", 29, 4, "accuracy_relation_chain.rb", 12],
-  ["chain where -> find_by",               "accuracy_relation_chain.rb", 33, 4, "accuracy_relation_chain.rb", 2],
-  ["chain where -> pluck",                 "accuracy_relation_chain.rb", 37, 4, "accuracy_relation_chain.rb", 2],
-  ["chain where -> take",                  "accuracy_relation_chain.rb", 41, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> order -> first",        "accuracy_relation_chain.rb", 19, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> joins -> last",         "accuracy_relation_chain.rb", 23, 4, "accuracy_relation_chain.rb", 2],
+  ["chain includes -> order -> find",      "accuracy_relation_chain.rb", 27, 4, "accuracy_relation_chain.rb", 12],
+  ["chain where -> find_by",               "accuracy_relation_chain.rb", 31, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> pluck",                 "accuracy_relation_chain.rb", 35, 4, "accuracy_relation_chain.rb", 2],
+  ["chain where -> take",                  "accuracy_relation_chain.rb", 39, 4, "accuracy_relation_chain.rb", 2],
 
   # W2.3: &method(:foo) proc-as-block
-  ["method ref &method(:double)",          "accuracy_method_ref.rb", 10, 18, "accuracy_method_ref.rb", 2],
-  ["method ref &method(:stringify)",       "accuracy_method_ref.rb", 14, 18, "accuracy_method_ref.rb", 6],
+  ["method ref &method(:double)",          "accuracy_method_ref.rb", 10, 27, "accuracy_method_ref.rb", 2],
+  ["method ref &method(:stringify)",       "accuracy_method_ref.rb", 14, 28, "accuracy_method_ref.rb", 6],
 
   # PR7: DSL + narrowing coverage (delegate prefix, composed_of, ActiveStorage,
   # Sorbet T.let / T.cast / T.must, etc.). Probes go-to-def from the call-site
   # back to the synthetic def the indexer emits for each DSL.
-  ["delegate prefix:true name",            "accuracy_dsl_advanced.rb", 30, 4, "accuracy_dsl_advanced.rb", 9],
-  ["delegate prefix:true email",           "accuracy_dsl_advanced.rb", 31, 4, "accuracy_dsl_advanced.rb", 9],
-  ["delegate prefix::alt phone",           "accuracy_dsl_advanced.rb", 32, 4, "accuracy_dsl_advanced.rb", 10],
-  ["composed_of address getter",           "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
-  ["has_one_attached avatar getter",       "accuracy_dsl_advanced.rb", 34, 4, "accuracy_dsl_advanced.rb", 6],
-  ["has_many_attached photos getter",      "accuracy_dsl_advanced.rb", 35, 4, "accuracy_dsl_advanced.rb", 7],
-  ["T.let narrowing — local s",            "accuracy_dsl_advanced.rb", 23, 4, "accuracy_dsl_advanced.rb", 20],
-  ["splat *args resolves to Array",        "accuracy_splat_kwargs.rb", 22, 14, "accuracy_splat_kwargs.rb", 10],
+  ["delegate prefix:true name",            "accuracy_dsl_advanced.rb", 34, 4, "accuracy_dsl_advanced.rb", 14],
+  ["delegate prefix:true email",           "accuracy_dsl_advanced.rb", 35, 4, "accuracy_dsl_advanced.rb", 14],
+  ["delegate prefix::alt phone",           "accuracy_dsl_advanced.rb", 36, 4, "accuracy_dsl_advanced.rb", 15],
+  ["composed_of address getter",           "accuracy_dsl_advanced.rb", 37, 4, "accuracy_dsl_advanced.rb", 13],
+  ["has_one_attached avatar getter",       "accuracy_dsl_advanced.rb", 38, 4, "accuracy_dsl_advanced.rb", 11],
+  ["has_many_attached photos getter",      "accuracy_dsl_advanced.rb", 39, 4, "accuracy_dsl_advanced.rb", 12],
+  ["T.let narrowing — local s",            "accuracy_dsl_advanced.rb", 27, 4, "accuracy_dsl_advanced.rb", 25],
+  ["splat *args resolves to Array",        "accuracy_splat_kwargs.rb", 2, 4, "accuracy_splat_kwargs.rb", 2],
   ["double-splat **opts resolves to Hash", "accuracy_splat_kwargs.rb", 27, 14, "accuracy_splat_kwargs.rb", 6],
-  ["composed_of writer accessor",          "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
+  ["composed_of writer accessor",          "accuracy_dsl_advanced.rb", 37, 4, "accuracy_dsl_advanced.rb", 13],
   ["delegate without prefix bare name",    "accuracy_main.rb", 45, 9, "accuracy_model.rb", 5],
-  ["attr_reader from composed_of class",   "accuracy_dsl_advanced.rb", 33, 4, "accuracy_dsl_advanced.rb", 8],
+  ["attr_reader from composed_of class",   "accuracy_dsl_advanced.rb", 37, 4, "accuracy_dsl_advanced.rb", 13],
 ]
 
 def basename_of(uri)
