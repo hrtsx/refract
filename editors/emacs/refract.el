@@ -31,9 +31,9 @@
   :type 'integer
   :group 'refract)
 
-(defcustom refract-log-level "info"
-  "Log verbosity: error, warn, info, debug."
-  :type 'string
+(defcustom refract-log-level 2
+  "Log verbosity (1=error, 2=warn, 3=info, 4=debug)."
+  :type 'integer
   :group 'refract)
 
 (defcustom refract-exclude-dirs nil

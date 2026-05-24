@@ -91,11 +91,15 @@ jobs:
         run: |
           npm install
           npm run build
-          npx -y @vscode/vsce@latest publish --pre-release -p "$VSCE_PAT"
+          # Only hyphenated tags (rc/alpha/beta) publish to the pre-release channel.
+          FLAG=""; [ "${{ contains(github.ref_name, '-') }}" = "true" ] && FLAG="--pre-release"
+          npx -y @vscode/vsce@latest publish $FLAG -p "$VSCE_PAT"
       - name: Publish to OpenVSX
         if: env.OVSX_PAT != ''
         working-directory: editors/vscode
-        run: npx -y ovsx@latest publish --pre-release -p "$OVSX_PAT"
+        run: |
+          FLAG=""; [ "${{ contains(github.ref_name, '-') }}" = "true" ] && FLAG="--pre-release"
+          npx -y ovsx@latest publish $FLAG -p "$OVSX_PAT"
 
   bump-brew-formula:
     needs: release

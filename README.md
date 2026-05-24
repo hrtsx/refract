@@ -26,6 +26,7 @@ See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the head-to-head numbers vs Sol
 ## Install
 
 > **Platform support:** Linux (x86_64 / aarch64, glibc and musl) and macOS (x86_64 / aarch64). Windows is not supported in 0.1.0.
+> **Ruby:** 2.7 – 3.4 syntax (via Prism 1.9.0).
 
 **macOS (Homebrew):**
 
@@ -183,10 +184,12 @@ refract --doctor               # paste-able diagnostic report (version, db state
 refract --last-crash           # print most recent crash log and exit
 refract --log-file F           # write logs to file
 refract --log-level N          # set verbosity (1–4)
+refract --verbose              # shorthand for --log-level 3
 refract --db-path PATH         # override database path
 refract --print-db-path        # print database path and exit
 refract --reset-db             # delete database and exit
 refract --check                # verify database integrity (0=ok, 1=fail)
+refract --repair               # repair recoverable index corruption
 refract --stats                # print file and symbol counts
 refract --workspace-info       # print workspace + symbol-kind breakdown
 ```
