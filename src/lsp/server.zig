@@ -2935,6 +2935,10 @@ pub const Server = struct {
                     self.sendLogMessage(2, msg_str);
                 };
                 self.db_mutex.unlock(std.Options.debug_io);
+                // Publish deferred diagnostics for didChange edits once typing
+                // settles (debounced path only). The forced path is driven by
+                // documentSymbol queries, which must not trigger notifications.
+                if (!force) diagnostics_mod.publishDiagnostics(self, uri_key, path, false);
             }
             self.last_index_mu.lockUncancelable(std.Options.debug_io);
             if (self.last_index_ms.fetchRemove(uri_key)) |kv| self.alloc.free(kv.key);

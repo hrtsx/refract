@@ -2,11 +2,12 @@ name: Soak Nightly
 
 on:
   schedule:
-    - cron: "37 5 * * *"
+    - cron: "37 5 * * *"           # nightly @ 05:37 UTC: 2 h broad-corpus
+    - cron: "0 4 * * 0"             # weekly Sunday @ 04:00 UTC: 5 h deep
   workflow_dispatch:
     inputs:
       duration_seconds:
-        description: "Soak duration (default 7200 = 2 h)"
+        description: "Soak duration (default 7200 = 2 h; weekly cron uses 18000 = 5 h)"
         required: false
         default: "7200"
 
@@ -16,7 +17,9 @@ env:
 jobs:
   soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # Weekly cron runs 5 h; nightly + manual default 2 h. Pick timeout to cover
+    # the deep run plus build/clone/upload overhead.
+    timeout-minutes: ${{ github.event.schedule == '0 4 * * 0' && 340 || 150 }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache Zig binary
@@ -32,15 +35,22 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y sqlite3 git
       - name: Build refract
         run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
-      - name: Fetch discourse-lib soak corpus
+      - name: Fetch soak corpus (full Discourse + Mastodon)
         run: |
-          git clone --depth=1 https://github.com/discourse/discourse.git /tmp/discourse
           mkdir -p /tmp/soak-workspace
-          cp -r /tmp/discourse/lib /tmp/soak-workspace/lib
+          git clone --depth=1 https://github.com/discourse/discourse.git /tmp/soak-workspace/discourse
+          git clone --depth=1 https://github.com/mastodon/mastodon.git /tmp/soak-workspace/mastodon
+          # Prune VCS dirs to keep mutation-touch path counts manageable.
+          rm -rf /tmp/soak-workspace/*/.git
+          echo "soak corpus size:"
+          du -sh /tmp/soak-workspace/* || true
+          echo "ruby file count:"
+          find /tmp/soak-workspace -name '*.rb' -type f | wc -l
       - name: Run soak harness
         env:
           REFRACT: ./zig-out/bin/refract
-          DURATION: ${{ github.event.inputs.duration_seconds || '7200' }}
+          # Weekly Sunday cron runs 5 h (18000 s); other schedules/manual: 2 h default.
+          DURATION: ${{ github.event.inputs.duration_seconds || (github.event.schedule == '0 4 * * 0' && '18000' || '7200') }}
         run: scripts/soak.sh /tmp/soak-workspace "$DURATION"
       - name: Upload soak logs
         if: always()

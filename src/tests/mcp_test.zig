@@ -1106,3 +1106,27 @@ test "P47 T47.26 MCP rate limiting rejects excess requests" {
     defer alloc.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "rate limit exceeded") != null);
 }
+
+test "P47 T47.32 MCP rejects path-traversal in file argument" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p47_t4732";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    // Attacker-supplied "file" arg with parent-dir segments must be rejected
+    // before any SQL binding or filesystem read takes place. The error path
+    // returns the "cannot resolve file path" message; the symbol/listing
+    // result must NOT contain rows from outside the workspace.
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_file_overview\",\"arguments\":{\"file\":\"/etc/../etc/passwd\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_file_overview\",\"arguments\":{\"file\":\"" ++ ws ++ "/../../../etc/passwd\"}}}");
+    try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    const raw = try s.runWithArgs(&.{"--mcp"});
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "cannot resolve file path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "root:x:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "passwd") == null or
+        std.mem.indexOf(u8, raw, "cannot resolve file path") != null);
+}

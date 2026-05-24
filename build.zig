@@ -184,7 +184,18 @@ pub fn build(b: *std.Build) void {
     harness_mod.addOptions("build_opts", proto_opts);
 
     const proto_test_files = .{
-        .{ "src/tests/protocol_test.zig", "test:lsp" },
+        .{ "src/tests/lsp/lifecycle_test.zig", "test:lsp-lifecycle" },
+        .{ "src/tests/lsp/completion_test.zig", "test:lsp-completion" },
+        .{ "src/tests/lsp/hover_test.zig", "test:lsp-hover" },
+        .{ "src/tests/lsp/navigation_test.zig", "test:lsp-navigation" },
+        .{ "src/tests/lsp/rename_test.zig", "test:lsp-rename" },
+        .{ "src/tests/lsp/types_test.zig", "test:lsp-types" },
+        .{ "src/tests/lsp/diagnostics_test.zig", "test:lsp-diagnostics" },
+        .{ "src/tests/lsp/indexing_test.zig", "test:lsp-indexing" },
+        .{ "src/tests/lsp/editing_test.zig", "test:lsp-editing" },
+        .{ "src/tests/lsp/cli_config_test.zig", "test:lsp-cli" },
+        .{ "src/tests/lsp/robustness_test.zig", "test:lsp-robustness" },
+        .{ "src/tests/lsp/misc_test.zig", "test:lsp-misc" },
         .{ "src/tests/mcp_test.zig", "test:mcp" },
         .{ "src/tests/edge_case_test.zig", "test:edge" },
         .{ "src/tests/navigation_hierarchy_test.zig", "test:nav" },

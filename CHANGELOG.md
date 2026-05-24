@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.0-beta.1] - 2026-05-26
+
+Single release candidate. Hardening on top of the public alpha.1 surface;
+verified against the existing 1 000+ test suite.
+
+### Reliability
+
+- LSP `callHierarchy/outgoingCalls` UAF fix on musl (commit 2bccb65d). The
+  former Alpine-only "malformed JSON in response stream" was caused by an
+  arena buffer being freed before serialization; the offending handler now
+  duplicates the def-statement view into its own arena. The musl CI skip
+  introduced during dogfooding is removed.
+- LSP query handlers no longer drive synchronous index flushes
+  (`flushDirtyUrisDebounced`); the flush runs on the background worker
+  exclusively, eliminating tail-latency cliffs on cold queries.
+- Pre-rendered method and completion bodies; sort/dedup cost dropped from
+  the per-query path.
+
+### Security
+
+- MCP `normalizeFileArg` rejects parent-directory traversal segments
+  outright (`../`). SQL was already parametrized and file reads keyed off
+  DB-indexed paths, so this is defense-in-depth, but it gives a uniform
+  answer at the API boundary instead of relying on indexer scoping.
+- MCP `pathInWorkspace` tightens prefix matching so `/workspace-evil` no
+  longer matches `/workspace`.
+- New regression test (`MCP rejects path-traversal in file argument`).
+
+### Soak / CI
+
+- Soak corpus expanded from `discourse/lib` (one directory) to full
+  Discourse + full Mastodon repositories.
+- Weekly Sunday cron added: 5 h deep soak with the same RSS-drift,
+  fd-leak, WAL-bloat, and SQLITE_BUSY assertions as the nightly 2 h
+  broad-corpus run. (GitHub-hosted runner cap is 6 h; a 24 h soak path
+  needs self-hosted infra and is deferred to 0.1.1.)
+- `perf-nightly.yml` switched off `mlugg/setup-zig@v1` (whose mirror
+  routing has been 404-ing for several days) to the same `curl` cache
+  pattern used by `ci.yml` and `soak.yml`. Restores nightly bench signal.
+
+### Docs
+
+- CHANGELOG `Deferred to 0.2.0` no longer claims plugin sandboxing is
+  deferred — the OS-level filter (Linux seccomp + Landlock + setrlimit;
+  macOS `sandbox_init` + setrlimit) has shipped via the
+  `refract --sandbox-exec` trampoline. Manifest validation is fail-closed
+  on `allow_network: true` / non-empty `allow_fs_write` in 0.1.0.
+
 ## [0.1.0-alpha.1] - 2026-05-14
 
 First public alpha. Intended for early testers + dogfooding. The plumbing
@@ -169,9 +217,25 @@ Eight first-party integrations, each smoke-tested in CI:
 
 - **Linux x86_64 + aarch64** (glibc and musl) and **macOS x86_64 + aarch64**. Windows is not supported in 0.1.0; a Zig-0.16 windows-gnu path with full libc is on the 0.2.0 wishlist.
 
+### Plugin sandboxing
+
+Refract spawns LSP plugins through a trampoline (`refract --sandbox-exec`)
+that installs an OS-level sandbox before `execve`-ing the plugin entry. The
+filter is enforced on every spawn — there is no "unsandboxed" code path in
+0.1.0.
+
+- **Linux** — seccomp-bpf (network syscalls denied unless `sandbox.allow_network`
+  is granted) + Landlock fs scope (≥5.13; writes restricted to `sandbox.allow_fs_write`
+  paths) + `setrlimit` caps on CPU, AS, NOFILE.
+- **macOS** — `sandbox_init` with a SBPL profile derived from the manifest
+  capabilities + `setrlimit` caps.
+- **Manifest gate** — 0.1.0 ships fail-closed: `allow_network: true` and any
+  non-empty `allow_fs_write` are rejected at manifest validation. Loosening
+  the gate is a 0.1.1 change; the trampoline already passes through the
+  required flags.
+
 ### Deferred to 0.2.0
 
-- Plugin sandbox enforcement (Linux seccomp-bpf + macOS `sandbox_init`). 0.1.0 ships the manifest schema (including `sandbox.allow_network` / `sandbox.allow_fs_write`) and spawns plugins, but emits an *unsandboxed* notice on every spawn; the OS-level filter is wired in 0.2.
 - Pre-rendered hover markdown for the top-1000 most-referenced symbols at warmup (would close the final per-query gap to ruby-lsp on micro workloads).
 - Splat (`*args`) and double-splat (`**kwargs`) parameter-type propagation through method-call chains.
 

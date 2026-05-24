@@ -49,10 +49,13 @@ jobs:
           path: .
           format: cyclonedx-json
           output-file: refract-sbom.cdx.json
+          upload-release-assets: false
+          upload-artifact: false
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             refract-x86_64-linux
             refract-aarch64-linux
@@ -88,11 +91,11 @@ jobs:
         run: |
           npm install
           npm run build
-          npx -y @vscode/vsce@latest publish -p "$VSCE_PAT"
+          npx -y @vscode/vsce@latest publish --pre-release -p "$VSCE_PAT"
       - name: Publish to OpenVSX
         if: env.OVSX_PAT != ''
         working-directory: editors/vscode
-        run: npx -y ovsx@latest publish -p "$OVSX_PAT"
+        run: npx -y ovsx@latest publish --pre-release -p "$OVSX_PAT"
 
   bump-brew-formula:
     needs: release
