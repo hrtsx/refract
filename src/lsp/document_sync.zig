@@ -743,7 +743,17 @@ pub fn handleWaitForIdle(self: *Server, msg: types.RequestMessage) !?types.Respo
     // sent (some tests skip it), or bg has been cancelled, skip the wait — no
     // signal to wait for and the deadline would block needlessly.
     if (self.bg_started_event.load(.acquire) and !self.bg_cancelled.load(.acquire)) {
-        const deadline_ms: u32 = 10_000;
+        // Cap the wait, but high enough to cover a cold index of a large
+        // multi-package repo on a slow host. The client's own request timeout is
+        // the effective bound; too low a cap here returns "idle" mid-index and
+        // makes downstream queries (diagnostics, symbol lookups) read a partial
+        // table. Overridable via REFRACT_WAITIDLE_MS for benches on huge repos.
+        const deadline_ms: u32 = blk: {
+            if (std.c.getenv("REFRACT_WAITIDLE_MS")) |v| {
+                if (std.fmt.parseInt(u32, std.mem.span(v), 10) catch null) |n| break :blk n;
+            }
+            break :blk 120_000;
+        };
         var waited: u32 = 0;
         while (waited < deadline_ms) : (waited += 5) {
             if (self.bg_indexing_done.load(.acquire)) break;

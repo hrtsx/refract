@@ -923,13 +923,6 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         try insertSymbolWithReturn(ctx, "scope", "default_scope", lc.line, lc.col, null, mname, parent_ds, null);
         return;
     }
-    // RSpec hooks take a timing symbol (`before(:each)`, `after(:all)`,
-    // `around(:each)`), not a method name — they define nothing queryable.
-    // Synthesizing `each`/`all` here produced phantom defs and duplicate-method
-    // false positives. (Rails callbacks like `before_save :m` are distinct names.)
-    if (std.mem.eql(u8, mname, "before") or std.mem.eql(u8, mname, "after") or
-        std.mem.eql(u8, mname, "around")) return;
-
     if (cn.arguments == null) return;
     const args_list = cn.arguments[0].arguments;
     if (args_list.size == 0) return;
@@ -5216,9 +5209,14 @@ fn findEnclosingClass(
     line: i64,
     alloc: std.mem.Allocator,
 ) ?struct { id: i64, name: []u8, is_module: bool } {
+    // Exclude synthesized FactoryBot factory/trait symbols: they are recorded with
+    // kind 'class' (so go-to-def works) but a `factory :order do … end` block is NOT
+    // a real lexical scope — treating it as the enclosing class made its DSL/transient
+    // attributes look like undefined self-sends.
     const stmt = db.prepare(
         \\SELECT id, name, kind FROM symbols
         \\WHERE file_id = ? AND kind IN ('class','classdef','module','moduledef')
+        \\  AND COALESCE(doc,'') NOT IN ('factory','trait')
         \\  AND line <= ?
         \\  AND (end_line IS NULL OR end_line >= ?)
         \\ORDER BY line DESC
@@ -5252,6 +5250,22 @@ const MethodResolution = enum {
 // "Ancestor" here means: the class itself, its recorded parent_name (superclass when
 // the class is top-level, namespace parent otherwise — a known limitation of the
 // current schema), and every module in the `mixins` table attached to the class.
+// Reopened Ruby core classes (`class Array … end`) have their real methods in the
+// interpreter, not the index — their ancestry can never be proven closed, so a
+// receiverless call inside one must not be flagged.
+fn isBuiltinCoreClass(name: []const u8) bool {
+    const core = [_][]const u8{
+        "Array",    "Hash",     "String",   "Integer",  "Float",     "Numeric",
+        "Symbol",   "Range",    "Regexp",   "Proc",     "Method",    "Module",
+        "Class",    "Object",   "BasicObject", "Kernel", "Comparable", "Enumerable",
+        "Struct",   "Set",      "Time",     "IO",       "File",      "Exception",
+        "Thread",   "Mutex",    "Rational", "Complex",  "MatchData", "Enumerator",
+        "NilClass", "TrueClass", "FalseClass",
+    };
+    for (core) |c| if (std.mem.eql(u8, name, c)) return true;
+    return false;
+}
+
 fn resolveMethodInAncestors(
     db: db_mod.Db,
     class_name: []const u8,
@@ -5285,6 +5299,10 @@ fn resolveMethodInAncestors(
 
         const name = queue.orderedRemove(0);
         defer alloc.free(name);
+
+        // A reopened core class (or a core class in the ancestry) has interpreter-
+        // provided methods we cannot see — cannot prove the method absent.
+        if (isBuiltinCoreClass(name)) return .unknown;
 
         if (seen.contains(name)) continue;
         const key_copy = alloc.dupe(u8, name) catch return .unknown;
@@ -5676,19 +5694,21 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         };
     }
 
-    // Synthesized `delegate :m, to:` methods are recorded as defs (doc='delegate').
-    // A class that delegates a name it also defines/inherits is not a real
-    // "defined multiple times" — exclude delegate-origin defs from both sides so
-    // they never trip this diagnostic.
+    // Synthesized DSL methods are recorded as defs tagged with their generator in
+    // `doc` (e.g. `delegate :m` → doc='delegate'; `before(:each)` → a symbol named
+    // 'each' with doc='before'). These are not hand-written definitions, so a
+    // collision with a real method — or two RSpec `before(:each)` hooks — is not a
+    // real "defined multiple times". Exclude generator-tagged defs from both sides.
     const dup_stmt = db.prepare(
         \\SELECT s1.name, s1.line FROM symbols s1
-        \\WHERE s1.file_id = ? AND s1.kind = 'def' AND COALESCE(s1.doc,'') <> 'delegate'
+        \\WHERE s1.file_id = ? AND s1.kind = 'def'
+        \\AND COALESCE(s1.doc,'') NOT IN ('delegate','before','after','around')
         \\AND EXISTS (
         \\  SELECT 1 FROM symbols s2
         \\  WHERE s2.file_id = s1.file_id AND s2.name = s1.name AND s2.kind = 'def'
         \\  AND s2.id != s1.id
         \\  AND COALESCE(s2.parent_name,'') = COALESCE(s1.parent_name,'')
-        \\  AND COALESCE(s2.doc,'') <> 'delegate'
+        \\  AND COALESCE(s2.doc,'') NOT IN ('delegate','before','after','around')
         \\)
         \\ORDER BY s1.name, s1.line
     ) catch return diags;
@@ -5732,7 +5752,8 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
             \\    AND name IN ('method_missing','respond_to_missing?','method_added','const_missing'))
             \\  OR EXISTS(SELECT 1 FROM refs WHERE file_id = ?
             \\    AND name IN ('define_method','define_singleton_method','instance_eval','class_eval',
-            \\      'module_eval','instance_exec','class_exec','send','__send__','public_send','method_missing'))
+            \\      'module_eval','instance_exec','class_exec','send','__send__','public_send','method_missing',
+            \\      'let','let!','subject','it','describe','context','specify','shared_examples','shared_context'))
         ) catch return diags;
         defer dyn_stmt.finalize();
         dyn_stmt.bind_int(1, file_id);
@@ -5825,7 +5846,11 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
             }
         }
 
-        if (has_best) {
+        if (has_best and !file_has_dynamic and !enc_is_module) {
+            // Even a close-name suggestion is unsafe in a dynamic file (send/eval/
+            // method_missing, or an RSpec example group whose let/subject helpers and
+            // block params are not statically visible) or inside a mixed-in module —
+            // these produced FPs on real code (block params, RSpec `let(:sl)`).
             const suggested = best_buf[0..best_len];
             const msg = std.fmt.allocPrint(alloc, "undefined method '{s}' \u{2014} did you mean '{s}'?", .{ ref_name, suggested }) catch continue;
             diags.append(alloc, .{
