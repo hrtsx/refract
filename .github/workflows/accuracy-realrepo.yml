@@ -1,0 +1,145 @@
+name: Real-repo accuracy (rivals)
+
+# Cross-server accuracy + DX on real, pinned repos (mastodon, discourse, Homebrew,
+# solidus). This is the head-to-head that is impractical to run interactively: the
+# rivals re-run a composed `bundle install` per server start and solargraph crashes
+# on some repos, so it lives here on a weekly schedule with a warmed bundle cache and
+# a long timeout. Best-effort — a hung/crashed rival is dropped by the driver, not
+# the job. Results are posted to the run summary and uploaded as an artifact.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'   # Mondays 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      corpora:
+        description: 'Space-separated corpora'
+        default: 'mastodon discourse homebrew solidus'
+      probes_limit:
+        description: 'Probes per repo (big Rails repos are capped lower internally)'
+        default: '150'
+      skip_servers:
+        description: 'Rival servers to exclude (solargraph crashes/stalls on big repos)'
+        default: 'solargraph'
+      include_gitlab:
+        description: 'Also fetch+bench GitLab CE (slow)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accuracy-realrepo
+  cancel-in-progress: false
+
+jobs:
+  accuracy:
+    name: Consensus + structural accuracy vs ruby-lsp / solargraph
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      REALISTIC_CORPORA: ${{ github.event.inputs.corpora || 'mastodon discourse homebrew solidus' }}
+      PROBES_LIMIT: ${{ github.event.inputs.probes_limit || '150' }}
+      SKIP_SERVERS: ${{ github.event.inputs.skip_servers || 'solargraph' }}
+      INCLUDE_GITLAB: ${{ github.event.inputs.include_gitlab == 'true' && '1' || '0' }}
+      WARMUP_BUDGET_S: '120'
+      SERVER_TIME_BUDGET_S: '150'
+      # Driver self-limits to ACC_DEADLINE_S and exits 0 with partial data; the
+      # orchestrator's external timeout sits above it as a hard backstop.
+      ACC_DEADLINE_S: '1100'
+      ACC_TIMEOUT_S: '1500'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache Zig binary
+        id: zig-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-x86_64-linux-0.16.0
+          key: zig-bin-x86_64-linux-0.16.0
+      - name: Download Zig
+        if: steps.zig-bin-cache.outputs.cache-hit != 'true'
+        run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
+      - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
+
+      - name: Cache Zig build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: linux-zig-accuracy-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-
+
+      - name: Setup Ruby 3.4
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: false
+
+      - name: Install rival language servers
+        run: gem install --no-document ruby-lsp solargraph
+
+      - name: Cache corpora (pinned tags) + bundles
+        uses: actions/cache@v4
+        with:
+          path: |
+            corpora
+            ~/.bundle
+          key: accuracy-corpora-${{ hashFiles('scripts/bench/fetch-corpora.sh') }}-${{ env.INCLUDE_GITLAB }}
+          restore-keys: accuracy-corpora-
+
+      - name: Fetch corpora
+        env:
+          REFRACT_PILOT_DIR: ${{ github.workspace }}/corpora
+        run: bash scripts/bench/fetch-corpora.sh
+
+      - name: Warm rival bundles (so ruby-lsp's composed bundle is cached)
+        run: |
+          for c in $REALISTIC_CORPORA; do
+            case "$c" in
+              homebrew) root="corpora/homebrew/Library/Homebrew" ;;
+              solidus)  root="corpora/solidus" ;;
+              mastodon) root="corpora/mastodon" ;;
+              discourse) root="corpora/discourse" ;;
+              *) root="corpora/$c" ;;
+            esac
+            if [[ -f "$root/Gemfile" ]]; then
+              echo "::group::bundle install $c"
+              ( cd "$root" && timeout 900 bundle install --quiet ) || echo "bundle failed for $c (driver will degrade/skip the rival)"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Build refract
+        run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" --release=safe
+
+      - name: Run real-repo accuracy + DX (all servers)
+        env:
+          REFRACT_PILOT_DIR: ${{ github.workspace }}/corpora
+          REFRACT: ${{ github.workspace }}/zig-out/bin/refract
+        run: |
+          mkdir -p bench-results/accuracy
+          bash scripts/bench/quality_accuracy_run.sh bench-results/accuracy/out || true
+          ls -lh bench-results/accuracy/out || echo "no results"
+
+      - name: Aggregate to summary
+        if: always()
+        run: |
+          if ls bench-results/accuracy/out/*__accuracy.json >/dev/null 2>&1; then
+            ruby scripts/bench/realistic_accuracy_aggregate.rb bench-results/accuracy/out >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No accuracy results produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-realrepo-results
+          path: bench-results/accuracy/out
+          retention-days: 90

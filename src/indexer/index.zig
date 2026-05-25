@@ -661,6 +661,23 @@ fn isIterationMethod(name: []const u8) bool {
     return false;
 }
 
+// Sorbet's type-signature DSL — `sig { params(x: Integer).returns(String) }` etc.
+// These read as receiverless method calls but are provided by the sorbet-runtime
+// gem, so the undefined-method checker must not flag them.
+fn isSorbetDsl(name: []const u8) bool {
+    const methods = [_][]const u8{
+        "sig",       "params",        "returns",     "void",      "override",
+        "overridable", "abstract",    "implementation", "checked", "on_failure",
+        "type_parameters", "type_member", "type_template", "bind",  "let",
+        "cast",      "must",          "unsafe",      "reveal_type", "absurd",
+        "mixes_in_class_methods", "requires_ancestor", "nilable", "any", "all",
+        "untyped",   "noreturn",      "attached_class", "self_type", "class_of",
+        "enums",     "sealed",
+    };
+    for (methods) |m| if (std.mem.eql(u8, name, m)) return true;
+    return false;
+}
+
 fn stripArrayBrackets(t: ?[]const u8) ?[]const u8 {
     const s = t orelse return null;
     if (s.len >= 3 and s[0] == '[' and s[s.len - 1] == ']') return s[1 .. s.len - 1];
@@ -906,6 +923,13 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         try insertSymbolWithReturn(ctx, "scope", "default_scope", lc.line, lc.col, null, mname, parent_ds, null);
         return;
     }
+    // RSpec hooks take a timing symbol (`before(:each)`, `after(:all)`,
+    // `around(:each)`), not a method name — they define nothing queryable.
+    // Synthesizing `each`/`all` here produced phantom defs and duplicate-method
+    // false positives. (Rails callbacks like `before_save :m` are distinct names.)
+    if (std.mem.eql(u8, mname, "before") or std.mem.eql(u8, mname, "after") or
+        std.mem.eql(u8, mname, "around")) return;
+
     if (cn.arguments == null) return;
     const args_list = cn.arguments[0].arguments;
     if (args_list.size == 0) return;
@@ -1703,14 +1727,23 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const class_pn: ?[]const u8 = if (ns_parent) |np| if (np.len > 0) np else null else null;
             const class_sym_id = insertSymbolGetId(ctx, "class", insert_name, lc.line, lc.col, doc, @intCast(end_lc.line), "public", class_pn) catch 0;
             if (cn.superclass) |sc| {
-                if (ns_parent == null) {
-                    const pn_owned = buildQualifiedName(ctx.parser, sc, ctx.alloc) catch null;
-                    defer if (pn_owned) |p| ctx.alloc.free(p);
-                    const pn: []const u8 = pn_owned orelse "";
-                    if (pn.len > 0 and class_sym_id > 0) {
+                const sc_owned = buildQualifiedName(ctx.parser, sc, ctx.alloc) catch null;
+                defer if (sc_owned) |p| ctx.alloc.free(p);
+                const sc_name: []const u8 = sc_owned orelse "";
+                if (sc_name.len > 0 and class_sym_id > 0) {
+                    // Record the real superclass for every class. parent_name keeps
+                    // its existing meaning (namespace for nested classes, superclass
+                    // for top-level ones) so rename/refs/completion are unaffected.
+                    if (ctx.db.prepare("UPDATE symbols SET superclass=? WHERE id=?")) |u| {
+                        defer u.finalize();
+                        u.bind_text(1, sc_name);
+                        u.bind_int(2, class_sym_id);
+                        _ = u.step() catch false;
+                    } else |_| {}
+                    if (ns_parent == null) {
                         if (ctx.db.prepare("UPDATE symbols SET parent_name=? WHERE id=?")) |u| {
                             defer u.finalize();
-                            u.bind_text(1, pn);
+                            u.bind_text(1, sc_name);
                             u.bind_int(2, class_sym_id);
                             _ = u.step() catch false;
                         } else |_| {}
@@ -2766,7 +2799,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 }
                 break :blk null;
             };
-            insertCallRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, ctx.scope_id, call_arg_count, call_recv_type) catch {
+            insertCallRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, ctx.scope_id, call_arg_count, call_recv_type, cn.receiver == null) catch {
                 ctx.error_count += 1;
             };
         },
@@ -3925,6 +3958,7 @@ fn insertCallRef(
     scope_id: ?i64,
     arg_count: i64,
     receiver_type: ?[]const u8,
+    is_self_send: bool,
 ) !void {
     const stmt = try db.prepare(
         \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, arg_count, receiver_type, kind)
@@ -3938,7 +3972,7 @@ fn insertCallRef(
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
     stmt.bind_int(6, arg_count);
     if (receiver_type) |rt| stmt.bind_text(7, rt) else stmt.bind_null(7);
-    stmt.bind_text(8, "call");
+    stmt.bind_text(8, if (is_self_send) "self_call" else "call");
     _ = try stmt.step();
 }
 
@@ -5181,9 +5215,9 @@ fn findEnclosingClass(
     file_id: i64,
     line: i64,
     alloc: std.mem.Allocator,
-) ?struct { id: i64, name: []u8 } {
+) ?struct { id: i64, name: []u8, is_module: bool } {
     const stmt = db.prepare(
-        \\SELECT id, name FROM symbols
+        \\SELECT id, name, kind FROM symbols
         \\WHERE file_id = ? AND kind IN ('class','classdef','module','moduledef')
         \\  AND line <= ?
         \\  AND (end_line IS NULL OR end_line >= ?)
@@ -5197,8 +5231,10 @@ fn findEnclosingClass(
     if (!(stmt.step() catch false)) return null;
     const id = stmt.column_int(0);
     const name_text = stmt.column_text(1);
+    const kind_text = stmt.column_text(2);
+    const is_module = std.mem.eql(u8, kind_text, "module") or std.mem.eql(u8, kind_text, "moduledef");
     const owned = alloc.dupe(u8, name_text) catch return null;
-    return .{ .id = id, .name = owned };
+    return .{ .id = id, .name = owned, .is_module = is_module };
 }
 
 const MethodResolution = enum {
@@ -5260,7 +5296,7 @@ fn resolveMethodInAncestors(
         // Look up the class/module symbol by name. If not present, the chain is
         // external — we cannot decide anything, bail out.
         const lookup = db.prepare(
-            \\SELECT id, parent_name FROM symbols
+            \\SELECT id, parent_name, superclass FROM symbols
             \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef')
             \\LIMIT 1
         ) catch return .unknown;
@@ -5269,6 +5305,11 @@ fn resolveMethodInAncestors(
         if (!(lookup.step() catch false)) return .unknown;
         const class_id = lookup.column_int(0);
         const parent_name_slice = lookup.column_text(1);
+        const superclass_dup: ?[]u8 = blk: {
+            const sc = lookup.column_text(2);
+            break :blk if (sc.len > 0) (alloc.dupe(u8, sc) catch null) else null;
+        };
+        defer if (superclass_dup) |s| alloc.free(s);
 
         // Method defined directly under this class?
         const has_method = db.prepare(
@@ -5281,7 +5322,29 @@ fn resolveMethodInAncestors(
         has_method.bind_text(2, method_name);
         if (has_method.step() catch false) return .found;
 
-        // Enqueue superclass (stored as parent_name for top-level classes).
+        // Follow the real superclass. If it is not itself indexed as a class/module,
+        // the base lives outside the workspace (e.g. a gem/framework class) and we
+        // cannot prove the method is absent — bail to .unknown rather than flag.
+        if (superclass_dup) |sc| {
+            const sc_known = sck: {
+                const q = db.prepare(
+                    \\SELECT 1 FROM symbols
+                    \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef') LIMIT 1
+                ) catch break :sck false;
+                defer q.finalize();
+                q.bind_text(1, sc);
+                break :sck (q.step() catch false);
+            };
+            if (!sc_known) return .unknown;
+            const dup = alloc.dupe(u8, sc) catch return .unknown;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return .unknown;
+            };
+        }
+
+        // Enqueue parent_name (carries the superclass for top-level classes; for
+        // nested classes it is the namespace, deduped via `seen`).
         if (parent_name_slice.len > 0) {
             const dup = alloc.dupe(u8, parent_name_slice) catch return .unknown;
             queue.append(alloc, dup) catch {
@@ -5613,14 +5676,19 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         };
     }
 
+    // Synthesized `delegate :m, to:` methods are recorded as defs (doc='delegate').
+    // A class that delegates a name it also defines/inherits is not a real
+    // "defined multiple times" — exclude delegate-origin defs from both sides so
+    // they never trip this diagnostic.
     const dup_stmt = db.prepare(
         \\SELECT s1.name, s1.line FROM symbols s1
-        \\WHERE s1.file_id = ? AND s1.kind = 'def'
+        \\WHERE s1.file_id = ? AND s1.kind = 'def' AND COALESCE(s1.doc,'') <> 'delegate'
         \\AND EXISTS (
         \\  SELECT 1 FROM symbols s2
         \\  WHERE s2.file_id = s1.file_id AND s2.name = s1.name AND s2.kind = 'def'
         \\  AND s2.id != s1.id
         \\  AND COALESCE(s2.parent_name,'') = COALESCE(s1.parent_name,'')
+        \\  AND COALESCE(s2.doc,'') <> 'delegate'
         \\)
         \\ORDER BY s1.name, s1.line
     ) catch return diags;
@@ -5653,8 +5721,27 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
     //      method is undefined without knowing what those externals provide.
     //   4. Only flag when the entire ancestor chain is fully visible in the symbols
     //      table and the method is provably absent from every link.
+    // A file is "dynamic" when it defines method_missing / respond_to_missing? or uses
+    // metaprogramming (define_method, send, *_eval, …). Such files can answer calls we
+    // cannot see statically, so we suppress the suggestion-less undefined-method path.
+    var file_has_dynamic = false;
+    {
+        const dyn_stmt = db.prepare(
+            \\SELECT
+            \\  EXISTS(SELECT 1 FROM symbols WHERE file_id = ? AND kind = 'def'
+            \\    AND name IN ('method_missing','respond_to_missing?','method_added','const_missing'))
+            \\  OR EXISTS(SELECT 1 FROM refs WHERE file_id = ?
+            \\    AND name IN ('define_method','define_singleton_method','instance_eval','class_eval',
+            \\      'module_eval','instance_exec','class_exec','send','__send__','public_send','method_missing'))
+        ) catch return diags;
+        defer dyn_stmt.finalize();
+        dyn_stmt.bind_int(1, file_id);
+        dyn_stmt.bind_int(2, file_id);
+        if (dyn_stmt.step() catch false) file_has_dynamic = dyn_stmt.column_int(0) != 0;
+    }
+
     const ref_stmt = db.prepare(
-        \\SELECT r.name, r.line, r.col FROM refs r
+        \\SELECT r.name, r.line, r.col, r.kind FROM refs r
         \\WHERE r.file_id = ? AND r.name NOT LIKE '\_%' ESCAPE '\'
         \\AND NOT EXISTS (
         \\  SELECT 1 FROM symbols s WHERE s.name = r.name
@@ -5670,6 +5757,8 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         const ref_name = ref_stmt.column_text(0);
         const line = ref_stmt.column_int(1);
         const col = ref_stmt.column_int(2);
+        const ref_kind = ref_stmt.column_text(3);
+        const is_self_send = std.mem.eql(u8, ref_kind, "self_call");
 
         // Skip common Ruby built-ins and keywords
         if (ref_name.len == 0) continue;
@@ -5677,11 +5766,14 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         if (isBuiltinMethod(ref_name)) continue;
         if (isRailsDsl(ref_name)) continue;
         if (isIterationMethod(ref_name)) continue;
+        if (isSorbetDsl(ref_name)) continue;
 
         // Ancestry-aware check. Find the innermost class/module that contains this
         // ref's line and resolve the method against its full ancestor chain.
+        var enc_is_module = false;
         if (findEnclosingClass(db, file_id, line, alloc)) |enc| {
             defer alloc.free(enc.name);
+            enc_is_module = enc.is_module;
             const resolution = resolveMethodInAncestors(db, enc.name, ref_name, alloc);
             switch (resolution) {
                 .found => continue, // method actually exists somewhere in the chain
@@ -5706,7 +5798,12 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
         const like_pat = std.fmt.bufPrint(&like_buf, "%{s}%", .{ref_name}) catch continue;
         similar.bind_text(1, like_pat);
 
-        var best_name: ?[]const u8 = null;
+        // `candidate` is a column_text slice into SQLite's row buffer, invalidated by
+        // the next step(). Copy the current best into a stable buffer so the slice we
+        // format later is not a use-after-free (which printed garbage bytes).
+        var best_buf: [128]u8 = undefined;
+        var best_len: usize = 0;
+        var has_best = false;
         // Tighter threshold: at most 2 edits, and never more than half the ref length
         const max_dist: u32 = @min(@as(u32, 2), @as(u32, @intCast(ref_name.len / 2 + 1)));
         var best_dist: u32 = max_dist + 1;
@@ -5718,15 +5815,35 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
             const first = candidate[0];
             const is_ident_start = (first >= 'a' and first <= 'z') or first == '_';
             if (!is_ident_start) continue;
+            if (candidate.len > best_buf.len) continue;
             const dist = editDistance(ref_name, candidate);
             if (dist > 0 and dist < best_dist) {
                 best_dist = dist;
-                best_name = candidate;
+                @memcpy(best_buf[0..candidate.len], candidate);
+                best_len = candidate.len;
+                has_best = true;
             }
         }
 
-        if (best_name) |suggested| {
+        if (has_best) {
+            const suggested = best_buf[0..best_len];
             const msg = std.fmt.allocPrint(alloc, "undefined method '{s}' \u{2014} did you mean '{s}'?", .{ ref_name, suggested }) catch continue;
+            diags.append(alloc, .{
+                .line = @intCast(line),
+                .col = @intCast(col),
+                .message = msg,
+                .severity = 2,
+                .code = "refract/undefined-method",
+            }) catch {
+                alloc.free(msg);
+            };
+        } else if (is_self_send and !file_has_dynamic and !enc_is_module) {
+            // No close suggestion, but a receiverless call provably absent from the fully
+            // visible ancestry of a non-dynamic class. Conservative: self-sends only, and
+            // never inside a bare `module` — module bodies are mixed into unknown hosts at
+            // runtime (Rails concerns / ActiveSupport::Concern), so a receiverless call is
+            // very often a host- or sibling-concern-provided method, not a typo.
+            const msg = std.fmt.allocPrint(alloc, "undefined method '{s}'", .{ref_name}) catch continue;
             diags.append(alloc, .{
                 .line = @intCast(line),
                 .col = @intCast(col),
@@ -5824,6 +5941,88 @@ pub fn runSemanticChecks(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator) 
 
             if (rargs > fixed) {
                 const msg = std.fmt.allocPrint(alloc, "too many arguments for '{s}': got {d}, expected at most {d}", .{ rname, rargs, fixed }) catch continue;
+                diags.append(alloc, .{
+                    .line = @intCast(rline),
+                    .col = @intCast(rcol),
+                    .message = msg,
+                    .severity = 2,
+                    .code = "refract/wrong-arity",
+                }) catch alloc.free(msg);
+            }
+        }
+    }
+
+    // Type-checker: arity on receiverless self-sends (e.g. `triple(1, 2)` inside a class).
+    //
+    // The block above needs a known receiver_type and only flags too-many. Self-sends store
+    // a null receiver_type but carry kind='self_call' (recorded at insertCallRef). Here we
+    // resolve the callee against the *enclosing* class and flag both too-many and too-few.
+    //
+    // Conservative gates mirror the receiver-typed path:
+    //   - exactly one matching def on the enclosing class (bail on monkey-patch ambiguity),
+    //   - too-many only when the def has no variadic param (rest/keyword_rest/block),
+    //   - too-few only when the def takes no keyword params (a trailing hash could supply them).
+    {
+        const self_stmt = db.prepare(
+            \\SELECT r.name, r.line, r.col, r.arg_count FROM refs r
+            \\WHERE r.file_id = ? AND r.kind = 'self_call' AND r.arg_count > 0
+        ) catch return diags;
+        defer self_stmt.finalize();
+        self_stmt.bind_int(1, file_id);
+
+        while (self_stmt.step() catch false) {
+            const rname = self_stmt.column_text(0);
+            const rline = self_stmt.column_int(1);
+            const rcol = self_stmt.column_int(2);
+            const rargs = self_stmt.column_int(3);
+            if (rname.len == 0) continue;
+            if (isBuiltinMethod(rname)) continue;
+            if (isRailsDsl(rname)) continue;
+            if (isIterationMethod(rname)) continue;
+
+            const enc = findEnclosingClass(db, file_id, rline, alloc) orelse continue;
+            defer alloc.free(enc.name);
+
+            // Resolve the callee to exactly one def directly on the enclosing class.
+            const sym_stmt = db.prepare(
+                \\SELECT id FROM symbols
+                \\WHERE name = ? AND COALESCE(parent_name,'') = ? AND kind IN ('def','classdef')
+                \\LIMIT 2
+            ) catch continue;
+            defer sym_stmt.finalize();
+            sym_stmt.bind_text(1, rname);
+            sym_stmt.bind_text(2, enc.name);
+            if (!(sym_stmt.step() catch false)) continue;
+            const sym_id = sym_stmt.column_int(0);
+            if (sym_stmt.step() catch false) continue; // ambiguous — bail
+
+            const self_param_stmt = db.prepare(
+                \\SELECT
+                \\  SUM(CASE WHEN kind = 'required' THEN 1 ELSE 0 END) AS req,
+                \\  SUM(CASE WHEN kind IN ('keyword','keyword_rest') THEN 1 ELSE 0 END) AS kw,
+                \\  SUM(CASE WHEN kind IN ('rest','keyword_rest','block') THEN 1 ELSE 0 END) AS variadic,
+                \\  SUM(CASE WHEN kind NOT IN ('rest','keyword_rest','block') OR kind IS NULL THEN 1 ELSE 0 END) AS fixed
+                \\FROM params WHERE symbol_id = ?
+            ) catch continue;
+            defer self_param_stmt.finalize();
+            self_param_stmt.bind_int(1, sym_id);
+            if (!(self_param_stmt.step() catch false)) continue;
+            const req = self_param_stmt.column_int(0);
+            const kw = self_param_stmt.column_int(1);
+            const variadic = self_param_stmt.column_int(2);
+            const fixed = self_param_stmt.column_int(3);
+
+            if (variadic == 0 and rargs > fixed) {
+                const msg = std.fmt.allocPrint(alloc, "too many arguments for '{s}': got {d}, expected at most {d}", .{ rname, rargs, fixed }) catch continue;
+                diags.append(alloc, .{
+                    .line = @intCast(rline),
+                    .col = @intCast(rcol),
+                    .message = msg,
+                    .severity = 2,
+                    .code = "refract/wrong-arity",
+                }) catch alloc.free(msg);
+            } else if (kw == 0 and rargs < req) {
+                const msg = std.fmt.allocPrint(alloc, "too few arguments for '{s}': got {d}, expected {d}", .{ rname, rargs, req }) catch continue;
                 diags.append(alloc, .{
                     .line = @intCast(rline),
                     .col = @intCast(rcol),
