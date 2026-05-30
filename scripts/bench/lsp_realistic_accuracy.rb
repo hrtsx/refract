@@ -335,6 +335,7 @@ diag_audit = nil
 def_attempted = 0; ref_attempted = 0
 struct_misses = {} # server => [{name, probe, target, target_line}] — oracle-rejected targets
 rename_detail = {} # server => [{name, probe, refs, edits, match}] — per-probe rename vs refs
+unresolved_samples = {} # server => [{name, probe, line, before}] — go-to-def returned NOTHING
 
 pr_row = lambda do |tp, fp, fn|
   prec = (tp + fp).zero? ? nil : (tp.to_f / (tp + fp)).round(3)
@@ -373,6 +374,7 @@ build_report = lambda do |partial:|
     rename_consistency: server_names.to_h { |n| [n, { n: rename_total[n], consistent: rename_consistent[n] }] },
     rename_detail: rename_detail,
     structural_misses: struct_misses,
+    unresolved_samples: unresolved_samples,
     diagnostics_audit: diag_audit,
   }
 end
@@ -398,7 +400,24 @@ def_probes.each do |pr|
     r = ask.call(name, c, :definition, uri, pr[:line], pr[:char], timeout: 5)
     tgt = loc_target(r && r["result"])
     results[name] = tgt
-    next if tgt.nil?
+    if tgt.nil?
+      # Sample the EMPTY-return probe so the recall gap is categorizable: token,
+      # source line, and the chars before the token start (to classify `x.foo`
+      # vs `Const.foo` vs bare `foo`).
+      if (unresolved_samples[name] ||= []).size < 30
+        src_line = (opened[pr[:path]][:text].lines[pr[:line]] || "").rstrip
+        ts = pr[:char]
+        ts -= 1 while ts > 0 && src_line[ts - 1].to_s.match?(/[A-Za-z0-9_]/)
+        before = src_line[0...ts].to_s
+        unresolved_samples[name] << {
+          name: name_at,
+          probe: "#{pr[:path].sub(%r{\A#{Regexp.escape(ROOT)}/?}, '')}:#{pr[:line] + 1}",
+          line: src_line.strip[0, 120],
+          before: (before[-24..] || before),
+        }
+      end
+      next
+    end
     resolved[name] += 1
     v = structurally_declares?(tgt, name_at)
     unless v.nil?

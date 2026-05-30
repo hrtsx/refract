@@ -13,6 +13,7 @@ const setMetaInt = S.setMetaInt;
 const getMetaInt = S.getMetaInt;
 
 pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -95,6 +96,7 @@ pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?type
 }
 
 pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -217,6 +219,7 @@ pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?typ
 }
 
 pub fn handleSemanticTokensDelta(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
