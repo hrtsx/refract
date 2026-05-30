@@ -404,27 +404,66 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
     const ref_col_0: i64 = @intCast(ref_word_start - ref_line_start);
 
     // Check if cursor is on a local variable; if so, scope the query
-    const file_stmt_ref = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
-    defer file_stmt_ref.reset();
-    file_stmt_ref.bind_text(1, path);
     var ref_scope_id: ?i64 = null;
     var is_local_ref = false;
-    if (try file_stmt_ref.step()) {
-        const fid = file_stmt_ref.column_int(0);
-        if (editing.resolveScopeId(self, fid, word, cursor_line_1based, ref_col_0)) |sid| {
-            // resolveScopeId also matches scoped *refs* — which include method
-            // calls inside a method body, not just locals. Confirm the name is a
-            // genuine local variable (every local has a write row in local_vars)
-            // before scoping the query; otherwise a call-site reference would be
-            // routed to the scoped branch and miss its cross-file declaration.
-            const lv_guard = try self.cachedStmt("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
-            defer lv_guard.reset();
-            lv_guard.bind_int(1, fid);
-            lv_guard.bind_text(2, word);
-            if (try lv_guard.step()) {
-                is_local_ref = true;
-                ref_scope_id = if (sid != 0) sid else null;
+    var ref_fid: i64 = 0;
+    {
+        const file_stmt_ref = try self.cachedStmt("SELECT id FROM files WHERE path = ?");
+        defer file_stmt_ref.reset();
+        file_stmt_ref.bind_text(1, path);
+        if (try file_stmt_ref.step()) {
+            ref_fid = file_stmt_ref.column_int(0);
+            if (editing.resolveScopeId(self, ref_fid, word, cursor_line_1based, ref_col_0)) |sid| {
+                // resolveScopeId also matches scoped *refs* — which include method
+                // calls inside a method body, not just locals. Confirm the name is a
+                // genuine local variable (every local has a write row in local_vars)
+                // before scoping the query; otherwise a call-site reference would be
+                // routed to the scoped branch and miss its cross-file declaration.
+                const lv_guard = try self.cachedStmt("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
+                defer lv_guard.reset();
+                lv_guard.bind_int(1, ref_fid);
+                lv_guard.bind_text(2, word);
+                if (try lv_guard.step()) {
+                    is_local_ref = true;
+                    ref_scope_id = if (sid != 0) sid else null;
+                }
             }
+        }
+    }
+
+    // Engage binding-exact scoping only when the name actually collides (defined in
+    // >1 place) — that's the over-collection case. A uniquely-named symbol (incl.
+    // top-level methods whose calls have no enclosing class, so no def_id) is already
+    // complete and correct via the name-global path; scoping it would under-report.
+    var name_collision = false;
+    if (!is_local_ref and ref_fid != 0) {
+        const cstmt = try self.cachedStmt("SELECT COUNT(*) FROM symbols WHERE name=? AND kind IN ('def','classdef','class','module','moduledef','constant')");
+        defer cstmt.reset();
+        cstmt.bind_text(1, word);
+        if (try cstmt.step()) name_collision = cstmt.column_int(0) > 1;
+    }
+
+    // Binding-exact path: if the cursor token resolves to a single definition
+    // (refs.def_id populated at index time, or the cursor sits on the decl itself),
+    // return only that binding's refs + decl rather than every same-named token. A
+    // zero/NULL def_id falls through to the name-global query below (no regression).
+    var cursor_def_id: i64 = 0;
+    if (!is_local_ref and ref_fid != 0 and name_collision) {
+        const dq = try self.cachedStmt("SELECT def_id FROM refs WHERE file_id=? AND name=? AND line=? AND col=? AND def_id IS NOT NULL LIMIT 1");
+        defer dq.reset();
+        dq.bind_int(1, ref_fid);
+        dq.bind_text(2, word);
+        dq.bind_int(3, cursor_line_1based);
+        dq.bind_int(4, ref_col_0);
+        if (try dq.step()) {
+            cursor_def_id = dq.column_int(0);
+        } else {
+            const sq = try self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND name=? AND line=? AND kind IN ('def','constant','class','module','classdef') LIMIT 1");
+            defer sq.reset();
+            sq.bind_int(1, ref_fid);
+            sq.bind_text(2, word);
+            sq.bind_int(3, cursor_line_1based);
+            if (try sq.step()) cursor_def_id = sq.column_int(0);
         }
     }
 
@@ -442,7 +481,96 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
         frc_ref.deinit(self.alloc);
     }
 
-    if (is_local_ref) {
+    if (cursor_def_id != 0) {
+        // Binding-exact: every ref resolved to this definition, plus the decl site.
+        // Deduped by (path,line,col) — the visitor sometimes over-inserts a ref at a
+        // def line, which would otherwise collide with the decl emit.
+        var seen_loc: std.StringHashMapUnmanaged(void) = .empty;
+        defer {
+            var sit = seen_loc.keyIterator();
+            while (sit.next()) |k| self.alloc.free(k.*);
+            seen_loc.deinit(self.alloc);
+        }
+        const def_ref = if (include_decl)
+            try self.cachedStmt(
+                \\SELECT f.path, r.line, r.col FROM refs r JOIN files f ON r.file_id=f.id WHERE r.def_id=?
+            )
+        else
+            try self.cachedStmt(
+                \\SELECT f.path, r.line, r.col FROM refs r JOIN files f ON r.file_id=f.id WHERE r.def_id=?
+                \\AND NOT EXISTS (
+                \\  SELECT 1 FROM symbols s WHERE s.file_id=r.file_id AND s.name=r.name AND s.line=r.line
+                \\    AND (s.col=r.col OR s.kind IN ('class','module'))
+                \\)
+            );
+        defer def_ref.reset();
+        def_ref.bind_int(1, cursor_def_id);
+        var dr_i: usize = 0;
+        while (try def_ref.step()) {
+            dr_i += 1;
+            if ((dr_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+                aw.deinit();
+                return self.cancelledResponse(msg.id);
+            }
+            const rp = def_ref.column_text(0);
+            const rl = def_ref.column_int(1);
+            const rc = def_ref.column_int(2);
+            const key = std.fmt.allocPrint(self.alloc, "{s}\x00{d}\x00{d}", .{ rp, rl, rc }) catch continue;
+            const gop = seen_loc.getOrPut(self.alloc, key) catch {
+                self.alloc.free(key);
+                continue;
+            };
+            if (gop.found_existing) {
+                self.alloc.free(key);
+                continue;
+            }
+            const rc_client = self.toClientColFromPath(&frc_ref, rp, rl - 1, rc);
+            if (!first) try w.writeByte(',');
+            first = false;
+            try w.writeAll("{\"uri\":\"file://");
+            try writePathAsUri(w, rp);
+            try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+            try w.print("{d}", .{rl - 1});
+            try w.writeAll(",\"character\":");
+            try w.print("{d}", .{rc_client});
+            try w.writeAll("},\"end\":{\"line\":");
+            try w.print("{d}", .{rl - 1});
+            try w.writeAll(",\"character\":");
+            try w.print("{d}", .{rc_client + @as(u32, @intCast(word.len))});
+            try w.writeAll("}}}");
+        }
+        if (include_decl) {
+            const decl_one = try self.cachedStmt(
+                \\SELECT f.path, s.line, s.col FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.id=?
+            );
+            defer decl_one.reset();
+            decl_one.bind_int(1, cursor_def_id);
+            if (try decl_one.step()) {
+                const dp = decl_one.column_text(0);
+                const dl = decl_one.column_int(1);
+                const dc = decl_one.column_int(2);
+                const key = std.fmt.allocPrint(self.alloc, "{s}\x00{d}\x00{d}", .{ dp, dl, dc }) catch null;
+                const dup = if (key) |k| (seen_loc.contains(k)) else true;
+                if (key) |k| self.alloc.free(k);
+                if (!dup) {
+                    const dc_client = self.toClientColFromPath(&frc_ref, dp, dl - 1, dc);
+                    if (!first) try w.writeByte(',');
+                    first = false;
+                    try w.writeAll("{\"uri\":\"file://");
+                    try writePathAsUri(w, dp);
+                    try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+                    try w.print("{d}", .{dl - 1});
+                    try w.writeAll(",\"character\":");
+                    try w.print("{d}", .{dc_client});
+                    try w.writeAll("},\"end\":{\"line\":");
+                    try w.print("{d}", .{dl - 1});
+                    try w.writeAll(",\"character\":");
+                    try w.print("{d}", .{dc_client + @as(u32, @intCast(word.len))});
+                    try w.writeAll("}}}");
+                }
+            }
+        }
+    } else if (is_local_ref) {
         if (ref_scope_id) |sid| {
             // Scoped: emit local_var writes + scoped refs for this scope only
             const lv_stmt = try self.cachedStmt(

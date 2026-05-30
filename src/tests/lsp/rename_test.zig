@@ -304,6 +304,75 @@ test "rename is scope-aware: only renames within same method" {
     try std.testing.expectEqual(@as(usize, 2), total_edits);
 }
 
+test "rename of a method is scoped to its defining class (def_id)" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_rename_method_scope";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/alpha.rb",
+        .data = "class Alpha\n  def shared\n  end\n  def use_it\n    shared\n  end\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/beta.rb",
+        .data = "class Beta\n  def shared\n  end\n  def call_it\n    shared\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true,\"disableRubocop\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/alpha.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/beta.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Rename Alpha#shared (line 1, col 6) → must edit only Alpha's 2 sites, not Beta's.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/alpha.rb\"},\"position\":{\"line\":1,\"character\":6},\"newName\":\"renamed_method\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoRenameResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const changes = result_obj.get("changes") orelse return error.NoChanges;
+    const changes_obj = switch (changes) {
+        .object => |o| o,
+        else => return error.ChangesNotObject,
+    };
+    var total_edits: usize = 0;
+    var beta_edits: usize = 0;
+    var it = changes_obj.iterator();
+    while (it.next()) |entry| {
+        const edits = switch (entry.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
+        total_edits += edits.items.len;
+        if (std.mem.indexOf(u8, entry.key_ptr.*, "beta.rb") != null) beta_edits += edits.items.len;
+    }
+    // Alpha#shared decl + self-send = 2; Beta#shared (same name) untouched.
+    try std.testing.expectEqual(@as(usize, 2), total_edits);
+    try std.testing.expectEqual(@as(usize, 0), beta_edits);
+}
+
 test "rename local var does not rename def with same name" {
     const alloc = std.testing.allocator;
 
