@@ -12,7 +12,9 @@ Zero-dependency Ruby language server for VS Code, powered by [Refract](https://g
 
 1. Install the Refract binary:
    ```sh
-   curl -fsSL https://github.com/hrtsx/refract/releases/latest/download/install.sh | sh
+   brew install hrtsx/refract/refract
+   # or download a static binary for your platform from:
+   # https://github.com/hrtsx/refract/releases/latest
    ```
 2. Install this extension from the VS Code Marketplace.
 3. Open a Ruby project — the extension activates automatically.

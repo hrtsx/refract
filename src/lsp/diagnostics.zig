@@ -192,10 +192,11 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
     probeRubocopBundle(
         self,
     );
+    // `--` terminates option parsing so a path like `--foo.rb` can't be read as a flag.
     const argv: []const []const u8 = if (self.rubocop_use_bundle.load(.monotonic))
-        &.{ "bundle", "exec", "rubocop", "--format", "json", "--no-color", "--no-cache", path }
+        &.{ "bundle", "exec", "rubocop", "--format", "json", "--no-color", "--no-cache", "--", path }
     else
-        &.{ "rubocop", "--format", "json", "--no-color", "--no-cache", path };
+        &.{ "rubocop", "--format", "json", "--no-color", "--no-cache", "--", path };
     var child = std.process.spawn(self.io, .{
         .argv = argv,
         .cwd = .{ .path = self.root_path orelse std.fs.path.dirname(path) orelse "." },
