@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 8;
+pub const CURRENT_SCHEMA: u32 = 10;
 
 pub const DbError = error{
     Open,
@@ -695,9 +695,18 @@ pub const Db = struct {
         // Schema v8: refs.kind column for filtering by reference type
         self.execMigration("ALTER TABLE refs ADD COLUMN kind TEXT"); // migration guard: column already exists on migrated schemas
 
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','8')");
+        // Schema v10: symbols.superclass records a class's resolved superclass for
+        // ALL classes (parent_name only carried it for top-level ones). Lets the
+        // ancestry walk follow real inheritance and recognise external/unindexed
+        // bases (so a self-send into an inherited-from-a-gem method is not flagged).
+        self.execMigration("ALTER TABLE symbols ADD COLUMN superclass TEXT"); // migration guard: column already exists on migrated schemas
+        self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_superclass ON symbols(superclass)") catch {};
+
+        // Schema v9: refs.kind distinguishes self-sends ('self_call') from
+        // explicit-receiver calls ('call'), enabling self-send arity/undefined checks.
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','10')");
         const final_ver = self.getSchemaVersion() orelse 0;
-        if (final_ver != 8) {
+        if (final_ver != @as(i64, CURRENT_SCHEMA)) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
         }
         if (profiling) {
@@ -832,16 +841,16 @@ test "getSchemaVersion returns current version" {
     defer db.close();
     try db.init_schema();
     const ver = db.getSchemaVersion() orelse 0;
-    try std.testing.expectEqual(@as(i64, 8), ver);
+    try std.testing.expectEqual(@as(i64, CURRENT_SCHEMA), ver);
 }
 
-test "schema v8 idempotent: init twice does not error" {
+test "schema idempotent: init twice does not error" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
     try db.init_schema();
     const ver = db.getSchemaVersion() orelse 0;
-    try std.testing.expectEqual(@as(i64, 8), ver);
+    try std.testing.expectEqual(@as(i64, CURRENT_SCHEMA), ver);
 }
 
 test "schema v8 tables present" {

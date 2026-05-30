@@ -32,6 +32,10 @@ Latency rows are Mastodon `session` p50 (ms) unless noted.
 | live edits kept (Discourse typing) | **240/240** | 240/240 | 188/240 |
 | accuracy — user-code | **76/76** | 37/76 | 46/76 |
 | accuracy — stdlib | **23/24** | 19/24 | 17/24 |
+| hover — correct (multi-op) | **6/6** | 4/6 | 5/6 |
+| references — recall / prec | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
+| rename — recall / prec | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
+| semantic-diagnostic recall | **6/6** | 1/6 | 3/6 |
 | peak RAM | **28–67 MB** | 95–182 MB | 379–1309 MB |
 | cold init | **15–210 ms** | 486–527 ms | 248–272 ms¹ |
 | first answer ready | **2.4–7 s** | 180 s cap¹ | 180 s cap¹ |
@@ -43,8 +47,11 @@ Latency rows are Mastodon `session` p50 (ms) unless noted.
 still-building index; solargraph additionally stalls 10–15 s on a slice of
 Discourse `session` requests. refract serves correct results from 2.4–7 s with no cap.
 
-Refract leads — or ties — every measured axis: latency, live-edit durability,
-accuracy, RAM, install. The numbers below back each row.
+Refract leads — or ties — every measured axis (latency, live-edit durability,
+go-to-definition accuracy, hover, references, rename, semantic diagnostics, RAM,
+install). The only axis where it does not lead outright is multi-op **completion**,
+a three-way tie at the low end where no server leads (§3a). The numbers below back
+each row.
 
 ---
 
@@ -142,6 +149,122 @@ Method-parameter go-to-definition (e.g. a parameter referenced inside a
 
 ---
 
+## 3a. Multi-operation accuracy (hover / completion / references / rename / diagnostics)
+
+Go-to-definition (§3) is one operation. This pass scores the other
+correctness-bearing operations against a **server-agnostic ground truth** — the
+same correct answer is scored identically for every server — over a small fixed
+fixture set (`scripts/bench/fixtures/`). Driven by `scripts/bench/lsp_multiop.rb`.
+
+| operation | metric | **refract** | ruby-lsp | solargraph |
+|---|---|:-:|:-:|:-:|
+| hover | correct / total | **6 / 6** | 4 / 6 | 5 / 6 |
+| completion | mean member recall | 0.33 | 0.33 | 0.00 |
+| references | mean recall / precision | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
+| rename | mean recall / precision | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
+| diagnostics | semantic bugs caught / 6 | **6 / 6** | 1 / 6 | 3 / 6 |
+
+- **hover** — refract resolves every probe (method calls, attr readers, class and
+  cross-file singleton defs); ruby-lsp returns empty on chained/cross-file
+  receivers, solargraph misses one.
+- **completion** — the immature axis for all three. Member completion is scored on
+  trailing-dot fixtures (receiver indexed). refract completes top-level and
+  inherited receivers but not yet namespaced ones (`Mod::Class.`); ruby-lsp
+  completes the namespaced constant but not the local-var/inherited cases;
+  solargraph returned no members in this harness. Nobody leads here.
+- **references / rename** — scored as precision/recall over the known reference and
+  edit sets, `includeDeclaration=true`. refract reaches **1.00 / 1.00** on
+  references after fixing a defect where the declaration site of a method or
+  constant was dropped (the `refs` table only over-inserts at class/module name
+  nodes; method/const declarations live in `symbols` and were never emitted). It
+  also no longer mis-routes a method reference as a local when the call sits inside
+  a method body. ruby-lsp over-returns references by name (precision 0.53) and
+  produced no usable rename on these fixtures; refract and solargraph are both exact
+  (**1.00 / 1.00**). refract reaches this by scoping the method-parent lookup to
+  workspace files (`is_gem=0`), so a method rename no longer binds to a same-named
+  gem class and drops the declaration edit.
+- **diagnostics** — a labeled fixture (`diag_bugs.rb`) with six real semantic bugs:
+  duplicate method, nil-receiver call, wrong arity, undefined method, unused
+  variable, unused parameter. refract's native engine catches **all six**. The two
+  added this pass are both receiverless `self`-sends, marked at index time
+  (`refs.kind = 'self_call'`) so they resolve against the enclosing class without
+  misattributing explicit-but-untyped receivers: a too-few/too-many arity error and
+  a bare undefined `self`-send (the latter gated off when the file shows dynamic
+  signals — `method_missing`, `define_method`, `*_eval`, `send`). rubocop-backed
+  ruby-lsp catches one (the useless assignment); solargraph's type checker catches
+  three. This measures *semantic* detection — style linters score low here by
+  nature, which is the point: refract ships semantic diagnostics the gem servers don't.
+
+Probes anchor on each symbol's definition site (the canonical "find references / rename
+this symbol" action); references additionally verified from a call site after the
+mis-routing fix. Single-host single-run; the fixture set is intentionally small and
+hand-verified rather than large.
+
+---
+
+## 3b. Real-repo accuracy (structural oracle)
+
+§3/§3a score against hand-labeled fixtures. This pass scores go-to-definition on
+**real, pinned project repos** with no answer key, using a **rival-independent
+structural oracle**: sample N method-call/identifier sites deterministically, ask the
+server to resolve each, then check whether the resolved target line actually *declares*
+the queried name (a `def`/`class`/`module`/const/attr/alias of it — read from the real
+target file, including gem/stdlib targets). This is the portable analogue of the
+precision/recall framing used to compare search-based vs precise code intel.
+
+- **resolution** = of sampled probes, fraction the server resolved to some target.
+- **structural precision** = of resolved targets we could inspect, fraction that declare
+  the queried name. It is a **lower bound** — the declaration regex does not recognize
+  every metaprogrammed/`define_method`/delegated definition form, which counts as a miss.
+
+Driven by `scripts/bench/lsp_realistic_accuracy.rb`. Corpora pinned (see
+`corpora/CORPORA_MANIFEST.json`): mastodon v4.5.11, discourse v2026.5.0,
+Homebrew/brew 6.0.2, solidus v4.7.0.
+
+| corpus | kind | def probes | resolution | structural precision |
+|---|---|:-:|:-:|:-:|
+| discourse | Rails | 96 | 0.77 | 0.60 (44/73) |
+| solidus | Rails engine + DSL | 80 | 0.76 | 0.55 (33/60) |
+| mastodon | Rails | 80 | 0.39 | 0.45 (14/31) |
+| Homebrew/brew | non-Rails, DSL/metaprogramming | 80 | 0.38 | 0.43 (13/30) |
+
+Resolution is higher on the Rails apps and lower on the metaprogramming-heavy /
+non-Rails code (Homebrew, and mastodon's gem-heavy call sites), where many call sites
+resolve into gems or are produced dynamically. Numbers are **per-corpus and not
+cross-averageable** (Homebrew is non-Rails). The driver also emits a cross-server
+**consensus** oracle (≥2 of {refract, ruby-lsp, solargraph} agree ⇒ truth) plus
+unique-resolution counts, but a usable rival comparison is not currently produced on
+real repos — see the note under §3c.
+
+## 3c. Diagnostic false-positive audit (real code)
+
+Real repos are presumed mostly-correct, so any refract-only semantic diagnostic on them
+is a candidate false positive. The audit re-triggers diagnostics on the sampled files
+and, for each refract bug-claim diagnostic (`wrong-arity` / `undefined-method` /
+`nil-receiver`), records whether a rival flags the same line. Lint-only codes refract
+alone ships (`unused-*`) are excluded from the rate.
+
+| corpus | semantic bug-claim diags | refract-only (FP) | FP rate |
+|---|:-:|:-:|:-:|
+| solidus | 0 | 0 | 0.00 |
+| Homebrew/brew | 0 | 0 | 0.00 |
+
+This audit drove two fixes. An initial Homebrew run produced 14 `undefined-method` false
+positives, all from receiverless self-sends the checker could not see: (1) Sorbet's
+signature DSL (`sig`/`returns`/`override`/…), now skipped; (2) methods inherited from an
+**external/unindexed base class** (e.g. RuboCop cops `< Base`) — the ancestry walk now
+records each class's real `superclass` and returns "unknown" (does not flag) when the
+base lives outside the workspace. A use-after-free that printed garbage bytes in the
+"did you mean" suggestion was fixed in the same pass. Post-fix the bug-claim FP rate is
+**0** on both repos.
+
+**Rival comparison on real repos is not run here.** ruby-lsp re-runs a composed
+`bundle install` (minutes to tens of minutes) on each server start, and solargraph
+crashes on Homebrew/solidus; a fair head-to-head needs a CI host with a warmed bundle
+cache. The fixture-based head-to-head (§3a, §6) stands for cross-server comparison.
+
+---
+
 ## 4. Resource consumption
 
 Peak RSS (MB):
@@ -179,6 +302,20 @@ live edits.
 
 ## 6. DX / install
 
+Measured per server with `scripts/bench/lsp_dx.rb` (cold start → first correct
+answer → behaviour on malformed input), lower is better:
+
+| metric | **refract** | ruby-lsp | solargraph |
+|---|:-:|:-:|:-:|
+| cold init (initialize round-trip) | **180 ms** | 517 ms | 255 ms |
+| time-to-first-correct-answer | **27 ms** | 572 ms | 357 ms |
+| peak RSS (single file) | **50 MB** | 110 MB | 125 MB |
+| survives malformed file + keeps serving | yes | yes | yes |
+
+refract answers a correct go-to-definition ~20× sooner than the gem servers and on
+a third to half the memory; all three stay alive and keep serving after a
+syntactically broken document is opened.
+
 | | refract | ruby-lsp | solargraph | sorbet | steep |
 |---|---|---|---|---|---|
 | Distribution | static binary 5.36 MB | gem | gem | gem + native | gem |
@@ -191,16 +328,49 @@ live edits.
 | MCP server for AI agents | **yes** (`refract --mcp`, 39 tools) | no | no | no | no |
 | LSP method coverage | 28+ incl. semantic-tokens, inlay-hints, code-action, foldingRange, prepareRename, willRenameFiles | 20+ | 20+ | type-error focused | type-error focused |
 
+## 6b. DX on real repos
+
+§6 measures DX on a single fixture file; this measures it on the **pinned real repos**:
+cold init, time-to-first-correct-answer (first def matching the §3b oracle, p50),
+full-warm (≥90% of the oracle probes answering), peak RSS, on-disk index, and whether the
+server survives a malformed file injected into the live tree and keeps serving. refract
+only (rivals not run on real repos — see §3c). Driven by
+`scripts/bench/lsp_dx_realistic.rb`.
+
+| corpus | cold init | first-correct p50 | full warm | peak RSS | index on disk | robust |
+|---|--:|--:|--:|--:|--:|:-:|
+| mastodon | 21 ms | 122 ms | 148 ms | 41 MB | 15 MB | yes |
+| Homebrew/brew | 59 ms | 545 ms | 597 ms | 85 MB | 13 MB | yes |
+| discourse | 1.31 s | 1.07 s | 1.14 s | 446 MB | 377 MB | yes |
+| solidus | 1.59 s | 2.15 s | 2.18 s | 644 MB | 365 MB | yes |
+
+Cold init and memory scale with corpus size; the index is built once and persists
+(SQLite), so subsequent sessions skip the warm. All four survive a malformed file and
+keep answering. (`full warm` here is wall-clock to the queryable hot index; refract also
+reports a separate background-indexer drain that does not block queries.)
+
 ---
 
 ## 7. Reproduce
 
 ```sh
 zig build --release=safe
-bash scripts/bench/realistic_run.sh                     # 24-cell matrix
+bash scripts/bench/realistic_run.sh                     # 24-cell perf matrix
 ruby scripts/bench/realistic_aggregate.rb bench-results/realistic/<ts>-<sha>
 cd scripts/bench/fixtures && ROOT="$PWD" ruby ../lsp_accuracy.rb refract <bin> --db-path /tmp/acc.db
+bash scripts/bench/quality_run.sh /tmp/quality.log      # fixture multi-op accuracy + DX (§3a, §6)
+
+# Real-repo accuracy + DX (§3b/§3c/§6b). Pin + fetch corpora, then run one repo at a
+# time on a quiet host (rivals omitted: ruby-lsp re-bundles per start, solargraph crashes):
+REFRACT_PILOT_DIR="$PWD/corpora" bash scripts/bench/fetch-corpora.sh
+REFRACT_PILOT_DIR="$PWD/corpora" REALISTIC_CORPORA="solidus" \
+  SKIP_SERVERS="ruby-lsp solargraph" bash scripts/bench/quality_accuracy_run.sh /tmp/acc
+ruby scripts/bench/realistic_accuracy_aggregate.rb /tmp/acc
 ```
+
+`quality_run.sh` drives `lsp_multiop.rb` (hover/completion/references/rename/diagnostics)
+and `lsp_dx.rb` (cold-init / first-answer / robustness) for refract, ruby-lsp, and
+solargraph over the shared fixture workspace.
 
 Override defaults via `REALISTIC_CORPORA`, `REALISTIC_WORKLOADS`, `REALISTIC_SERVERS`,
 `REALISTIC_SEED`, `REFRACT_PILOT_DIR`. Mastodon + Discourse must be cloned under the

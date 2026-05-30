@@ -123,6 +123,15 @@ class LspClient
     }, timeout: timeout)
   end
 
+  # Completion with an explicit dot trigger context (member completion).
+  def completion_dot(uri, line, char, timeout: 15)
+    request("textDocument/completion", {
+      textDocument: { uri: uri },
+      position: { line: line, character: char },
+      context: { triggerKind: 2, triggerCharacter: "." },
+    }, timeout: timeout)
+  end
+
   def references(uri, line, char, timeout: 15)
     request("textDocument/references", {
       textDocument: { uri: uri },
@@ -192,6 +201,36 @@ class LspClient
     end
     settle_ms_val = last_msg_at ? ((last_msg_at - started_at) * 1000).round(2) : nil
     { first_ms: first_ms, settle_ms: settle_ms_val, received_count: received }
+  end
+
+  # Pull-model diagnostics (ruby-lsp 0.26+ uses these instead of push).
+  def pull_diagnostics(uri, timeout: 15)
+    request("textDocument/diagnostic", { textDocument: { uri: uri } }, timeout: timeout)
+  end
+
+  # Drain push-model publishDiagnostics for a uri; returns the latest full set
+  # (LSP servers republish the complete diagnostic list per document each time).
+  def collect_push_diagnostics(uri, settle_ms: 1500, hard_timeout: 12)
+    deadline = monotonic + hard_timeout
+    settle = settle_ms / 1000.0
+    last = nil
+    items = []
+    loop do
+      remaining = deadline - monotonic
+      break if remaining <= 0
+      t = last ? [settle - (monotonic - last), 0.05].max : remaining
+      msg = read_msg(t)
+      if msg.nil?
+        break if last && (monotonic - last) >= settle
+        next
+      end
+      if msg.is_a?(Hash) && msg["method"] == "textDocument/publishDiagnostics" &&
+         msg.dig("params", "uri") == uri
+        items = msg.dig("params", "diagnostics") || []
+        last = monotonic
+      end
+    end
+    items
   end
 
   # True once the server's stdin has gone away (process died, EPIPE on write,

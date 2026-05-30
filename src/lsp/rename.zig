@@ -217,7 +217,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
         var method_parent: ?[]const u8 = null;
         defer if (method_parent) |mp| self.alloc.free(mp);
         if (self.db.prepare(
-            "SELECT parent_name FROM symbols WHERE name=? AND kind IN ('def','classdef') AND parent_name IS NOT NULL LIMIT 1",
+            "SELECT s.parent_name FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('def','classdef') AND s.parent_name IS NOT NULL AND f.is_gem=0 LIMIT 1",
         )) |ps| {
             defer ps.finalize();
             ps.bind_text(1, word);

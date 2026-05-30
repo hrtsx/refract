@@ -2933,3 +2933,242 @@ test "P34 T34.2 wrong-arity checker flags too many positional arguments" {
     defer alloc.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "refract/wrong-arity") != null);
 }
+
+test "P34 T34.3 wrong-arity flags too few args on a self-send" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t343";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // triple takes 3 required params; the receiverless call triple(1, 2) inside #run is a
+    // self-send (refs.kind='self_call', receiver_type NULL) and must be flagged too-few.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_arity.rb", .data =
+        "class Calc\n" ++
+        "  def triple(a, b, c); a + b + c; end\n" ++
+        "  def run; triple(1, 2); end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/self_arity.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Calc\\n" ++
+        "  def triple(a, b, c); a + b + c; end\\n" ++
+        "  def run; triple(1, 2); end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "refract/wrong-arity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "too few arguments") != null);
+}
+
+test "P34 T34.4 undefined-method flags an unknown self-send" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t344";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // missing_helper is never defined and the class has no dynamic signals, so the
+    // receiverless call must be flagged even without a close "did you mean?" suggestion.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_undef.rb", .data =
+        "class Calc\n" ++
+        "  def run; missing_helper(3); end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/self_undef.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Calc\\n" ++
+        "  def run; missing_helper(3); end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "refract/undefined-method") != null);
+}
+
+test "P34 T34.5 undefined-method suggestion is valid UTF-8 (no freed-slice garbage)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t345";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // Several same-prefix defs force the "did you mean" candidate loop to step past
+    // the chosen best, which previously left best_name pointing at a reused SQLite
+    // row buffer (use-after-free) and printed garbage bytes. The whole reply must
+    // remain valid UTF-8.
+    // The undefined name `calculat` is a substring of all three real defs (so the
+    // LIKE-based candidate query returns multiple rows) and within edit distance 2 of
+    // each, forcing the best-candidate loop to step past the chosen row.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/sugg.rb", .data =
+        "class Calc\n" ++
+        "  def calculate; end\n" ++
+        "  def calculated; end\n" ++
+        "  def calculates; end\n" ++
+        "  def run; calculat(1); end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/sugg.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Calc\\n" ++
+        "  def calculate; end\\n" ++
+        "  def calculated; end\\n" ++
+        "  def calculates; end\\n" ++
+        "  def run; calculat(1); end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "did you mean") != null);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(raw));
+}
+
+test "P34 T34.6 self-send into an unindexed-base method is not flagged" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t346";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // Cop < ExternalBase: the base is outside the workspace, so its methods are
+    // invisible. A receiverless call must NOT be flagged (the ancestry is not
+    // provably closed) — this was the RuboCop-cop false positive on Homebrew.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/cop.rb", .data =
+        "class Cop < ExternalBase\n" ++
+        "  def run; offending_node(1); end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/cop.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Cop < ExternalBase\\n" ++
+        "  def run; offending_node(1); end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "offending_node") == null);
+}
+
+test "P34 T34.7 Sorbet sig DSL is not flagged as undefined" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t347";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // `sig { ... }` and its chained returns/void are sorbet-runtime DSL, not undefined.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/typed.rb", .data =
+        "class Calc\n" ++
+        "  sig { returns(Integer) }\n" ++
+        "  def answer; 42; end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/typed.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Calc\\n" ++
+        "  sig { returns(Integer) }\\n" ++
+        "  def answer; 42; end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "undefined method 'sig'") == null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "undefined method 'returns'") == null);
+}
+
+test "P34 T34.8 bare self-send inside a module is not flagged (concern pattern)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t348";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // A module is mixed into unknown hosts at runtime (Rails concern). A
+    // receiverless call to a method provided by a sibling concern / the host must
+    // NOT be flagged — this was the Solidus `permitted_address_attributes` FP.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/concern.rb", .data =
+        "module StrongParams\n" ++
+        "  def permitted_payment; {address: permitted_address}; end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/concern.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "module StrongParams\\n" ++
+        "  def permitted_payment; {address: permitted_address}; end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "undefined method 'permitted_address'") == null);
+}
+
+test "P34 T34.9 RSpec before(:each) does not synthesize a duplicate 'each' method" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t349";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // Two `before(:each)` hooks previously each recorded a phantom def `each`,
+    // tripping duplicate-method. The timing symbol is not a method name.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/spec.rb", .data =
+        "describe Thing do\n" ++
+        "  before(:each) { setup_a }\n" ++
+        "  before(:each) { setup_b }\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/spec.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "describe Thing do\\n" ++
+        "  before(:each) { setup_a }\\n" ++
+        "  before(:each) { setup_b }\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "method 'each' defined multiple times") == null);
+}
+
+test "P34 T34.10 delegate of a name the class also defines is not a duplicate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_p34_t3410";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    // `delegate :currency` synthesizes a def; a real `def currency` override must
+    // not collide with it (Solidus Payment FP).
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/payment.rb", .data =
+        "class Payment\n" ++
+        "  delegate :currency, to: :order\n" ++
+        "  def currency; super || 'USD'; end\n" ++
+        "end\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/payment.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"" ++
+        "class Payment\\n" ++
+        "  delegate :currency, to: :order\\n" ++
+        "  def currency; super || 'USD'; end\\n" ++
+        "end\\n\"}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "method 'currency' defined multiple times") == null);
+}

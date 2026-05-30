@@ -11,7 +11,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DRIVER_DIR="$REPO_ROOT/scripts/bench"
 REFRACT="${REFRACT:-$REPO_ROOT/zig-out/bin/refract}"
-PILOT_DIR="${REFRACT_PILOT_DIR:-/tmp/refract-pilot}"
+PILOT_DIR="${REFRACT_PILOT_DIR:-$REPO_ROOT/corpora}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
 if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null || \
@@ -30,6 +30,9 @@ corpus_root() {
     mastodon)        echo "$PILOT_DIR/mastodon" ;;
     discourse-lib)   echo "$PILOT_DIR/discourse/lib" ;;
     discourse)       echo "$PILOT_DIR/discourse" ;;
+    homebrew)        echo "$PILOT_DIR/homebrew/Library/Homebrew" ;;
+    solidus)         echo "$PILOT_DIR/solidus" ;;
+    gitlabhq)        echo "$PILOT_DIR/gitlabhq" ;;
     *)               echo "$1" ;;  # treat unknown name as a literal path
   esac
 }
