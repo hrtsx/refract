@@ -1214,6 +1214,20 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
                 try ranked.append(self.alloc, .{ .sym = sym, .tier = 1 });
             }
         }
+        // Subsequence/camelCase fallback when prefix+substring are still thin, so
+        // "abc" can surface "ActivateBlockController". Tier 2 → sorts after exact/
+        // prefix/substring; the client's own filterText match decides final ranking.
+        if (word.len > 2 and ranked.items.len < 25) {
+            var seq_buf = std.ArrayList(hot_index_mod.HotSymbol).empty;
+            defer seq_buf.deinit(self.alloc);
+            try hot.appendSubsequenceMatches(word, &seq_buf, self.alloc);
+            for (seq_buf.items) |sym| {
+                if (sym.name.len == 0) continue;
+                if (seen.contains(sym.name)) continue;
+                try seen.put(sym.name, {});
+                try ranked.append(self.alloc, .{ .sym = sym, .tier = 2 });
+            }
+        }
         const had_substring_tier = blk: {
             for (ranked.items) |r| if (r.tier != 0) break :blk true;
             break :blk false;
