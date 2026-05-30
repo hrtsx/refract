@@ -412,8 +412,19 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
     if (try file_stmt_ref.step()) {
         const fid = file_stmt_ref.column_int(0);
         if (editing.resolveScopeId(self, fid, word, cursor_line_1based, ref_col_0)) |sid| {
-            is_local_ref = true;
-            ref_scope_id = if (sid != 0) sid else null;
+            // resolveScopeId also matches scoped *refs* — which include method
+            // calls inside a method body, not just locals. Confirm the name is a
+            // genuine local variable (every local has a write row in local_vars)
+            // before scoping the query; otherwise a call-site reference would be
+            // routed to the scoped branch and miss its cross-file declaration.
+            const lv_guard = try self.cachedStmt("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
+            defer lv_guard.reset();
+            lv_guard.bind_int(1, fid);
+            lv_guard.bind_text(2, word);
+            if (try lv_guard.step()) {
+                is_local_ref = true;
+                ref_scope_id = if (sid != 0) sid else null;
+            }
         }
     }
 
@@ -549,6 +560,52 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
             try w.writeAll(",\"character\":");
             try w.print("{d}", .{ref_col_client + @as(u32, @intCast(word.len))});
             try w.writeAll("}}}");
+        }
+
+        // includeDeclaration=true: also emit the declaration site(s) from the
+        // symbols table. The refs visitor over-inserts a ref at class/module name
+        // nodes (so those decls already appear above), but method and constant
+        // declarations live only in `symbols`; without this they were silently
+        // dropped despite the LSP spec requiring the declaration when true.
+        if (include_decl) {
+            const decl_stmt = try self.cachedStmt(
+                \\SELECT f.path, s.line, s.col
+                \\FROM symbols s JOIN files f ON s.file_id = f.id
+                \\WHERE s.name = ?
+                \\  AND f.is_gem = 0
+                \\  AND s.kind IN ('def','constant','class','module','classdef')
+                \\  AND NOT EXISTS (
+                \\    SELECT 1 FROM refs r
+                \\    WHERE r.file_id = s.file_id AND r.name = s.name AND r.line = s.line
+                \\  )
+            );
+            defer decl_stmt.reset();
+            decl_stmt.bind_text(1, word);
+            var decl_i: usize = 0;
+            while (try decl_stmt.step()) {
+                decl_i += 1;
+                if ((decl_i & 0xFF) == 0 and self.isCancelled(msg.id)) {
+                    aw.deinit();
+                    return self.cancelledResponse(msg.id);
+                }
+                if (!first) try w.writeByte(',');
+                first = false;
+                const dp = decl_stmt.column_text(0);
+                const dl = decl_stmt.column_int(1);
+                const dc = decl_stmt.column_int(2);
+                const dc_client = self.toClientColFromPath(&frc_ref, dp, dl - 1, dc);
+                try w.writeAll("{\"uri\":\"file://");
+                try writePathAsUri(w, dp);
+                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+                try w.print("{d}", .{dl - 1});
+                try w.writeAll(",\"character\":");
+                try w.print("{d}", .{dc_client});
+                try w.writeAll("},\"end\":{\"line\":");
+                try w.print("{d}", .{dl - 1});
+                try w.writeAll(",\"character\":");
+                try w.print("{d}", .{dc_client + @as(u32, @intCast(word.len))});
+                try w.writeAll("}}}");
+            }
         }
     }
     try w.writeByte(']');

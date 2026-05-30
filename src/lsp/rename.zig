@@ -199,8 +199,17 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     if (try fid_check.step()) {
         const fid = fid_check.column_int(0);
         if (editing.resolveScopeId(self, fid, word, cursor_line_1based, cursor_col_0)) |sid| {
-            is_local_rename = true;
-            rename_scope_id = if (sid != 0) sid else null;
+            // Only scope to a local when the name is a genuine local variable;
+            // resolveScopeId also matches scoped refs (method calls in a body),
+            // which would wrongly route a method rename through the local path.
+            const lv_guard = try self.db.prepare("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
+            defer lv_guard.finalize();
+            lv_guard.bind_int(1, fid);
+            lv_guard.bind_text(2, word);
+            if (try lv_guard.step()) {
+                is_local_rename = true;
+                rename_scope_id = if (sid != 0) sid else null;
+            }
         }
     }
 
