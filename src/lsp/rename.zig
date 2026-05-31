@@ -192,19 +192,20 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
 
     var is_local_rename = false;
     var rename_scope_id: ?i64 = null;
+    var rename_fid: i64 = 0;
 
     const fid_check = try self.db.prepare("SELECT id FROM files WHERE path=?");
     defer fid_check.finalize();
     fid_check.bind_text(1, path);
     if (try fid_check.step()) {
-        const fid = fid_check.column_int(0);
-        if (editing.resolveScopeId(self, fid, word, cursor_line_1based, cursor_col_0)) |sid| {
+        rename_fid = fid_check.column_int(0);
+        if (editing.resolveScopeId(self, rename_fid, word, cursor_line_1based, cursor_col_0)) |sid| {
             // Only scope to a local when the name is a genuine local variable;
             // resolveScopeId also matches scoped refs (method calls in a body),
             // which would wrongly route a method rename through the local path.
             const lv_guard = try self.db.prepare("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
             defer lv_guard.finalize();
-            lv_guard.bind_int(1, fid);
+            lv_guard.bind_int(1, rename_fid);
             lv_guard.bind_text(2, word);
             if (try lv_guard.step()) {
                 is_local_rename = true;
@@ -213,7 +214,96 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
         }
     }
 
-    if (!is_local_rename) {
+    // Engage binding-exact rename only when the name collides (>1 same-named def) —
+    // the over-broad case. A uniquely-named or top-level method keeps the proven
+    // class-hierarchy logic below, which never under-edits (a missed occurrence would
+    // leave a dangling reference). On collision the def_id set scopes to the binding.
+    var name_collision = false;
+    if (!is_local_rename and rename_fid != 0) {
+        if (self.db.prepare("SELECT COUNT(*) FROM symbols WHERE name=? AND kind IN ('def','classdef','class','module','moduledef','constant')")) |cs| {
+            defer cs.finalize();
+            cs.bind_text(1, word);
+            if (cs.step() catch false) name_collision = cs.column_int(0) > 1;
+        } else |_| {}
+    }
+
+    // Binding-exact rename: if the cursor token resolves to a single definition
+    // (refs.def_id, or the cursor on the decl), edit exactly that binding's refs +
+    // decl — identical to the references query, so refs == rename by construction. A
+    // zero/NULL def_id falls back to the class-hierarchy logic below (no regression).
+    var rename_def_id: i64 = 0;
+    if (!is_local_rename and rename_fid != 0 and name_collision) {
+        const dq = self.db.prepare("SELECT def_id FROM refs WHERE file_id=? AND name=? AND line=? AND col=? AND def_id IS NOT NULL LIMIT 1") catch null;
+        if (dq) |q| {
+            defer q.finalize();
+            q.bind_int(1, rename_fid);
+            q.bind_text(2, word);
+            q.bind_int(3, cursor_line_1based);
+            q.bind_int(4, cursor_col_0);
+            if (q.step() catch false) rename_def_id = q.column_int(0);
+        }
+        if (rename_def_id == 0) {
+            const sq = self.db.prepare("SELECT id FROM symbols WHERE file_id=? AND name=? AND line=? AND kind IN ('def','constant','class','module','classdef') LIMIT 1") catch null;
+            if (sq) |q| {
+                defer q.finalize();
+                q.bind_int(1, rename_fid);
+                q.bind_text(2, word);
+                q.bind_int(3, cursor_line_1based);
+                if (q.step() catch false) rename_def_id = q.column_int(0);
+            }
+        }
+    }
+
+    if (!is_local_rename and rename_def_id != 0) {
+        // refs resolved to this binding
+        if (self.db.prepare(
+            \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
+            \\WHERE r.def_id=? AND f.is_gem=0
+        )) |dr| {
+            defer dr.finalize();
+            dr.bind_int(1, rename_def_id);
+            while (dr.step() catch false) {
+                const rl = dr.column_int(0);
+                const rc = dr.column_int(1);
+                const rp = dr.column_text(2);
+                const key = try a.dupe(u8, rp);
+                const gop = try edits_map.getOrPut(key);
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
+                var exists = false;
+                for (gop.value_ptr.items) |e| {
+                    if (e.line == rl and e.col == rc) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) try gop.value_ptr.append(a, .{ .line = rl, .col = rc });
+            }
+        } else |_| {}
+        // decl site
+        if (self.db.prepare(
+            \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
+            \\WHERE s.id=? AND f.is_gem=0
+        )) |do_| {
+            defer do_.finalize();
+            do_.bind_int(1, rename_def_id);
+            if (do_.step() catch false) {
+                const dl = do_.column_int(0);
+                const dc = do_.column_int(1);
+                const dp = do_.column_text(2);
+                const key = try a.dupe(u8, dp);
+                const gop = try edits_map.getOrPut(key);
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
+                var exists = false;
+                for (gop.value_ptr.items) |e| {
+                    if (e.line == dl and e.col == dc) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) try gop.value_ptr.append(a, .{ .line = dl, .col = dc });
+            }
+        } else |_| {}
+    } else if (!is_local_rename) {
         var method_parent: ?[]const u8 = null;
         defer if (method_parent) |mp| self.alloc.free(mp);
         if (self.db.prepare(
