@@ -17,6 +17,11 @@ const NamespaceContext = struct {
     path_prefix_depth: u32,
     controller_prefix_stack: [16][]const u8,
     controller_prefix_depth: u32,
+    // Route-helper name prefix (e.g. `admin_`). Pushed ONLY by `namespace` — Rails does
+    // NOT prefix helpers for a plain `scope '/path'`, so this is a dedicated stack rather
+    // than derived from path_prefix_stack.
+    helper_prefix_stack: [16][]const u8,
+    helper_prefix_depth: u32,
 
     fn init() NamespaceContext {
         return .{
@@ -24,6 +29,8 @@ const NamespaceContext = struct {
             .path_prefix_depth = 0,
             .controller_prefix_stack = undefined,
             .controller_prefix_depth = 0,
+            .helper_prefix_stack = undefined,
+            .helper_prefix_depth = 0,
         };
     }
 
@@ -49,6 +56,30 @@ const NamespaceContext = struct {
         if (self.controller_prefix_depth > 0) {
             self.controller_prefix_depth -= 1;
         }
+    }
+
+    fn pushHelperPrefix(self: *NamespaceContext, prefix: []const u8) !void {
+        if (self.helper_prefix_depth >= 16) return error.NestingTooDeep;
+        self.helper_prefix_stack[self.helper_prefix_depth] = prefix;
+        self.helper_prefix_depth += 1;
+    }
+
+    fn popHelperPrefix(self: *NamespaceContext) void {
+        if (self.helper_prefix_depth > 0) {
+            self.helper_prefix_depth -= 1;
+        }
+    }
+
+    // Joined helper-name prefix, e.g. `admin_` or `admin_v1_`. Empty (caller frees) at
+    // depth 0. Caller owns the returned slice.
+    fn getHelperPrefix(self: *const NamespaceContext, alloc: std.mem.Allocator) ![]const u8 {
+        if (self.helper_prefix_depth == 0) return try alloc.dupe(u8, "");
+        var parts: std.ArrayList([]const u8) = .empty;
+        defer parts.deinit(alloc);
+        for (0..self.helper_prefix_depth) |i| {
+            try parts.append(alloc, self.helper_prefix_stack[i]);
+        }
+        return try std.mem.join(alloc, "", parts.items);
     }
 
     fn getFullPath(self: *const NamespaceContext, alloc: std.mem.Allocator, base_path: []const u8) ![]const u8 {
@@ -370,12 +401,25 @@ fn actionInOnlyExcept(_: *prism.Parser, args_list: anytype, action: []const u8) 
     return true;
 }
 
+// Custom route macros that wrap `resources`, e.g. SolidusAdmin's `admin_resources`
+// (admin/lib/solidus_admin/admin_resources.rb) which forwards to `resources` with extra
+// member/collection actions. Treat any `*_resources` call with a symbol/array arg like
+// `resources`; the symbol-arg gate (extractSymbolName) keeps unrelated methods out.
+fn isResourcesAlias(mname: []const u8) bool {
+    return std.mem.endsWith(u8, mname, "_resources");
+}
+
 fn handleResourcesCall(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *const prism.CallNode, resource_name: []const u8, is_singular: bool, alloc: std.mem.Allocator, ns_ctx: *NamespaceContext) !void {
     const lc = locationLineCol(parser, cn.base.location.start);
     const as_override = if (cn.arguments != null) extractAsOption(cn.arguments[0].arguments) else null;
     const effective_name = if (as_override) |as_name| as_name else resource_name;
     const singular = if (as_override) |as_name| as_name else if (is_singular) resource_name else try singularize(alloc, resource_name);
     defer if (as_override == null and !is_singular) alloc.free(singular);
+
+    // Namespace helper prefix (`admin_`), inserted before the resource part of every
+    // helper name. Empty for non-namespaced resources.
+    const hp = try ns_ctx.getHelperPrefix(alloc);
+    defer alloc.free(hp);
 
     const rest_routes = [_]struct { method: []const u8, path_suffix: []const u8, action: []const u8 }{
         .{ .method = "GET", .path_suffix = "", .action = if (is_singular) "show" else "index" },
@@ -413,26 +457,26 @@ fn handleResourcesCall(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *
         const helper_base = if (as_override) |_| singular else if (is_singular) resource_name else singular;
         var helper_name: []const u8 = undefined;
         if (route_idx == 0 and is_singular) {
-            helper_name = try alloc.dupe(u8, effective_name);
+            helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, effective_name });
         } else if (route_idx == 0 and !is_singular) {
             // Index/collection helper is the PLURAL name: `resources :widgets` →
             // `widgets_path`. Previously this fell through to the singular helper, so
             // the collection helper was never emitted.
-            helper_name = try alloc.dupe(u8, effective_name);
+            helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, effective_name });
         } else if (route_idx == 1 or (is_singular and route_idx == 2)) {
-            helper_name = try std.fmt.allocPrint(alloc, "new_{s}", .{singular});
+            helper_name = try std.fmt.allocPrint(alloc, "new_{s}{s}", .{ hp, singular });
         } else if (route_idx >= 3 and !is_singular) {
             if (std.mem.eql(u8, r.action, "show")) {
-                helper_name = try alloc.dupe(u8, singular);
+                helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, singular });
             } else if (std.mem.eql(u8, r.action, "edit")) {
-                helper_name = try std.fmt.allocPrint(alloc, "edit_{s}", .{singular});
+                helper_name = try std.fmt.allocPrint(alloc, "edit_{s}{s}", .{ hp, singular });
             } else if (std.mem.eql(u8, r.action, "update") or std.mem.eql(u8, r.action, "destroy")) {
-                helper_name = try alloc.dupe(u8, singular);
+                helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, singular });
             } else {
-                helper_name = try alloc.dupe(u8, resource_name);
+                helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, resource_name });
             }
         } else {
-            helper_name = try alloc.dupe(u8, helper_base);
+            helper_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ hp, helper_base });
         }
         defer alloc.free(helper_name);
 
@@ -455,11 +499,26 @@ fn handleResourcesCall(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *
         if (block_generic.*.type == prism.NODE_BLOCK) {
             const block_node: *const prism.BlockNode = @ptrCast(@alignCast(block_ptr));
             if (block_node.body) |body| {
-                const id_param = if (is_singular) "_id" else "_id";
-                const nested_prefix = std.fmt.allocPrint(alloc, "/{s}/:{s}{s}", .{ resource_name, singular, id_param }) catch return;
+                // Nested resources inherit the parent's path, controller, AND helper
+                // prefix: `resources :orders { resources :line_items }` →
+                // `order_line_items_path`, `edit_order_line_item_path`. The helper prefix
+                // is the parent SINGULAR (`order_`), joined after any namespace prefix.
+                // Strings are arena-allocated (route_arena) → freed wholesale at deinit.
+                const nested_prefix = std.fmt.allocPrint(alloc, "/{s}/:{s}_id", .{ resource_name, singular }) catch return;
+                const ctrl_prefix = std.fmt.allocPrint(alloc, "{s}/", .{resource_name}) catch return;
+                const helper_prefix = std.fmt.allocPrint(alloc, "{s}_", .{singular}) catch return;
                 ns_ctx.pushPathPrefix(nested_prefix) catch return;
-                ns_ctx.pushControllerPrefix(std.fmt.allocPrint(alloc, "{s}/", .{resource_name}) catch return) catch return;
+                ns_ctx.pushControllerPrefix(ctrl_prefix) catch {
+                    ns_ctx.popPathPrefix();
+                    return;
+                };
+                ns_ctx.pushHelperPrefix(helper_prefix) catch {
+                    ns_ctx.popControllerPrefix();
+                    ns_ctx.popPathPrefix();
+                    return;
+                };
                 visitBlockStatements(db, file_id, parser, body, alloc, ns_ctx, resource_name, singular);
+                ns_ctx.popHelperPrefix();
                 ns_ctx.popControllerPrefix();
                 ns_ctx.popPathPrefix();
             }
@@ -481,7 +540,7 @@ fn visitBlockStatements(db: db_mod.Db, file_id: i64, parser: *prism.Parser, body
         if (args_list.size == 0) continue;
         const first_arg = args_list.nodes[0];
 
-        if (std.mem.eql(u8, mname, "resources")) {
+        if (std.mem.eql(u8, mname, "resources") or isResourcesAlias(mname)) {
             if (extractSymbolName(parser, first_arg)) |name| {
                 handleResourcesCall(db, file_id, parser, cn, name, false, alloc, ns_ctx) catch |e| {
                     std.debug.print("{s}", .{"refract: route indexing error: "});
@@ -552,10 +611,12 @@ fn handleMemberCollection(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn
         const full_path = ns_ctx.getFullPath(alloc, path_pattern) catch continue;
         defer alloc.free(full_path);
 
+        const hp = ns_ctx.getHelperPrefix(alloc) catch continue;
+        defer alloc.free(hp);
         const helper_name = if (is_member)
-            std.fmt.allocPrint(alloc, "{s}_{s}", .{ action_name, singular }) catch continue
+            std.fmt.allocPrint(alloc, "{s}_{s}{s}", .{ action_name, hp, singular }) catch continue
         else
-            std.fmt.allocPrint(alloc, "{s}_{s}", .{ action_name, resource_name }) catch continue;
+            std.fmt.allocPrint(alloc, "{s}_{s}{s}", .{ action_name, hp, resource_name }) catch continue;
         defer alloc.free(helper_name);
 
         insertRoute(db, file_id, .{
@@ -783,41 +844,46 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
 
         if (std.mem.eql(u8, mname, "namespace")) {
             if (extractSymbolName(ctx.parser, first_arg)) |ns_name| {
+                // namespace prefixes path, controller AND helper names:
+                // `namespace :admin` → `/admin`, `Admin::`, `admin_…`. Strings are
+                // arena-allocated (route_arena) → freed wholesale at deinit.
+                // Push, recurse into the block body, then pop. A flat walk gives no
+                // block-end signal, so manual recursion is required — otherwise every
+                // sibling namespace leaks a stack frame and routes past the 16th get
+                // wrong (accumulated) prefixes.
                 const path_prefix = (std.fmt.allocPrint(ctx.alloc, "/{s}", .{ns_name}) catch return true);
                 const controller_prefix = (std.fmt.allocPrint(ctx.alloc, "{s}::", .{ns_name}) catch return true);
-                // Push, recurse into the block body, then pop. A flat walk gives
-                // no block-end signal, so manual recursion is required — otherwise
-                // every sibling namespace leaks a stack frame and routes past the
-                // 16th get wrong (accumulated) prefixes.
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| {
-                    std.log.warn("routes: push ns path: {s}", .{@errorName(e)});
+                const helper_prefix = (std.fmt.allocPrint(ctx.alloc, "{s}_", .{ns_name}) catch return true);
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch return true;
+                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch {
+                    ctx.ns_ctx.popPathPrefix();
                     return true;
                 };
-                ctx.ns_ctx.pushControllerPrefix(controller_prefix) catch |e| {
-                    std.log.warn("routes: push ns ctrl: {s}", .{@errorName(e)});
+                ctx.ns_ctx.pushHelperPrefix(helper_prefix) catch {
+                    ctx.ns_ctx.popControllerPrefix();
                     ctx.ns_ctx.popPathPrefix();
                     return true;
                 };
                 prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+                ctx.ns_ctx.popHelperPrefix();
                 ctx.ns_ctx.popControllerPrefix();
                 ctx.ns_ctx.popPathPrefix();
                 return false;
             }
         } else if (std.mem.eql(u8, mname, "scope")) {
             if (extractSymbolName(ctx.parser, first_arg)) |scope_path| {
+                // Plain `scope '/path'` prefixes the path only, NOT helper names (Rails
+                // semantics). Arena-allocated → no manual free.
                 const path_prefix = (if (scope_path.len > 0 and scope_path[0] != '/')
                     std.fmt.allocPrint(ctx.alloc, "/{s}", .{scope_path})
                 else
                     ctx.alloc.dupe(u8, scope_path)) catch return true;
-                ctx.ns_ctx.pushPathPrefix(path_prefix) catch |e| {
-                    std.log.warn("routes: push scope: {s}", .{@errorName(e)});
-                    return true;
-                };
+                ctx.ns_ctx.pushPathPrefix(path_prefix) catch return true;
                 prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
                 ctx.ns_ctx.popPathPrefix();
                 return false;
             }
-        } else if (std.mem.eql(u8, mname, "resources")) {
+        } else if (std.mem.eql(u8, mname, "resources") or isResourcesAlias(mname)) {
             if (extractSymbolName(ctx.parser, first_arg)) |name| {
                 handleResourcesCall(ctx.db, ctx.file_id, ctx.parser, cn, name, false, ctx.alloc, &ctx.ns_ctx) catch |e| {
                     var ebuf: [256]u8 = undefined;
@@ -1226,6 +1292,122 @@ test "indexRoutes handles empty source" {
     try db.exec("INSERT INTO files(path, mtime) VALUES('config/routes.rb', 0)");
     const fid = db.last_insert_rowid();
     try indexRoutes(db, fid, "", std.testing.allocator);
+    const s = try db.prepare("SELECT COUNT(*) FROM routes WHERE file_id=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    try std.testing.expect(try s.step());
+    try std.testing.expectEqual(@as(i64, 0), s.column_int(0));
+}
+
+fn expectHelper(db: db_mod.Db, fid: i64, helper: []const u8) !void {
+    const s = try db.prepare("SELECT COUNT(*) FROM routes WHERE file_id=? AND helper_name=?");
+    defer s.finalize();
+    s.bind_int(1, fid);
+    s.bind_text(2, helper);
+    try std.testing.expect(try s.step());
+    if (s.column_int(0) == 0) {
+        std.debug.print("expected route helper '{s}' not found\n", .{helper});
+        return error.HelperMissing;
+    }
+}
+
+fn freshRoutesDb(buf: *[1]db_mod.Db) !i64 {
+    buf[0] = try db_mod.Db.open(":memory:");
+    try buf[0].init_schema();
+    try buf[0].exec("INSERT INTO files(path, mtime) VALUES('config/routes.rb', 0)");
+    return buf[0].last_insert_rowid();
+}
+
+test "indexRoutes emits namespaced index helper under engine draw block" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\Spree::Core::Engine.routes.draw do
+        \\  namespace :admin do
+        \\    resources :stock_items, except: [:show, :new, :edit]
+        \\  end
+        \\end
+    , std.testing.allocator);
+    try expectHelper(db, fid, "admin_stock_items");
+    try expectHelper(db, fid, "edit_admin_stock_item");
+}
+
+test "indexRoutes emits nested namespaced edit helper (parent singular prefix)" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\Spree::Core::Engine.routes.draw do
+        \\  namespace :admin do
+        \\    resources :orders do
+        \\      resources :return_authorizations
+        \\    end
+        \\  end
+        \\end
+    , std.testing.allocator);
+    try expectHelper(db, fid, "edit_admin_order_return_authorization");
+    try expectHelper(db, fid, "admin_order_return_authorizations");
+}
+
+test "indexRoutes nested resources get parent helper prefix (non-namespaced)" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\Rails.application.routes.draw do
+        \\  resources :posts do
+        \\    resources :comments
+        \\  end
+        \\end
+    , std.testing.allocator);
+    try expectHelper(db, fid, "post_comments");
+    try expectHelper(db, fid, "edit_post_comment");
+}
+
+test "indexRoutes namespace tolerates trailing keyword args" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\Spree::Core::Engine.routes.draw do
+        \\  namespace :api, defaults: {format: "json"} do
+        \\    resources :stock_locations
+        \\  end
+        \\end
+    , std.testing.allocator);
+    try expectHelper(db, fid, "api_stock_locations");
+}
+
+test "indexRoutes treats *_resources macro like resources" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\SolidusAdmin::Engine.routes.draw do
+        \\  admin_resources :stock_items, only: [:index, :edit, :update]
+        \\end
+    , std.testing.allocator);
+    // No surrounding `namespace`, so the engine helper is the bare resource name.
+    try expectHelper(db, fid, "stock_items");
+    try expectHelper(db, fid, "edit_stock_item");
+}
+
+test "indexRoutes ignores *_resources without a symbol argument" {
+    var dbb: [1]db_mod.Db = undefined;
+    const fid = try freshRoutesDb(&dbb);
+    const db = dbb[0];
+    defer db.close();
+    try indexRoutes(db, fid,
+        \\Rails.application.routes.draw do
+        \\  custom_resources some_variable
+        \\end
+    , std.testing.allocator);
     const s = try db.prepare("SELECT COUNT(*) FROM routes WHERE file_id=?");
     defer s.finalize();
     s.bind_int(1, fid);

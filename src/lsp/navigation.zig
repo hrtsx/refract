@@ -29,6 +29,15 @@ const pathToUri = S.pathToUri;
 const isRubyIdent = S.isRubyIdent;
 const empty_json_array = S.empty_json_array;
 
+// Write a single LSP Location object: {"uri":"file://<path>","range":{start..end}}.
+// `line0` is 0-based; start/end are client (UTF-16) columns. Centralizes the
+// {uri,range} JSON that the definition/references/highlight emitters all repeat.
+fn writeLoc(w: *std.Io.Writer, path: []const u8, line0: i64, start_char: u32, end_char: u32) !void {
+    try w.writeAll("{\"uri\":\"file://");
+    try writePathAsUri(w, path);
+    try w.print("\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ line0, start_char, line0, end_char });
+}
+
 pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     // Background flush worker drains dirty URIs; query path stays read-only.
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
@@ -235,17 +244,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                 const lv_start = self.toClientCol(lv_line_src, @intCast(lv_col));
                 if (found_any) try w.writeByte(',');
                 found_any = true;
-                try w.writeAll("{\"uri\":\"file://");
-                try writePathAsUri(w, path);
-                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                try w.print("{d}", .{lv_line - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{lv_start});
-                try w.writeAll("},\"end\":{\"line\":");
-                try w.print("{d}", .{lv_line - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{lv_start + @as(u32, @intCast(lv_name.len))});
-                try w.writeAll("}}}");
+                try writeLoc(w, path, lv_line - 1, lv_start, lv_start + @as(u32, @intCast(lv_name.len)));
             }
         }
     }
@@ -289,17 +288,7 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
                         try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{ def_origin.line, def_origin.start_char, def_origin.line, def_origin.end_char });
                         try w.writeByte('}');
                     } else {
-                        try w.writeAll("{\"uri\":\"file://");
-                        try writePathAsUri(w, rp);
-                        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                        try w.print("{d}", .{rl - 1});
-                        try w.writeAll(",\"character\":");
-                        try w.print("{d}", .{sc});
-                        try w.writeAll("},\"end\":{\"line\":");
-                        try w.print("{d}", .{rl - 1});
-                        try w.writeAll(",\"character\":");
-                        try w.print("{d}", .{sc});
-                        try w.writeAll("}}}");
+                        try writeLoc(w, rp, rl - 1, sc, sc);
                     }
                 }
             } else |_| {}
@@ -385,17 +374,7 @@ pub fn handleImplementation(self: *Server, msg: types.RequestMessage) !?types.Re
         const sym_col = impl_stmt.column_int(2);
         const sym_path = impl_stmt.column_text(3);
         const start_char = self.toClientColFromPath(&frc_impl, sym_path, sym_line - 1, sym_col);
-        try w.writeAll("{\"uri\":\"file://");
-        try writePathAsUri(w, sym_path);
-        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char});
-        try w.writeAll("},\"end\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-        try w.writeAll("}}}");
+        try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
     }
 
     try w.writeByte(']');
@@ -572,17 +551,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
             const rc_client = self.toClientColFromPath(&frc_ref, rp, rl - 1, rc);
             if (!first) try w.writeByte(',');
             first = false;
-            try w.writeAll("{\"uri\":\"file://");
-            try writePathAsUri(w, rp);
-            try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-            try w.print("{d}", .{rl - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{rc_client});
-            try w.writeAll("},\"end\":{\"line\":");
-            try w.print("{d}", .{rl - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{rc_client + @as(u32, @intCast(word.len))});
-            try w.writeAll("}}}");
+            try writeLoc(w, rp, rl - 1, rc_client, rc_client + @as(u32, @intCast(word.len)));
         }
         if (include_decl) {
             const decl_one = try self.cachedStmt(
@@ -601,17 +570,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                     const dc_client = self.toClientColFromPath(&frc_ref, dp, dl - 1, dc);
                     if (!first) try w.writeByte(',');
                     first = false;
-                    try w.writeAll("{\"uri\":\"file://");
-                    try writePathAsUri(w, dp);
-                    try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                    try w.print("{d}", .{dl - 1});
-                    try w.writeAll(",\"character\":");
-                    try w.print("{d}", .{dc_client});
-                    try w.writeAll("},\"end\":{\"line\":");
-                    try w.print("{d}", .{dl - 1});
-                    try w.writeAll(",\"character\":");
-                    try w.print("{d}", .{dc_client + @as(u32, @intCast(word.len))});
-                    try w.writeAll("}}}");
+                    try writeLoc(w, dp, dl - 1, dc_client, dc_client + @as(u32, @intCast(word.len)));
                 }
             }
         }
@@ -638,17 +597,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                 const rl = lv_stmt.column_int(1);
                 const rc = lv_stmt.column_int(2);
                 const rc_client = self.toClientColFromPath(&frc_ref, rp, rl - 1, rc);
-                try w.writeAll("{\"uri\":\"file://");
-                try writePathAsUri(w, rp);
-                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                try w.print("{d}", .{rl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{rc_client});
-                try w.writeAll("},\"end\":{\"line\":");
-                try w.print("{d}", .{rl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{rc_client + @as(u32, @intCast(word.len))});
-                try w.writeAll("}}}");
+                try writeLoc(w, rp, rl - 1, rc_client, rc_client + @as(u32, @intCast(word.len)));
             }
             const scoped_ref = try self.cachedStmt(
                 \\SELECT f.path, r.line, r.col FROM refs r JOIN files f ON r.file_id=f.id
@@ -670,17 +619,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                 const rl = scoped_ref.column_int(1);
                 const rc = scoped_ref.column_int(2);
                 const rc_client = self.toClientColFromPath(&frc_ref, rp, rl - 1, rc);
-                try w.writeAll("{\"uri\":\"file://");
-                try writePathAsUri(w, rp);
-                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                try w.print("{d}", .{rl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{rc_client});
-                try w.writeAll("},\"end\":{\"line\":");
-                try w.print("{d}", .{rl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{rc_client + @as(u32, @intCast(word.len))});
-                try w.writeAll("}}}");
+                try writeLoc(w, rp, rl - 1, rc_client, rc_client + @as(u32, @intCast(word.len)));
             }
         }
         // else top-level local — no cross-file refs, return empty
@@ -722,17 +661,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
             const ref_line = stmt.column_int(1);
             const ref_col = stmt.column_int(2);
             const ref_col_client = self.toClientColFromPath(&frc_ref, ref_path, ref_line - 1, ref_col);
-            try w.writeAll("{\"uri\":\"file://");
-            try writePathAsUri(w, ref_path);
-            try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-            try w.print("{d}", .{ref_line - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{ref_col_client});
-            try w.writeAll("},\"end\":{\"line\":");
-            try w.print("{d}", .{ref_line - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{ref_col_client + @as(u32, @intCast(word.len))});
-            try w.writeAll("}}}");
+            try writeLoc(w, ref_path, ref_line - 1, ref_col_client, ref_col_client + @as(u32, @intCast(word.len)));
         }
 
         // includeDeclaration=true: also emit the declaration site(s) from the
@@ -767,17 +696,7 @@ pub fn handleReferences(self: *Server, msg: types.RequestMessage) !?types.Respon
                 const dl = decl_stmt.column_int(1);
                 const dc = decl_stmt.column_int(2);
                 const dc_client = self.toClientColFromPath(&frc_ref, dp, dl - 1, dc);
-                try w.writeAll("{\"uri\":\"file://");
-                try writePathAsUri(w, dp);
-                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                try w.print("{d}", .{dl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{dc_client});
-                try w.writeAll("},\"end\":{\"line\":");
-                try w.print("{d}", .{dl - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{dc_client + @as(u32, @intCast(word.len))});
-                try w.writeAll("}}}");
+                try writeLoc(w, dp, dl - 1, dc_client, dc_client + @as(u32, @intCast(word.len)));
             }
         }
     }
@@ -915,17 +834,7 @@ pub fn handleTypeDefinition(self: *Server, msg: types.RequestMessage) !?types.Re
         const sym_col = sym_stmt.column_int(2);
         const sym_path = sym_stmt.column_text(3);
         const start_char = self.toClientColFromPath(&frc_td, sym_path, sym_line - 1, sym_col);
-        try w.writeAll("{\"uri\":\"file://");
-        try writePathAsUri(w, sym_path);
-        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char});
-        try w.writeAll("},\"end\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-        try w.writeAll("}}}");
+        try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
     }
     try w.writeByte(']');
 
@@ -977,17 +886,7 @@ fn emitOneDef(
         }
         try w.writeByte('}');
     } else {
-        try w.writeAll("{\"uri\":\"file://");
-        try writePathAsUri(w, sym_path);
-        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char});
-        try w.writeAll("},\"end\":{\"line\":");
-        try w.print("{d}", .{sym_line - 1});
-        try w.writeAll(",\"character\":");
-        try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-        try w.writeAll("}}}");
+        try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
     }
 }
 
@@ -1135,17 +1034,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
             try w.writeByte('}');
         } else {
             // Location format (legacy)
-            try w.writeAll("{\"uri\":\"file://");
-            try writePathAsUri(w, sym_path);
-            try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-            try w.print("{d}", .{sym_line - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{start_char});
-            try w.writeAll("},\"end\":{\"line\":");
-            try w.print("{d}", .{sym_line - 1});
-            try w.writeAll(",\"character\":");
-            try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-            try w.writeAll("}}}");
+            try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
         }
     }
 
@@ -1184,17 +1073,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
                 }
                 try w.writeByte('}');
             } else {
-                try w.writeAll("{\"uri\":\"file://");
-                try writePathAsUri(w, sym_path);
-                try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                try w.print("{d}", .{sym_line - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{start_char});
-                try w.writeAll("},\"end\":{\"line\":");
-                try w.print("{d}", .{sym_line - 1});
-                try w.writeAll(",\"character\":");
-                try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-                try w.writeAll("}}}");
+                try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
             }
         }
 
@@ -1236,17 +1115,7 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
                     }
                     try w.writeByte('}');
                 } else {
-                    try w.writeAll("{\"uri\":\"file://");
-                    try writePathAsUri(w, sym_path);
-                    try w.writeAll("\",\"range\":{\"start\":{\"line\":");
-                    try w.print("{d}", .{sym_line - 1});
-                    try w.writeAll(",\"character\":");
-                    try w.print("{d}", .{start_char});
-                    try w.writeAll("},\"end\":{\"line\":");
-                    try w.print("{d}", .{sym_line - 1});
-                    try w.writeAll(",\"character\":");
-                    try w.print("{d}", .{start_char + @as(u32, @intCast(sym_name.len))});
-                    try w.writeAll("}}}");
+                    try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
                 }
             }
         }
