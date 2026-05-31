@@ -535,6 +535,68 @@ test "references on a method are scoped to its defining class (def_id)" {
     }
 }
 
+test "go-to-def on a route helper resolves to the route declaration" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_route_def";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    std.Io.Dir.cwd().makePath(ws ++ "/config") catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/config/routes.rb",
+        .data = "Rails.application.routes.draw do\n  resources :widgets\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/app.rb",
+        .data = "class Foo\n  def go\n    redirect_to widgets_path\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/routes.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Cursor on `widgets_path` in app.rb (line 2, col 18). The plural collection
+    // helper must resolve to config/routes.rb.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/app.rb\"},\"position\":{\"line\":2,\"character\":18}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoDefResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    try std.testing.expect(arr.items.len >= 1);
+    const io = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.ItemNotObject,
+    };
+    const uri = switch (io.get("uri") orelse return error.NoUri) {
+        .string => |str| str,
+        else => return error.UriNotString,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, uri, "config/routes.rb") != null);
+}
+
 test "documentHighlight is scope-aware for local vars" {
     const alloc = std.testing.allocator;
 

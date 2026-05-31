@@ -261,6 +261,51 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
         }
     }
 
+    // Route-helper go-to-def: `foo_path` / `foo_url` → the route declaration line.
+    // Only as a fallback (the array is still empty here), so a real `def foo_path`
+    // would have won above.
+    if (!found_any and (std.mem.endsWith(u8, word, "_path") or std.mem.endsWith(u8, word, "_url"))) {
+        const suffix_len: usize = if (std.mem.endsWith(u8, word, "_path")) 5 else 4;
+        if (word.len > suffix_len) {
+            const helper = word[0 .. word.len - suffix_len];
+            if (self.cachedStmt(
+                \\SELECT DISTINCT f.path, r.line, r.col FROM routes r JOIN files f ON r.file_id=f.id
+                \\WHERE r.helper_name = ? LIMIT 5
+            )) |rs| {
+                defer rs.reset();
+                rs.bind_text(1, helper);
+                while (rs.step() catch false) {
+                    const rp = rs.column_text(0);
+                    const rl = rs.column_int(1);
+                    const rc = rs.column_int(2);
+                    const sc = self.toClientColFromPath(&frc_def, rp, rl - 1, rc);
+                    if (found_any) try w.writeByte(',');
+                    found_any = true;
+                    if (self.client_caps_def_link) {
+                        try w.writeAll("{\"targetUri\":\"file://");
+                        try writePathAsUri(w, rp);
+                        try w.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{ rl - 1, sc, rl - 1, sc });
+                        try w.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{ rl - 1, sc, rl - 1, sc });
+                        try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{ def_origin.line, def_origin.start_char, def_origin.line, def_origin.end_char });
+                        try w.writeByte('}');
+                    } else {
+                        try w.writeAll("{\"uri\":\"file://");
+                        try writePathAsUri(w, rp);
+                        try w.writeAll("\",\"range\":{\"start\":{\"line\":");
+                        try w.print("{d}", .{rl - 1});
+                        try w.writeAll(",\"character\":");
+                        try w.print("{d}", .{sc});
+                        try w.writeAll("},\"end\":{\"line\":");
+                        try w.print("{d}", .{rl - 1});
+                        try w.writeAll(",\"character\":");
+                        try w.print("{d}", .{sc});
+                        try w.writeAll("}}}");
+                    }
+                }
+            } else |_| {}
+        }
+    }
+
     try w.writeByte(']');
 
     return types.ResponseMessage{
