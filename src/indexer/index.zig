@@ -5391,6 +5391,238 @@ fn resolveMethodInAncestors(
     return .not_found;
 }
 
+// Sibling of resolveMethodInAncestors that returns the resolving def's symbols.id
+// instead of a verdict. Returns null when the method is not found on a fully-known
+// chain, or when any ancestor is external/ambiguous — i.e. only a definite, in-index
+// hit yields an id. Used to populate refs.def_id so references/rename can query a
+// single binding. Kept separate from resolveMethodInAncestors so the diagnostics
+// path's (hard-won, 0-FP) verdict logic is not perturbed.
+fn resolveMethodSymbolInAncestors(
+    db: db_mod.Db,
+    class_name: []const u8,
+    method_name: []const u8,
+    alloc: std.mem.Allocator,
+) ?i64 {
+    var seen = std.StringHashMap(void).init(alloc);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| alloc.free(k.*);
+        seen.deinit();
+    }
+    var queue = std.ArrayList([]u8).empty;
+    defer {
+        for (queue.items) |item| alloc.free(item);
+        queue.deinit(alloc);
+    }
+
+    const first = alloc.dupe(u8, class_name) catch return null;
+    queue.append(alloc, first) catch {
+        alloc.free(first);
+        return null;
+    };
+
+    var steps: u32 = 0;
+    const max_steps: u32 = 32;
+
+    while (queue.items.len > 0) {
+        if (steps >= max_steps) return null;
+        steps += 1;
+
+        const name = queue.orderedRemove(0);
+        defer alloc.free(name);
+
+        if (isBuiltinCoreClass(name)) return null; // interpreter-provided methods unseen
+        if (seen.contains(name)) continue;
+        const key_copy = alloc.dupe(u8, name) catch return null;
+        seen.put(key_copy, {}) catch {
+            alloc.free(key_copy);
+            return null;
+        };
+
+        const lookup = db.prepare(
+            \\SELECT id, parent_name, superclass FROM symbols
+            \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef')
+            \\LIMIT 1
+        ) catch return null;
+        defer lookup.finalize();
+        lookup.bind_text(1, name);
+        if (!(lookup.step() catch false)) return null; // external chain — cannot link
+        const class_id = lookup.column_int(0);
+        const parent_name_slice = lookup.column_text(1);
+        const superclass_dup: ?[]u8 = blk: {
+            const sc = lookup.column_text(2);
+            break :blk if (sc.len > 0) (alloc.dupe(u8, sc) catch null) else null;
+        };
+        defer if (superclass_dup) |s| alloc.free(s);
+
+        // Method defined directly under this class? Return its symbol id.
+        const has_method = db.prepare(
+            \\SELECT id FROM symbols
+            \\WHERE kind = 'def' AND parent_name = ? AND name = ?
+            \\LIMIT 1
+        ) catch return null;
+        defer has_method.finalize();
+        has_method.bind_text(1, name);
+        has_method.bind_text(2, method_name);
+        if (has_method.step() catch false) return has_method.column_int(0);
+
+        if (superclass_dup) |sc| {
+            const sc_known = sck: {
+                const q = db.prepare(
+                    \\SELECT 1 FROM symbols
+                    \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef') LIMIT 1
+                ) catch break :sck false;
+                defer q.finalize();
+                q.bind_text(1, sc);
+                break :sck (q.step() catch false);
+            };
+            if (!sc_known) return null;
+            const dup = alloc.dupe(u8, sc) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+
+        if (parent_name_slice.len > 0) {
+            const dup = alloc.dupe(u8, parent_name_slice) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+
+        const mix_stmt = db.prepare(
+            \\SELECT module_name FROM mixins WHERE class_id = ?
+        ) catch return null;
+        defer mix_stmt.finalize();
+        mix_stmt.bind_int(1, class_id);
+        while (mix_stmt.step() catch false) {
+            const mod_name = mix_stmt.column_text(0);
+            if (mod_name.len == 0) continue;
+            const dup = alloc.dupe(u8, mod_name) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+    }
+
+    return null;
+}
+
+// True for a plain (optionally namespaced) constant name like `Foo` or `Foo::Bar`.
+// Rejects union/generic receiver-type strings ("A | B", "Array[T]", "nil").
+fn isBareConstantName(s: []const u8) bool {
+    if (s.len == 0) return false;
+    if (!(s[0] >= 'A' and s[0] <= 'Z')) return false;
+    for (s) |ch| {
+        const ok = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '_' or ch == ':';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// Resolve a constant/class/module reference to the single workspace symbol that
+// declares it. Returns 0 (no link) when absent or ambiguous (>1 definition) — the
+// caller then leaves def_id NULL so references stays name-global for that constant.
+fn resolveConstantSymbol(db: db_mod.Db, name: []const u8) i64 {
+    const q = db.prepare(
+        \\SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+        \\WHERE s.name = ? AND f.is_gem = 0
+        \\  AND s.kind IN ('class','classdef','module','moduledef','constant')
+        \\LIMIT 2
+    ) catch return 0;
+    defer q.finalize();
+    q.bind_text(1, name);
+    if (!(q.step() catch false)) return 0;
+    const id0 = q.column_int(0);
+    if (q.step() catch false) return 0; // ambiguous — leave NULL
+    return id0;
+}
+
+// Populate refs.def_id for one file's method/constant references by resolving each
+// against the (now fully-indexed) symbol table. Reads symbols globally, so for a bulk
+// index it must run AFTER all files are committed. `memo` (key "class\x00method") is
+// caller-owned and shared across files to avoid re-walking common ancestries; pass a
+// fresh map for a single-file (incremental) call. Refs that cannot be resolved to one
+// definition keep def_id NULL → handlers fall back to name-global matching.
+fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator, memo: *std.StringHashMap(i64)) void {
+    // recv: receiver type for an explicit-receiver call (so `a.foo` resolves against
+    // a's type, not the enclosing class). null for self-sends/untyped receivers.
+    const Row = struct { rowid: i64, name: []u8, line: i64, is_const: bool, recv: ?[]u8 };
+    var rows = std.ArrayList(Row).empty;
+    defer {
+        for (rows.items) |r| {
+            alloc.free(r.name);
+            if (r.recv) |rv| alloc.free(rv);
+        }
+        rows.deinit(alloc);
+    }
+    {
+        const sel = db.prepare(
+            \\SELECT rowid, name, line, kind, receiver_type FROM refs WHERE file_id = ? AND def_id IS NULL
+        ) catch return;
+        defer sel.finalize();
+        sel.bind_int(1, file_id);
+        while (sel.step() catch false) {
+            const nm = sel.column_text(1);
+            if (nm.len == 0) continue;
+            const kind = sel.column_text(3);
+            const is_call = std.mem.eql(u8, kind, "call") or std.mem.eql(u8, kind, "self_call");
+            const is_const = nm[0] >= 'A' and nm[0] <= 'Z';
+            if (!is_call and !is_const) continue;
+            const dup = alloc.dupe(u8, nm) catch continue;
+            // Only use a bare-constant receiver type; unions/generics ("A | B", "Array[T]")
+            // are not resolvable to one class → leave it for enclosing-class resolution.
+            var recv_dup: ?[]u8 = null;
+            const rt = sel.column_text(4);
+            if (rt.len > 0 and isBareConstantName(rt)) recv_dup = alloc.dupe(u8, rt) catch null;
+            rows.append(alloc, .{ .rowid = sel.column_int(0), .name = dup, .line = sel.column_int(2), .is_const = is_const, .recv = recv_dup }) catch {
+                alloc.free(dup);
+                if (recv_dup) |rv| alloc.free(rv);
+                continue;
+            };
+        }
+    }
+
+    for (rows.items) |r| {
+        var def_id: i64 = 0;
+        if (r.is_const) {
+            def_id = resolveConstantSymbol(db, r.name);
+        } else {
+            // Resolve against the receiver's type when known, else the enclosing class.
+            var class_name: ?[]u8 = null;
+            var owned_enc = false;
+            if (r.recv) |rv| {
+                class_name = rv;
+            } else if (findEnclosingClass(db, file_id, r.line, alloc)) |enc| {
+                class_name = enc.name;
+                owned_enc = true;
+            }
+            if (class_name) |cn| {
+                defer if (owned_enc) alloc.free(cn);
+                const key = std.fmt.allocPrint(alloc, "{s}\x00{s}", .{ cn, r.name }) catch continue;
+                if (memo.get(key)) |cached| {
+                    alloc.free(key);
+                    def_id = cached;
+                } else {
+                    def_id = resolveMethodSymbolInAncestors(db, cn, r.name, alloc) orelse 0;
+                    memo.put(key, def_id) catch alloc.free(key);
+                }
+            }
+        }
+        if (def_id != 0) {
+            const upd = db.prepare("UPDATE refs SET def_id = ? WHERE rowid = ?") catch continue;
+            defer upd.finalize();
+            upd.bind_int(1, def_id);
+            upd.bind_int(2, r.rowid);
+            _ = upd.step() catch {};
+        }
+    }
+}
+
 pub fn getDiags(path: []const u8, alloc: std.mem.Allocator) ![]DiagEntry {
     const source = std.Io.Dir.cwd().readFileAllocOptions(
         std.Options.debug_io,
@@ -6085,6 +6317,11 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         db.rollback() catch {}; // rollback best-effort if we never reached the final commit
     };
 
+    // file_ids re-parsed this run; their refs get def_id resolved in a post-pass once
+    // every file is committed (cross-file resolution needs the full symbol table).
+    var touched = std.ArrayList(i64).empty;
+    defer touched.deinit(alloc);
+
     for (paths, 0..) |path, i| {
         if (i % CHUNK_SIZE == 0) {
             if (in_tx) {
@@ -6270,11 +6507,27 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         }
 
         storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
+        touched.append(alloc, file_id) catch {};
     }
 
     if (in_tx) {
         try db.commit();
         in_tx = false;
+    }
+
+    // Resolve refs.def_id for the workspace files touched this run. Gem refs are not
+    // linked (never edited/queried for references). Shared memo avoids re-walking
+    // common ancestries across files.
+    if (!is_gem and touched.items.len > 0) {
+        var memo = std.StringHashMap(i64).init(alloc);
+        defer {
+            var it = memo.keyIterator();
+            while (it.next()) |k| alloc.free(k.*);
+            memo.deinit();
+        }
+        db.begin() catch return;
+        for (touched.items) |fid| resolveRefsForFile(db, fid, alloc, &memo);
+        db.commit() catch db.rollback() catch {};
     }
 }
 
@@ -6619,6 +6872,15 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
     prism.visit_node(root, visitor, &ctx);
 
     storeSemTokens(db, file_id, ctx.sem_tokens.items, alloc) catch {}; // non-critical: highlighting only
+
+    // Resolve this file's refs against the global symbol table (binding-scoped refs/rename).
+    var memo = std.StringHashMap(i64).init(alloc);
+    defer {
+        var it = memo.keyIterator();
+        while (it.next()) |k| alloc.free(k.*);
+        memo.deinit();
+    }
+    resolveRefsForFile(db, file_id, alloc, &memo);
 }
 
 pub fn indexBundledRbs(db: db_mod.Db) !usize {

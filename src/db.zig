@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 10;
+pub const CURRENT_SCHEMA: u32 = 11;
 
 pub const DbError = error{
     Open,
@@ -702,9 +702,16 @@ pub const Db = struct {
         self.execMigration("ALTER TABLE symbols ADD COLUMN superclass TEXT"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_superclass ON symbols(superclass)") catch {};
 
+        // Schema v11: refs.def_id links a method/constant ref to the symbols.id it
+        // resolves to (populated by resolveRefsForFile). Lets references/rename query
+        // a single binding instead of every same-named token. NULL = unresolved →
+        // handlers fall back to name-global matching.
+        self.execMigration("ALTER TABLE refs ADD COLUMN def_id INTEGER DEFAULT NULL");
+        self.exec("CREATE INDEX IF NOT EXISTS idx_refs_def ON refs(def_id)") catch {}; // migration guard: def_id column may be absent on older schemas
+
         // Schema v9: refs.kind distinguishes self-sends ('self_call') from
         // explicit-receiver calls ('call'), enabling self-send arity/undefined checks.
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','10')");
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','11')");
         const final_ver = self.getSchemaVersion() orelse 0;
         if (final_ver != @as(i64, CURRENT_SCHEMA)) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
