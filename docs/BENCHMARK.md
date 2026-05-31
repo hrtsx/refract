@@ -214,54 +214,91 @@ precision/recall framing used to compare search-based vs precise code intel.
 
 - **resolution** = of sampled probes, fraction the server resolved to some target.
 - **structural precision** = of resolved targets we could inspect, fraction that declare
-  the queried name. It is a **lower bound** — the declaration regex does not recognize
-  every metaprogrammed/`define_method`/delegated definition form, which counts as a miss.
+  the queried name. The declaration matcher recognizes `def`/`class`/`module`/const/attr/
+  alias plus method **parameters & block vars**, Rails/DSL generators (`belongs_to`,
+  `delegate`, `enum`, `scope`, …), RSpec `let`/`subject`, FactoryBot, `Struct.new` members,
+  and Sorbet `sig`, scanning a ±2-line window — so a correctly-resolved metaprogrammed or
+  local-binding target is credited, not penalized. Applied identically to every server.
 
 Driven by `scripts/bench/lsp_realistic_accuracy.rb`. Corpora pinned (see
 `corpora/CORPORA_MANIFEST.json`): mastodon v4.5.11, discourse v2026.5.0,
-Homebrew/brew 6.0.2, solidus v4.7.0.
+Homebrew/brew 6.0.2, solidus v4.7.0. Numbers below from CI run on the pinned corpora
+(`.github/workflows/accuracy-realrepo.yml`).
 
 | corpus | kind | def probes | resolution | structural precision |
 |---|---|:-:|:-:|:-:|
-| discourse | Rails | 96 | 0.77 | 0.60 (44/73) |
-| solidus | Rails engine + DSL | 80 | 0.76 | 0.55 (33/60) |
-| mastodon | Rails | 80 | 0.39 | 0.45 (14/31) |
-| Homebrew/brew | non-Rails, DSL/metaprogramming | 80 | 0.38 | 0.43 (13/30) |
+| discourse | Rails | 72 | 0.29 | **0.95** |
+| solidus | Rails engine + DSL | 96 | 0.78 | **0.90** |
+| mastodon | Rails | 72 | 0.33 | **0.96** |
+| Homebrew/brew | non-Rails, DSL/metaprogramming | 120 | 0.46 | **0.94** |
 
-Resolution is higher on the Rails apps and lower on the metaprogramming-heavy /
-non-Rails code (Homebrew, and mastodon's gem-heavy call sites), where many call sites
-resolve into gems or are produced dynamically. Numbers are **per-corpus and not
-cross-averageable** (Homebrew is non-Rails). The driver also emits a cross-server
-**consensus** oracle (≥2 of {refract, ruby-lsp, solargraph} agree ⇒ truth) plus
-unique-resolution counts, but a usable rival comparison is not currently produced on
-real repos — see the note under §3c.
+Structural precision is **0.90–0.96 across all four repos** — refract's go-to-definition
+targets are correct when it resolves them, on metaprogramming-heavy real code. (An earlier
+run reported 0.43–0.60; that was an under-counting structural matcher, not a refract
+regression — the matcher above credits the param/DSL/local-binding targets it previously
+missed. The fix is symmetric: on Homebrew ruby-lsp scores 0.96, refract 0.94.) Resolution
+is higher on the Rails engines and lower on gem-heavy / dynamic call sites that resolve
+into unindexed gems. Numbers are **per-corpus, not cross-averageable** (Homebrew is
+non-Rails).
+
+**Rival head-to-head (CI, Homebrew — the repo where ruby-lsp stays responsive):**
+
+| metric | refract | ruby-lsp |
+|---|:-:|:-:|
+| resolution | **0.46** | 0.23 |
+| references precision / recall | **0.76** / 1.0 | 0.18 / 1.0 |
+| structural precision | 0.94 | 0.96 |
+
+refract resolves 2× more probes and is 4× more precise on references; ruby-lsp edges
+per-answer structural precision but answers half as often. The big Rails repos run
+refract-only (ruby-lsp deadlocks on bulk `didOpen` while indexing a 3k–9k-file workspace);
+the structural oracle is rival-independent, so refract's numbers still land there.
 
 ## 3c. Diagnostic false-positive audit (real code)
 
-Real repos are presumed mostly-correct, so any refract-only semantic diagnostic on them
-is a candidate false positive. The audit re-triggers diagnostics on the sampled files
-and, for each refract bug-claim diagnostic (`wrong-arity` / `undefined-method` /
-`nil-receiver`), records whether a rival flags the same line. Lint-only codes refract
-alone ships (`unused-*`) are excluded from the rate.
+Real repos are presumed mostly-correct, so any refract semantic diagnostic on them
+(`wrong-arity` / `undefined-method` / `nil-receiver`) is a candidate false positive. Two
+limits shape how this is scored:
 
-| corpus | semantic bug-claim diags | refract-only (FP) | FP rate |
-|---|:-:|:-:|:-:|
-| solidus | 0 | 0 | 0.00 |
-| Homebrew/brew | 0 | 0 | 0.00 |
+- **Rivals cannot validate refract's semantic codes** — ruby-lsp and solargraph do not
+  implement undefined-method / arity analysis at all, so a "does a rival flag the same
+  line" comparison is structurally always "refract-only" and yields a meaningless 1.0. The
+  audit therefore reports the rival-comparison rate as **n/a** unless a rival actually
+  ships the same check, and validation is done by **direct structural inspection** (does
+  the flagged method truly resolve nowhere?).
+- The audit measures the **settled** state — it drains refract's background indexer
+  (`$/refract/__waitForIdle`) and uses a long push-diagnostic settle window, because a
+  mid-index snapshot on a slow host briefly reports ancestry-unresolved methods that clear
+  once indexing finishes.
 
-This audit drove two fixes. An initial Homebrew run produced 14 `undefined-method` false
-positives, all from receiverless self-sends the checker could not see: (1) Sorbet's
-signature DSL (`sig`/`returns`/`override`/…), now skipped; (2) methods inherited from an
-**external/unindexed base class** (e.g. RuboCop cops `< Base`) — the ancestry walk now
-records each class's real `superclass` and returns "unknown" (does not flag) when the
-base lives outside the workspace. A use-after-free that printed garbage bytes in the
-"did you mean" suggestion was fixed in the same pass. Post-fix the bug-claim FP rate is
-**0** on both repos.
+The sample capture named every bug-claim diagnostic across the four repos and drove the
+following fixes — **after which the semantic (bug-claim) FP count is 0 on all four repos
+in CI** (only the refract-exclusive lint codes `unused-method` / `unused-variable` remain,
+which are features, not bug claims):
 
-**Rival comparison on real repos is not run here.** ruby-lsp re-runs a composed
-`bundle install` (minutes to tens of minutes) on each server start, and solargraph
-crashes on Homebrew/solidus; a fair head-to-head needs a CI host with a warmed bundle
-cache. The fixture-based head-to-head (§3a, §6) stands for cross-server comparison.
+- **Partial-index FPs (root cause of most).** `$/refract/__waitForIdle` capped its wait at
+  10 s; on a CI runner the cold index of a 5-package monorepo (Solidus) exceeded that, so
+  the audit read a partial symbol table — `let`/`factory`/`attr` symbols and block-param
+  locals not yet inserted — and flagged calls to them. Cap raised to 120 s (env-overridable
+  `REFRACT_WAITIDLE_MS`); the client request timeout is the real bound.
+- **FactoryBot factory blocks.** `factory :order do … end` was recorded as kind `class`
+  (so go-to-def works) but is not a lexical scope; it is now excluded from enclosing-scope
+  resolution, so its `transient`/DSL attributes are not treated as undefined self-sends.
+- **Sorbet signature DSL** and methods inherited from an **external/unindexed base**
+  (RuboCop cops `< Base`) — the ancestry walk records each class's real `superclass` and
+  returns "unknown" when the base is outside the workspace. **Reopened core classes**
+  (`class Array …`) are likewise treated as external ancestry. (A use-after-free in the
+  "did you mean" suggestion was fixed in the same pass.)
+- **RSpec hooks / `delegate`.** `before(:each)` and `delegate :x` synthesized defs are
+  excluded from `duplicate-method` (they are not hand-written definitions).
+- **Dynamic / concern / spec contexts.** Receiverless self-sends inside a bare `module`
+  (Rails concern), and the "did you mean" suggestion inside any dynamic file
+  (`send`/`*_eval`/`method_missing`) or RSpec example group (`let`/`subject`/`describe`/…),
+  are suppressed — these are host-/sibling-provided or block-local, not typos (the Solidus
+  `permitted_*_attributes`, `let(:sl)`, and block-parameter cases).
+
+The rival head-to-head that *is* meaningful (go-to-def / references / DX) is produced in CI
+and shown in §3b and §6b.
 
 ---
 

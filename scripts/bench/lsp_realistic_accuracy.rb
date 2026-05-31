@@ -334,6 +334,7 @@ rename_consistent = Hash.new(0); rename_total = Hash.new(0)
 diag_audit = nil
 def_attempted = 0; ref_attempted = 0
 struct_misses = {} # server => [{name, probe, target, target_line}] — oracle-rejected targets
+rename_detail = {} # server => [{name, probe, refs, edits, match}] — per-probe rename vs refs
 
 pr_row = lambda do |tp, fp, fn|
   prec = (tp + fp).zero? ? nil : (tp.to_f / (tp + fp)).round(3)
@@ -370,6 +371,7 @@ build_report = lambda do |partial:|
             recall: ref_r[n].empty? ? nil : (ref_r[n].sum / ref_r[n].size).round(3) }]
     end,
     rename_consistency: server_names.to_h { |n| [n, { n: rename_total[n], consistent: rename_consistent[n] }] },
+    rename_detail: rename_detail,
     structural_misses: struct_misses,
     diagnostics_audit: diag_audit,
   }
@@ -484,7 +486,13 @@ rename_probes.first(20).each do |pr|
   clients.each do |name, c|
     next if dropped.include?(name) || c.dead?
     uri = opened[pr[:path]][:uris][name]
+    # refs_set returns ABSOLUTE paths; the edit set below is built ROOT-relative.
+    # Normalize the reference set the same way so the comparison is like-for-like
+    # (comparing abs vs rel made this always-0 for every server — a bench bug, not
+    # a server defect; refract's edit set does equal its own reference set).
     own_refs = refs_set((ask.call(name, c, :references, uri, pr[:line], pr[:char], timeout: 6) || {})["result"])
+                 .map { |(p, ln)| [p.start_with?(ROOT) ? p[ROOT.length..].sub(%r{^/}, "") : "ext:#{File.basename(p)}", ln] }
+                 .uniq.sort
     next if own_refs.empty?
     rn = ask.call(name, c, :rename, uri, pr[:line], pr[:char], "Renamed_#{SEED}", timeout: 6)
     edits = rn && rn["result"] && rn["result"]["changes"]
@@ -496,8 +504,23 @@ rename_probes.first(20).each do |pr|
         es.each { |e| edit_locs << [rel, e.dig("range", "start", "line")] }
       end
     end
+    edit_set = edit_locs.uniq.sort
+    match = edit_set == own_refs
     rename_total[name] += 1
-    rename_consistent[name] += 1 if edit_locs.uniq.sort == own_refs
+    rename_consistent[name] += 1 if match
+    # Capture per-probe detail (prioritize mismatches, then fill) so the
+    # discourse/solidus < 1.0 counts can be explained: which token, ref-set vs
+    # edit-set, and whether rename returned nothing (edits empty => non-renameable).
+    bucket = (rename_detail[name] ||= [])
+    if (!match && bucket.count { |d| !d[:match] } < 20) || bucket.size < 25
+      bucket << {
+        name: word_at(opened[pr[:path]][:text], pr[:line], pr[:char]),
+        probe: "#{pr[:path].sub(%r{\A#{Regexp.escape(ROOT)}/?}, '')}:#{pr[:line] + 1}",
+        refs: own_refs,
+        edits: edit_set,
+        match: match,
+      }
+    end
   end
 end
 
@@ -505,17 +528,34 @@ end
 
 if DIAG_AUDIT && clients.key?("refract") && !over_deadline.call
   by_code = Hash.new(0); refract_only = Hash.new(0); total = 0
+  diag_samples = [] # {code, message, loc} for refract semantic diags — names the FPs
   rivals = clients.keys - ["refract"]
+  # Drain refract's background indexer first: undefined-method/ancestry checks read
+  # the symbol table, and on a slow host a mid-index snapshot yields TRANSIENT
+  # "undefined" diagnostics that clear once ancestors finish indexing. Audit the
+  # SETTLED state — wait for idle, and give push diagnostics a long settle window.
+  clients["refract"].request("$/refract/__waitForIdle", {}, timeout: 180) rescue nil
   files.first(15).each do |path|
     info = opened[path]
     # benign edit (re-send identical text) to re-trigger diagnostics
     clients.each { |name, c| c.did_change(info[:uris][name], info[:text]) unless dropped.include?(name) || c.dead? rescue nil }
+    clients["refract"].request("$/refract/__waitForIdle", {}, timeout: 20) rescue nil
     diags = {}
+    raw_refract = []
     clients.each do |name, c|
       next if dropped.include?(name) || c.dead?
       uri = info[:uris][name]
-      d = c.collect_push_diagnostics(uri, settle_ms: 800, hard_timeout: 6) rescue []
+      d = c.collect_push_diagnostics(uri, settle_ms: 2000, hard_timeout: 10) rescue []
       diags[name] = Array(d).map { |x| [x.dig("range", "start", "line"), x["code"]] }
+      raw_refract = Array(d) if name == "refract"
+    end
+    rel = path.sub(%r{\A#{Regexp.escape(ROOT)}/?}, "")
+    raw_refract.each do |x|
+      code = x["code"].to_s
+      next unless %w[refract/wrong-arity refract/undefined-method refract/nil-receiver].include?(code)
+      next if diag_samples.size >= 40
+      diag_samples << { code: code, message: x["message"],
+                        loc: "#{rel}:#{(x.dig('range', 'start', 'line') || 0) + 1}" }
     end
     rlines = {}
     rivals.each { |rn| Array(diags[rn]).each { |(ln, _c)| (rlines[ln] ||= true) } }
@@ -547,6 +587,7 @@ if DIAG_AUDIT && clients.key?("refract") && !over_deadline.call
     semantic_refract_only: rival_validated ? sem_only : nil,
     rival_validated: rival_validated,
     semantic_fp_rate: !rival_validated ? nil : (sem_total.zero? ? 0.0 : (sem_only.to_f / sem_total).round(3)),
+    samples: diag_samples,
   }
 end
 

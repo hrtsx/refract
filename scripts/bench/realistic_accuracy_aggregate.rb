@@ -53,6 +53,22 @@ acc.each do |r|
   end
 end
 
+rename_mismatch_rows = acc.flat_map do |r|
+  (r["rename_detail"] || {}).flat_map do |srv, ds|
+    Array(ds).reject { |d| d["match"] }.first(8).map { |d| [r["corpus"], srv, d] }
+  end
+end
+unless rename_mismatch_rows.empty?
+  puts "\n**Rename mismatch samples** (edits != own reference set — why a probe is inconsistent):\n\n"
+  puts "| corpus | server | name | probe | #refs | #edits | edits == refs |"
+  puts "|---|---|---|---|--:|--:|:-:|"
+  rename_mismatch_rows.each do |corpus, srv, d|
+    refs = Array(d["refs"]); edits = Array(d["edits"])
+    tag = edits.empty? ? "no-edits (rename null)" : "differ"
+    puts "| #{corpus} | #{srv} | #{d['name']} | #{d['probe']} | #{refs.size} | #{edits.size} | #{tag} |"
+  end
+end
+
 audited = acc.select { |r| r["diagnostics_audit"] }
 unless audited.empty?
   puts "\n### Diagnostic false-positive audit (presumed-correct real code)\n\n"
@@ -72,6 +88,16 @@ unless audited.empty?
     rate = a["semantic_fp_rate"].nil? ? "n/a" : a["semantic_fp_rate"]
     ronly = a["semantic_refract_only"].nil? ? "-" : a["semantic_refract_only"]
     puts "| #{r['corpus']} | #{rv} | #{a['semantic_total']} | #{ronly} | #{rate} | #{a['total_refract_diags']} | #{bycode} |"
+  end
+  sample_rows = audited.flat_map { |r| Array(r.dig("diagnostics_audit", "samples")).map { |s| [r["corpus"], s] } }
+  unless sample_rows.empty?
+    puts "\n**Semantic diagnostic samples** (the actual bug-claim diagnostics, to inspect for FPs):\n\n"
+    puts "| corpus | code | loc | message |"
+    puts "|---|---|---|---|"
+    sample_rows.first(60).each do |corpus, s|
+      msg = s["message"].to_s.gsub("|", "\\|")[0, 70]
+      puts "| #{corpus} | #{s['code'].to_s.sub('refract/', '')} | #{s['loc']} | #{msg} |"
+    end
   end
 end
 
