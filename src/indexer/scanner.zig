@@ -219,6 +219,35 @@ pub fn parseGitignoreNegations(root: []const u8, alloc: std.mem.Allocator) ![][]
     return results.toOwnedSlice(alloc);
 }
 
+// Tiny, high-signal files whose symbols are disproportionately useful for
+// navigation: Rails route maps (every route helper) and the schema (every AR
+// column). On a large repo the full cold index may not finish before the first
+// queries, so these are indexed first — a route helper or column can't resolve
+// if its defining file was never reached. See prioritizeIndexOrder.
+pub fn isHighPriorityIndexPath(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, "/config/routes.rb") or
+        std.mem.eql(u8, path, "config/routes.rb") or
+        std.mem.indexOf(u8, path, "/config/routes/") != null or
+        std.mem.endsWith(u8, path, "/db/schema.rb") or
+        std.mem.eql(u8, path, "db/schema.rb");
+}
+
+// Stable in-place partition: move high-priority paths to the front, preserving
+// the relative order of both groups. O(n*k) with k = priority-file count (tiny).
+fn prioritizeIndexOrder(items: [][]u8) void {
+    var front: usize = 0;
+    var i: usize = 0;
+    while (i < items.len) : (i += 1) {
+        if (isHighPriorityIndexPath(items[i])) {
+            const moved = items[i];
+            var j = i;
+            while (j > front) : (j -= 1) items[j] = items[j - 1];
+            items[front] = moved;
+            front += 1;
+        }
+    }
+}
+
 pub fn scan(root: []const u8, alloc: std.mem.Allocator, extra_excludes: []const []const u8) ![][]u8 {
     var paths = std.ArrayList([]u8).empty;
     errdefer {
@@ -226,6 +255,7 @@ pub fn scan(root: []const u8, alloc: std.mem.Allocator, extra_excludes: []const 
         paths.deinit(alloc);
     }
     try scanDir(root, root, &paths, alloc, extra_excludes, &.{}, 0);
+    prioritizeIndexOrder(paths.items);
     return paths.toOwnedSlice(alloc);
 }
 
@@ -236,5 +266,26 @@ pub fn scanWithNegations(root: []const u8, alloc: std.mem.Allocator, extra_exclu
         paths.deinit(alloc);
     }
     try scanDir(root, root, &paths, alloc, extra_excludes, negations, 0);
+    prioritizeIndexOrder(paths.items);
     return paths.toOwnedSlice(alloc);
+}
+
+test "prioritizeIndexOrder front-loads route maps and schema, stable otherwise" {
+    var a: [6][]u8 = .{
+        @constCast("app/models/user.rb"),
+        @constCast("backend/config/routes.rb"),
+        @constCast("app/models/order.rb"),
+        @constCast("db/schema.rb"),
+        @constCast("config/routes/admin.rb"),
+        @constCast("lib/foo.rb"),
+    };
+    prioritizeIndexOrder(&a);
+    // High-signal files first, in original relative order.
+    try std.testing.expectEqualStrings("backend/config/routes.rb", a[0]);
+    try std.testing.expectEqualStrings("db/schema.rb", a[1]);
+    try std.testing.expectEqualStrings("config/routes/admin.rb", a[2]);
+    // Remaining files keep their relative order.
+    try std.testing.expectEqualStrings("app/models/user.rb", a[3]);
+    try std.testing.expectEqualStrings("app/models/order.rb", a[4]);
+    try std.testing.expectEqualStrings("lib/foo.rb", a[5]);
 }
