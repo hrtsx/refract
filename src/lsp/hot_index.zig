@@ -334,6 +334,19 @@ pub const HotIndex = struct {
         }
     }
 
+    /// Append symbols whose `name` contains `needle` as a case-insensitive
+    /// subsequence but NOT as a contiguous substring (handled separately). Powers
+    /// fuzzy/camelCase completion — "abc" matches "ActivateBlockController". Linear
+    /// scan; callers gate it to the thin-results case.
+    pub fn appendSubsequenceMatches(self: *const HotIndex, needle: []const u8, out: *std.ArrayList(HotSymbol), alloc: std.mem.Allocator) !void {
+        if (needle.len == 0) return;
+        for (self.sorted_by_name) |sym| {
+            if (sym.name.len <= needle.len) continue;
+            if (std.mem.indexOf(u8, sym.name, needle) != null) continue; // substring tier already has it
+            if (subseqCI(needle, sym.name)) try out.append(alloc, sym);
+        }
+    }
+
     /// Returns all symbols whose `name` begins with `prefix`. Empty prefix
     /// yields nothing (callers should not run unbounded completion).
     pub fn lookupPrefix(self: *const HotIndex, prefix: []const u8) []const HotSymbol {
@@ -356,6 +369,18 @@ pub const HotIndex = struct {
         return items[lo..end];
     }
 };
+
+/// Case-insensitive subsequence test: every char of `query` appears in `name`
+/// in order. Used for fuzzy/camelCase completion ranking.
+fn subseqCI(query: []const u8, name: []const u8) bool {
+    if (query.len == 0) return true;
+    var qi: usize = 0;
+    for (name) |c| {
+        if (qi >= query.len) break;
+        if (std.ascii.toLower(c) == std.ascii.toLower(query[qi])) qi += 1;
+    }
+    return qi == query.len;
+}
 
 const BUNDLED_PREFIX = "<bundled>/";
 
