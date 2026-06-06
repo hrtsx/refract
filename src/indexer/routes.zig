@@ -414,6 +414,11 @@ fn handleResourcesCall(db: db_mod.Db, file_id: i64, parser: *prism.Parser, cn: *
         var helper_name: []const u8 = undefined;
         if (route_idx == 0 and is_singular) {
             helper_name = try alloc.dupe(u8, effective_name);
+        } else if (route_idx == 0 and !is_singular) {
+            // Index/collection helper is the PLURAL name: `resources :widgets` →
+            // `widgets_path`. Previously this fell through to the singular helper, so
+            // the collection helper was never emitted.
+            helper_name = try alloc.dupe(u8, effective_name);
         } else if (route_idx == 1 or (is_singular and route_idx == 2)) {
             helper_name = try std.fmt.allocPrint(alloc, "new_{s}", .{singular});
         } else if (route_idx >= 3 and !is_singular) {
