@@ -199,6 +199,7 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
 }
 
 pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -425,6 +426,7 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
 }
 
 pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -585,6 +587,7 @@ pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.Respons
 }
 
 pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
@@ -666,6 +669,7 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
 }
 
 pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -882,6 +886,7 @@ pub fn resolveScopeId(self: *Server, file_id: i64, name: []const u8, cursor_line
 }
 
 pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);
@@ -1074,6 +1079,7 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
 }
 
 pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     self.db_mutex.lockUncancelable(std.Options.debug_io);
     defer self.db_mutex.unlock(std.Options.debug_io);
     const params = msg.params orelse return emptyResult(msg);

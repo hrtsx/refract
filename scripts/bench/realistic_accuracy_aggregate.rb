@@ -118,6 +118,25 @@ unless miss_rows.empty?
   end
 end
 
+# Unresolved-probe samples — concrete tokens where go-to-def returned NOTHING, with
+# the chars before the token (classify x.foo / Const.foo / bare foo) so the recall
+# gap can be bucketed: untyped-receiver vs framework-method vs uncovered-DSL vs dynamic.
+unresolved_rows = acc.flat_map do |r|
+  (r["unresolved_samples"] || {}).flat_map do |srv, ms|
+    Array(ms).first(12).map { |m| [r["corpus"], srv, m] }
+  end
+end
+unless unresolved_rows.empty?
+  puts "\n### Unresolved go-to-def samples (returned nothing — the recall gap)\n\n"
+  puts "| corpus | server | name | probe | before | source line |"
+  puts "|---|---|---|---|---|---|"
+  unresolved_rows.each do |corpus, srv, m|
+    bef = (m["before"] || "").to_s.gsub("|", "\\|")[-24, 24] || m["before"].to_s.gsub("|", "\\|")
+    ln = (m["line"] || "").to_s.gsub("|", "\\|")[0, 70]
+    puts "| #{corpus} | #{srv} | #{m['name']} | #{m['probe']} | `#{bef}` | `#{ln}` |"
+  end
+end
+
 unless dx.empty?
   puts "\n## Real-repo DX (cold init, time-to-first-correct, warm, resources)\n\n"
   puts "| corpus | server | cold init ms | first-correct p50/p95 | warm ms | idle ms | RSS MB | CPU ms | index KB | robust |"

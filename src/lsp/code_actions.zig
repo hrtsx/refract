@@ -22,6 +22,7 @@ const writeEscapedJson = S.writeEscapedJson;
 const empty_json_array = S.empty_json_array;
 
 pub fn handleFormatting(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -407,6 +408,7 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleRangeFormatting(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -623,6 +625,7 @@ const RunTestCtx = struct {
 };
 
 pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
+    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     const params = msg.params orelse return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try self.alloc.dupe(u8, "null"), .@"error" = null };
     const obj = switch (params) {
         .object => |o| o,
