@@ -883,6 +883,10 @@ const BgCtx = struct {
         const total_paths = refiltered_paths.items.len;
         const num_workers: usize = if (total_paths == 0) 0 else @min(desired_workers, total_paths);
         if (num_workers > 0) {
+            // Cold-index diagnostics (stderr): confirm the workspace index runs to
+            // completion on large repos — a route helper / column can't resolve if
+            // its file was never reached. Paired with a completion/cancel line below.
+            std.debug.print("refract: cold-index start: {d} files, {d} workers\n", .{ total_paths, num_workers });
             var queue = WorkQueue{};
             defer queue.deinit();
             for (refiltered_paths.items) |p| {
@@ -925,6 +929,11 @@ const BgCtx = struct {
                     _ = std.c.nanosleep(&poll_ts, null);
                 }
                 for (workers.items) |t| t.join();
+                const done_final = self.progress_done.load(.monotonic);
+                if (self.server_ptr.bg_cancelled.load(.acquire))
+                    std.debug.print("refract: cold-index CANCELLED at {d}/{d} files\n", .{ done_final, total_paths })
+                else
+                    std.debug.print("refract: cold-index complete: {d}/{d} files\n", .{ done_final, total_paths });
             } else {
                 // Worker spawn failed entirely — fall back to serial reindex on the main thread.
                 self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);

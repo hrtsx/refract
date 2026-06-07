@@ -6604,6 +6604,10 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     upsert.bind_int(4, if (is_gem) 1 else 0);
     const has_file_row = try upsert.step();
     const real_file_id: i64 = if (has_file_row) upsert.column_int(0) else real_db.last_insert_rowid();
+    // Reset the RETURNING cursor: a stepped-but-unreset statement leaves SQL "in
+    // progress", which makes the final COMMIT fail with "cannot commit transaction
+    // - SQL statements in progress" — silently dropping every cold-indexed file.
+    upsert.reset();
 
     // Delete old symbols (cascades to params and mixins via FK)
     const del_sym = try real_db.prepare("DELETE FROM symbols WHERE file_id = ?");
@@ -6620,6 +6624,19 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     defer del_lv.finalize();
     del_lv.bind_int(1, real_file_id);
     _ = try del_lv.step();
+
+    // Domain tables (routes, i18n) are generated per-file in mem_db too; clear the
+    // real_db copies for this file before re-inserting so a re-index doesn't leave
+    // stale rows. (aliases is vestigial — never populated.)
+    const del_rt = try real_db.prepare("DELETE FROM routes WHERE file_id = ?");
+    defer del_rt.finalize();
+    del_rt.bind_int(1, real_file_id);
+    _ = try del_rt.step();
+
+    const del_i18n = try real_db.prepare("DELETE FROM i18n_keys WHERE file_id = ?");
+    defer del_i18n.finalize();
+    del_i18n.bind_int(1, real_file_id);
+    _ = try del_i18n.step();
 
     // Copy symbols from mem_db, building provisional→real ID map
     var id_map = std.AutoHashMap(i64, i64).init(alloc);
@@ -6787,6 +6804,59 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         const pb = sel_st.column_blob(1);
         if (pb.len > 0) ins_st.bind_blob(3, pb) else ins_st.bind_null(3);
         _ = try ins_st.step();
+    }
+
+    // Copy routes (Rails/Sinatra route maps) — without this, the bg cold-index
+    // never persists route helpers for unopened files, so go-to-def on a route
+    // helper fails on any file the editor hasn't opened.
+    const sel_rt = try mem_db.prepare(
+        \\SELECT http_method, path_pattern, helper_name, controller, action, line, col
+        \\FROM routes WHERE file_id = ?
+    );
+    defer sel_rt.finalize();
+    sel_rt.bind_int(1, mem_file_id);
+
+    const ins_rt = try real_db.prepare(
+        \\INSERT OR IGNORE INTO routes (file_id, http_method, path_pattern, helper_name, controller, action, line, col)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    );
+    defer ins_rt.finalize();
+
+    while (try sel_rt.step()) {
+        ins_rt.reset();
+        ins_rt.bind_int(1, real_file_id);
+        ins_rt.bind_text(2, sel_rt.column_text(0));
+        ins_rt.bind_text(3, sel_rt.column_text(1));
+        const hn = sel_rt.column_text(2);
+        if (hn.len > 0) ins_rt.bind_text(4, hn) else ins_rt.bind_null(4);
+        const ctrl = sel_rt.column_text(3);
+        if (ctrl.len > 0) ins_rt.bind_text(5, ctrl) else ins_rt.bind_null(5);
+        const act = sel_rt.column_text(4);
+        if (act.len > 0) ins_rt.bind_text(6, act) else ins_rt.bind_null(6);
+        ins_rt.bind_int(7, sel_rt.column_int(5));
+        ins_rt.bind_int(8, sel_rt.column_int(6));
+        _ = try ins_rt.step();
+    }
+
+    // Copy i18n_keys
+    const sel_i18n = try mem_db.prepare("SELECT key, value, locale FROM i18n_keys WHERE file_id = ?");
+    defer sel_i18n.finalize();
+    sel_i18n.bind_int(1, mem_file_id);
+
+    const ins_i18n = try real_db.prepare(
+        \\INSERT OR IGNORE INTO i18n_keys (file_id, key, value, locale) VALUES (?, ?, ?, ?)
+    );
+    defer ins_i18n.finalize();
+
+    while (try sel_i18n.step()) {
+        ins_i18n.reset();
+        ins_i18n.bind_int(1, real_file_id);
+        ins_i18n.bind_text(2, sel_i18n.column_text(0));
+        const v = sel_i18n.column_text(1);
+        if (v.len > 0) ins_i18n.bind_text(3, v) else ins_i18n.bind_null(3);
+        const loc = sel_i18n.column_text(2);
+        if (loc.len > 0) ins_i18n.bind_text(4, loc) else ins_i18n.bind_null(4);
+        _ = try ins_i18n.step();
     }
 
     try real_db.commit();

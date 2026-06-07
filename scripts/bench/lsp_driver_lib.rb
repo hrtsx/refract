@@ -29,13 +29,30 @@ class LspClient
   end
 
   def start_stderr_drain
+    # When LSP_STDERR_LOG is set, tee the server's stderr to that file (append,
+    # flushed per chunk) so it survives as a CI artifact independent of the
+    # driver's own stderr routing — used to confirm refract's cold-index runs to
+    # completion on big repos.
+    log_path = ENV["LSP_STDERR_LOG"]
+    log_io = (File.open(log_path, "a") rescue nil) if log_path && !log_path.empty?
     @stderr_thread = Thread.new do
       begin
-        while (chunk = @stderr.read(4096))
+        # readpartial (not read(4096)) returns as soon as ANY data is available;
+        # read(4096) blocks until the full buffer or EOF, so short diagnostic lines
+        # (e.g. refract's cold-index status) were lost when the process was killed
+        # mid-block before emitting 4096 bytes.
+        loop do
+          chunk = @stderr.readpartial(4096)
           $stderr.write("[#{@name}.stderr] #{chunk}")
           $stderr.flush
+          if log_io
+            log_io.write("[#{@name}] #{chunk}")
+            log_io.flush
+          end
         end
-      rescue StandardError
+      rescue EOFError, IOError, StandardError
+      ensure
+        log_io.close rescue nil
       end
     end
   end
