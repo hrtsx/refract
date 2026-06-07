@@ -232,6 +232,10 @@ pub const Db = struct {
         return c.sqlite3_last_insert_rowid(self.raw);
     }
 
+    pub fn lastErrmsg(self: Db) []const u8 {
+        return std.mem.span(c.sqlite3_errmsg(self.raw));
+    }
+
     pub fn begin(self: Db) DbError!void {
         try self.exec("BEGIN");
     }

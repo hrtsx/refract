@@ -117,6 +117,7 @@ for corpus in $CORPORA_RAW; do
   ROOT="$root" SEED="${REALISTIC_SEED:-42}" PROBES_LIMIT="$eff_probes" MAX_FILES="$eff_maxfiles" \
     REFRACT="$REFRACT" DIAG_AUDIT="$(diag_audit_for "$corpus")" ORACLE_CACHE="$oracle" \
     ACC_DEADLINE_S="$eff_deadline" SKIP_SERVERS="$corpus_skip" \
+    LSP_STDERR_LOG="$OUT_DIR/${corpus}__refract.stderr.log" \
     timeout --preserve-status -k 30 "$eff_timeout" ruby "$DRIVER_DIR/lsp_realistic_accuracy.rb" \
     > "$acc_json" 2> "$OUT_DIR/${corpus}__accuracy.log"
   rc=$?
