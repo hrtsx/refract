@@ -433,6 +433,7 @@ pub const Db = struct {
         );
         self.exec("CREATE INDEX IF NOT EXISTS idx_routes_file ON routes(file_id)") catch {}; // migration
         self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_unique ON routes(file_id, http_method, path_pattern, line)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_routes_helper ON routes(helper_name)") catch {}; // migration: route-helper go-to-def looks up by helper_name
         // Migration guards for gem indexing (Phase 8)
         self.execMigration("ALTER TABLE files ADD COLUMN is_gem INTEGER NOT NULL DEFAULT 0");
         self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {}; // migration
