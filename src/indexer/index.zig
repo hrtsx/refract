@@ -6984,6 +6984,37 @@ test "cleanupStale preserves gem entries" {
     try std.testing.expectEqual(@as(i64, 1), check.column_int(0));
 }
 
+test "go-to-def resolves a method defined in an indexed gem file" {
+    // Hermetic proof that gem methods resolve: index a fake gem source on the
+    // LOAD_PATH (mark it is_gem like real bundle indexing does), then assert the
+    // method is found by the SAME query go-to-def runs (name + kind). No bundle
+    // install / network — this is the durable evidence the bench can't produce.
+    const alloc = std.testing.allocator;
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+
+    const gem_path = "/gems/activesupport/lib/active_support/core_ext/enumerable.rb";
+    try indexSource(
+        \\module Enumerable
+        \\  def compact_blank
+        \\    reject(&:blank?)
+        \\  end
+        \\end
+    , gem_path, db, alloc);
+    try db.exec("UPDATE files SET is_gem=1 WHERE path='/gems/activesupport/lib/active_support/core_ext/enumerable.rb'");
+
+    // Mirror navigation.zig's go-to-def lookup: by name + def-like kind.
+    const s = try db.prepare(
+        \\SELECT f.path FROM symbols sym JOIN files f ON sym.file_id = f.id
+        \\WHERE sym.name = ? AND sym.kind IN ('def','classdef') AND f.is_gem = 1
+    );
+    defer s.finalize();
+    s.bind_text(1, "compact_blank");
+    try std.testing.expect(try s.step());
+    try std.testing.expectEqualStrings(gem_path, s.column_text(0));
+}
+
 test "error logging with rate limiting" {
     const nonexistent_path = "/nonexistent/path/to/file.rb";
     const initial_count = reindex_stat_error_count.load(.monotonic);

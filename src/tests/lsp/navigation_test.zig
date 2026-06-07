@@ -542,7 +542,7 @@ test "go-to-def on a route helper resolves to the route declaration" {
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    std.Io.Dir.cwd().makePath(ws ++ "/config") catch {};
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config", .default_dir) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = ws ++ "/config/routes.rb",
@@ -597,6 +597,70 @@ test "go-to-def on a route helper resolves to the route declaration" {
     try std.testing.expect(std.mem.indexOf(u8, uri, "config/routes.rb") != null);
 }
 
+test "go-to-def on an engine-proxied route helper (spree.admin_*) resolves" {
+    // Engine routes live in `Engine.routes.draw` and app code references them via an
+    // engine proxy receiver (`spree.admin_stock_items_path`). `extractWord` drops the
+    // `spree.` receiver (`.` isn't an ident char), so the helper resolves like any other.
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_engine_proxy_route_def";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config", .default_dir) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/config/routes.rb",
+        .data = "Spree::Core::Engine.routes.draw do\n  namespace :admin do\n    resources :stock_items, except: [:show, :new, :edit]\n  end\nend\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/app.rb",
+        .data = "class Foo\n  def go\n    redirect_to spree.admin_stock_items_path\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/config/routes.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/app.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // `admin_stock_items_path` begins after `spree.` at col 22 of line 2; aim inside it.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/app.rb\"},\"position\":{\"line\":2,\"character\":25}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const resp = getResponseById(responses, 2) orelse return error.NoDefResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    try std.testing.expect(arr.items.len >= 1);
+    const io = switch (arr.items[0]) {
+        .object => |o| o,
+        else => return error.ItemNotObject,
+    };
+    const uri = switch (io.get("uri") orelse return error.NoUri) {
+        .string => |str| str,
+        else => return error.UriNotString,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, uri, "config/routes.rb") != null);
+}
+
 test "go-to-def on a namespaced route helper resolves (admin_ prefix)" {
     const alloc = std.testing.allocator;
 
@@ -604,7 +668,7 @@ test "go-to-def on a namespaced route helper resolves (admin_ prefix)" {
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    std.Io.Dir.cwd().makePath(ws ++ "/config") catch {};
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/config", .default_dir) catch {};
 
     try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
         .sub_path = ws ++ "/config/routes.rb",

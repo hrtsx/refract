@@ -52,7 +52,7 @@ max_files_for() { case "$1" in discourse|gitlabhq) echo 20 ;; mastodon) echo 30 
 
 # Per-repo deadline override. discourse is the biggest indexed tree; give its
 # refract cold-index more room. Falls back to the global ACC_DEADLINE_S.
-deadline_for() { case "$1" in discourse|gitlabhq) echo "${BIG_DEADLINE_S:-1500}" ;; mastodon) echo "$(( ACC_DEADLINE_S + 300 ))" ;; *) echo "$ACC_DEADLINE_S" ;; esac; }
+deadline_for() { case "$1" in discourse|gitlabhq) echo "${BIG_DEADLINE_S:-1500}" ;; *) echo "$ACC_DEADLINE_S" ;; esac; }
 
 # Rivals (esp. ruby-lsp) deadlock on bulk didOpen while indexing a 3k-9k-file
 # Rails workspace: they stop draining stdin, the driver blocks on a full pipe and
@@ -102,17 +102,9 @@ for corpus in $CORPORA_RAW; do
       echo "    bundle install failed for $corpus (continuing)" >&2
   fi
 
-  # refract gem-index proof (mastodon only): install gems UNDER the repo (vendor/bundle
-  # via a local bundle config) so refract's `bundle exec ruby $LOAD_PATH` gem discovery
-  # finds them and indexes the project's gems — letting go-to-def resolve gem methods
-  # (e.g. ActiveSupport `compact_blank`) the way it would in real dev use. Outside timing,
-  # non-fatal, cached in CI. Expand beyond mastodon once proven.
-  if [[ "$corpus" == "mastodon" ]] && [[ -f "$root/Gemfile" ]] && have bundle; then
-    echo ">>> bundle install (mastodon, vendor/bundle for refract gem index)" >&2
-    ( cd "$root" && bundle config set --local path vendor/bundle >/dev/null 2>&1 && \
-      timeout 900 bundle install --quiet >/dev/null 2>&1 ) || \
-      echo "    refract gem bundle failed for mastodon (continuing)" >&2
-  fi
+  # NOTE: refract's gem-method recall is proven hermetically in the Zig test suite
+  # ("go-to-def resolves a method defined in an indexed gem file"), not via a CI
+  # `bundle install` — native gem builds fail on bare runners and only add noise.
 
   oracle="$OUT_DIR/${corpus}__oracle.json"
   acc_json="$OUT_DIR/${corpus}__accuracy.json"

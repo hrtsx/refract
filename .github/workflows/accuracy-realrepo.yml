@@ -72,8 +72,8 @@ jobs:
           path: |
             ~/.cache/zig
             .zig-cache
-          key: linux-zig-accuracy-${{ hashFiles('build.zig.zon') }}
-          restore-keys: linux-zig-
+          key: linux-zig-accuracy-v2-${{ hashFiles('build.zig.zon') }}
+          restore-keys: linux-zig-accuracy-v2-
 
       - name: Setup Ruby 3.4
         uses: ruby/setup-ruby@v1
