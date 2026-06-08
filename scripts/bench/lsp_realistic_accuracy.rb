@@ -141,6 +141,17 @@ def structurally_declares?(target, name)
   qb = Regexp.escape(base)
   nb = '(?![A-Za-z0-9_])'                 # name-end (sigil already in q)
 
+  # Rails route helpers (foo_path / foo_url) are SYNTHESIZED by routing-DSL calls
+  # (resources/resource/namespace/scope/get…/root/mount/custom *_resources macros),
+  # never written as `def foo_path`. A go-to-def that lands on a routing-DSL line in
+  # a routes file is therefore a CORRECT resolution, but the def/assignment patterns
+  # below can never match it. Credit it explicitly. Symmetric across servers: any
+  # server that lands on the route declaration for a *_path/_url name qualifies.
+  if name =~ /_(?:path|url)\z/ && (path.include?("config/routes") || path.end_with?("routes.rb"))
+    return true if win.match?(/\b(?:resources?|namespace|scope|root|mount|match|
+                                   get|post|put|patch|delete|\w*_resources)\b/x)
+  end
+
   exact = [
     /\bdef\s+(self\.)?#{q}#{nb}/,
     /\bdef\s+(self\.)?#{qb}[?!=]?#{nb}/,  # def of the base, optional sigil
