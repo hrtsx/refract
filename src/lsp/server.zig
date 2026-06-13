@@ -775,6 +775,95 @@ const BgCtx = struct {
     progress_done: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     io: std.Io = std.Options.debug_io,
 
+    // Drain a path list through the parallel worker pool: workers parse (CPU-bound)
+    // outside db_mutex and grab it briefly PER FILE to commit, so queries interleave
+    // and the LSP stays responsive during indexing. Used for the workspace cold-index
+    // AND gem/RBS indexing — the latter previously held db_mutex for the entire
+    // reindex, blocking every query for seconds on gem-heavy repos.
+    fn indexPathsViaWorkers(self: *BgCtx, paths: []const []const u8, is_gem: bool, report_progress: bool, label: []const u8) void {
+        const total_paths = paths.len;
+        if (total_paths == 0) return;
+        const db = self.server_ptr.db;
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        const desired_workers = @min(@max(cpu_count, 1), self.max_workers);
+        const num_workers: usize = @min(desired_workers, total_paths);
+        if (num_workers == 0) return;
+
+        std.debug.print("refract: {s} start: {d} files, {d} workers\n", .{ label, total_paths, num_workers });
+        self.index_failures.store(0, .monotonic);
+
+        const ProgressCtx = struct {
+            server: *Server,
+            fn report(ctx_opaque: *anyopaque, done: usize, total: usize, path: []const u8) void {
+                const self_pg: *@This() = @ptrCast(@alignCast(ctx_opaque));
+                const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
+                const dir_part = if (slash > 0) blk: {
+                    const parent = path[0..slash];
+                    const prev_slash = std.mem.lastIndexOfScalar(u8, parent, '/') orelse 0;
+                    break :blk parent[if (prev_slash > 0) prev_slash + 1 else 0..];
+                } else path;
+                self_pg.server.sendProgressReportWithDir(done, total, dir_part);
+            }
+        };
+        var pg_ctx = ProgressCtx{ .server = self.server_ptr };
+        const progress_cb = indexer.ProgressCallback{ .ctx = &pg_ctx, .report = ProgressCtx.report };
+
+        var queue = WorkQueue{};
+        defer queue.deinit();
+        for (paths) |p| {
+            _ = queue.push(.{ .path = p, .is_gem = is_gem });
+        }
+        queue.markDone();
+
+        self.progress_done.store(0, .monotonic);
+        const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &queue };
+        var workers = std.ArrayList(std.Thread).empty;
+        defer workers.deinit(std.heap.c_allocator);
+        var w: usize = 0;
+        while (w < num_workers) : (w += 1) {
+            const t = std.Thread.spawn(.{}, bgWorkerFn, .{wctx}) catch break;
+            workers.append(std.heap.c_allocator, t) catch {
+                t.detach();
+                break;
+            };
+        }
+
+        if (workers.items.len > 0) {
+            var last_reported: usize = 0;
+            while (true) {
+                const done_now = self.progress_done.load(.monotonic);
+                if (report_progress and done_now != last_reported) {
+                    const sample_path = if (done_now > 0 and done_now <= total_paths)
+                        paths[done_now - 1]
+                    else
+                        paths[0];
+                    progress_cb.report(progress_cb.ctx, done_now, total_paths, sample_path);
+                    last_reported = done_now;
+                }
+                if (done_now >= total_paths) break;
+                if (self.server_ptr.bg_cancelled.load(.acquire)) break;
+                var poll_ts: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+                _ = std.c.nanosleep(&poll_ts, null);
+            }
+            for (workers.items) |t| t.join();
+            const done_final = self.progress_done.load(.monotonic);
+            const fail_n = self.index_failures.load(.monotonic);
+            if (self.server_ptr.bg_cancelled.load(.acquire))
+                std.debug.print("refract: {s} CANCELLED at {d}/{d} files ({d} failures)\n", .{ label, done_final, total_paths, fail_n })
+            else
+                std.debug.print("refract: {s} complete: {d}/{d} files ({d} failures)\n", .{ label, done_final, total_paths, fail_n });
+        } else {
+            // Worker spawn failed entirely — fall back to serial reindex on the main thread.
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            indexer.reindex(db, paths, is_gem, std.heap.c_allocator, self.server_ptr.max_file_size.load(.monotonic), if (report_progress) progress_cb else null) catch |err| {
+                var ebuf: [256]u8 = undefined;
+                const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
+                self.server_ptr.sendLogMessage(2, emsg);
+            };
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+        }
+    }
+
     pub fn run(self: *BgCtx) void {
         defer {
             std.heap.c_allocator.free(self.root_path);
@@ -841,26 +930,6 @@ const BgCtx = struct {
             }
         }
 
-        // Index workspace files — wire live progress into $/progress notifications
-        const ProgressCtx = struct {
-            server: *Server,
-            fn report(ctx_opaque: *anyopaque, done: usize, total: usize, path: []const u8) void {
-                const self_pg: *@This() = @ptrCast(@alignCast(ctx_opaque));
-                // Show the parent directory name in the status message
-                const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
-                const dir_part = if (slash > 0) blk: {
-                    const parent = path[0..slash];
-                    const prev_slash = std.mem.lastIndexOfScalar(u8, parent, '/') orelse 0;
-                    break :blk parent[if (prev_slash > 0) prev_slash + 1 else 0..];
-                } else path;
-                self_pg.server.sendProgressReportWithDir(done, total, dir_part);
-            }
-        };
-        var pg_ctx = ProgressCtx{ .server = self.server_ptr };
-        const progress_cb = indexer.ProgressCallback{
-            .ctx = &pg_ctx,
-            .report = ProgressCtx.report,
-        };
         // Re-filter against deleted_paths just before fanning out — type=3 grabs
         // db_mutex serially. Workers grab db_mutex per-file in their commit phase,
         // so any type=3 that runs concurrently is observed at filter time.
@@ -875,76 +944,9 @@ const BgCtx = struct {
             }
         }
 
-        // Parallel cold-index pipeline. Workers parse (CPU-bound) outside the
-        // db_mutex and grab it briefly per-file to commit parsed data. Letting
-        // queries interleave during cold-index keeps the LSP responsive.
-        const cpu_count = std.Thread.getCpuCount() catch 4;
-        const desired_workers = @min(@max(cpu_count, 1), self.max_workers);
-        const total_paths = refiltered_paths.items.len;
-        const num_workers: usize = if (total_paths == 0) 0 else @min(desired_workers, total_paths);
-        if (num_workers > 0) {
-            // Cold-index diagnostics (stderr): confirm the workspace index runs to
-            // completion on large repos — a route helper / column can't resolve if
-            // its file was never reached. Paired with a completion/cancel line below.
-            std.debug.print("refract: cold-index start: {d} files, {d} workers\n", .{ total_paths, num_workers });
-            var queue = WorkQueue{};
-            defer queue.deinit();
-            for (refiltered_paths.items) |p| {
-                _ = queue.push(.{ .path = p, .is_gem = false });
-            }
-            queue.markDone();
-
-            self.progress_done.store(0, .monotonic);
-            const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &queue };
-            var workers = std.ArrayList(std.Thread).empty;
-            defer workers.deinit(alloc);
-            var w: usize = 0;
-            while (w < num_workers) : (w += 1) {
-                const t = std.Thread.spawn(.{}, bgWorkerFn, .{wctx}) catch break;
-                workers.append(alloc, t) catch {
-                    t.detach();
-                    break;
-                };
-            }
-
-            // Progress poller: report progress while workers run. If we couldn't
-            // spawn any workers, drain the queue inline as a fallback.
-            if (workers.items.len > 0) {
-                var last_reported: usize = 0;
-                while (true) {
-                    const done_now = self.progress_done.load(.monotonic);
-                    if (done_now != last_reported) {
-                        const sample_path = if (done_now > 0 and done_now <= total_paths)
-                            refiltered_paths.items[done_now - 1]
-                        else if (refiltered_paths.items.len > 0)
-                            refiltered_paths.items[0]
-                        else
-                            "";
-                        progress_cb.report(progress_cb.ctx, done_now, total_paths, sample_path);
-                        last_reported = done_now;
-                    }
-                    if (done_now >= total_paths) break;
-                    if (self.server_ptr.bg_cancelled.load(.acquire)) break;
-                    var poll_ts: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
-                    _ = std.c.nanosleep(&poll_ts, null);
-                }
-                for (workers.items) |t| t.join();
-                const done_final = self.progress_done.load(.monotonic);
-                if (self.server_ptr.bg_cancelled.load(.acquire))
-                    std.debug.print("refract: cold-index CANCELLED at {d}/{d} files\n", .{ done_final, total_paths })
-                else
-                    std.debug.print("refract: cold-index complete: {d}/{d} files\n", .{ done_final, total_paths });
-            } else {
-                // Worker spawn failed entirely — fall back to serial reindex on the main thread.
-                self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-                indexer.reindex(db, refiltered_paths.items, false, alloc, self.server_ptr.max_file_size.load(.monotonic), progress_cb) catch |err| {
-                    var ebuf: [256]u8 = undefined;
-                    const emsg = std.fmt.bufPrint(&ebuf, "refract: indexing failed: {s}", .{@errorName(err)}) catch "refract: indexing failed";
-                    self.server_ptr.sendLogMessage(2, emsg);
-                };
-                self.server_ptr.db_mutex.unlock(std.Options.debug_io);
-            }
-        }
+        // Workspace cold-index via the shared parallel worker pool — per-file
+        // db_mutex so go-to-def/hover stay responsive while it runs.
+        self.indexPathsViaWorkers(refiltered_paths.items, false, true, "cold-index");
 
         // Push diagnostics only for currently-open documents
         {
@@ -1092,11 +1094,10 @@ const BgCtx = struct {
             defer alloc.free(gem_const_paths);
             for (gem_paths, 0..) |p, i| gem_const_paths[i] = p;
 
-            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-            indexer.reindex(db, gem_const_paths, true, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
-                std.debug.print("{s}", .{@errorName(e)});
-            };
-            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+            // Index gems via the shared worker pool (per-file db_mutex) so queries
+            // stay responsive — previously this held db_mutex for the whole reindex,
+            // blocking every go-to-def for seconds on gem-heavy repos.
+            self.indexPathsViaWorkers(gem_const_paths, true, true, "gem-index");
             {
                 var gbuf: [128]u8 = undefined;
                 const gmsg = std.fmt.bufPrint(&gbuf, "refract: indexing gems: {d} files", .{gem_const_paths.len}) catch "refract: indexing gems";
@@ -1119,11 +1120,7 @@ const BgCtx = struct {
                         const rbs_const = alloc.alloc([]const u8, rbs_coll_paths.len) catch break :gems;
                         defer alloc.free(rbs_const);
                         for (rbs_coll_paths, 0..) |p, i| rbs_const[i] = p;
-                        self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
-                        defer self.server_ptr.db_mutex.unlock(std.Options.debug_io);
-                        indexer.reindex(db, rbs_const, true, alloc, self.server_ptr.max_file_size.load(.monotonic), null) catch |e| {
-                            std.debug.print("{s}", .{@errorName(e)});
-                        };
+                        self.indexPathsViaWorkers(rbs_const, true, false, "rbs-collection");
                         var rbuf: [128]u8 = undefined;
                         const rmsg = std.fmt.bufPrint(&rbuf, "refract: indexed {d} RBS collection files", .{rbs_const.len}) catch "refract: indexed RBS collection";
                         self.server_ptr.sendLogMessage(3, rmsg);
