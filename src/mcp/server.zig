@@ -1,6 +1,8 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
 const refactor_mod = @import("../lsp/refactor.zig");
+const overlay = @import("../lsp/overlay.zig");
+const git_branch = @import("../lsp/git_branch.zig");
 const build_meta = @import("build_meta");
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -123,6 +125,19 @@ const ToolEntry = struct {
     schema: []const u8,
 };
 
+const schema_overlay_annotate =
+    \\{"type":"object","properties":{"op":{"type":"string","enum":["note","tag","concept","edge","override","suppress"],"description":"Overlay write kind"},"reason":{"type":"string","description":"Required justification (audited)"},"fqn":{"type":"string","description":"Target symbol 'Class#method' or 'Class' (note/tag/concept/override; or suppress target)"},"from":{"type":"string","description":"edge: source fqn"},"to":{"type":"string","description":"edge: target fqn"},"edge_kind":{"type":"string","description":"edge relation: depends_on|related_to|alias|overrides|custom (default related_to)"},"label":{"type":"string","description":"short label (concept/edge/tag)"},"content":{"type":"string","description":"note/comment body"},"method":{"type":"string","description":"override: method name (omit for class-level)"},"param_pos":{"type":"integer","description":"override: -1 return type, >=0 param index (default -1)"},"type":{"type":"string","description":"override: asserted type string"},"diag_code":{"type":"string","description":"suppress: diagnostic code"},"file":{"type":"string","description":"suppress: file path (alternative to fqn)"},"line":{"type":"integer","description":"suppress: optional line"},"source":{"type":"string","enum":["agent","user"],"description":"default agent (lower trust)"},"scope":{"type":"string","enum":["branch","global"],"description":"default branch (current git branch); global = all branches"}},"required":["op","reason"]}
+;
+const schema_overlay_list =
+    \\{"type":"object","properties":{"kind":{"type":"string","enum":["node","edge","type","suppress"],"description":"Overlay table to list"},"all_branches":{"type":"boolean","description":"include every branch (default false = current branch + global)"}},"required":["kind"]}
+;
+const schema_overlay_revert =
+    \\{"type":"object","properties":{"kind":{"type":"string","enum":["node","edge","type","suppress"],"description":"Overlay table"},"id":{"type":"integer","description":"overlay row id from overlay_list"},"reason":{"type":"string","description":"Required justification (audited)"}},"required":["kind","id","reason"]}
+;
+const schema_overlay_promote =
+    \\{"type":"object","properties":{"from_branch":{"type":"string","description":"branch to promote from (default current branch)"},"reason":{"type":"string","description":"Required justification (audited)"}},"required":["reason"]}
+;
+
 const TOOLS = [_]ToolEntry{
     .{ .name = "resolve_type", .description = "Resolve the inferred type of a local variable at a source position", .schema = schema_resolve_type },
     .{ .name = "class_summary", .description = "Get methods, constants, and mixins for a class or module", .schema = schema_class_summary },
@@ -163,6 +178,10 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "unused_association_chain", .description = "Find unused ActiveRecord associations", .schema = schema_unused_association_chain },
     .{ .name = "find_symbol", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
     .{ .name = "search_symbols", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
+    .{ .name = "overlay_annotate", .description = "Add a gated overlay tweak (note/tag/concept/edge/type-override/diagnostic-suppress) — branch-scoped, reversible, audited. The only writable graph surface; derived facts stay immutable", .schema = schema_overlay_annotate },
+    .{ .name = "overlay_list", .description = "List live overlay tweaks (node/edge/type/suppress) for the current project and branch (plus project-global)", .schema = schema_overlay_list },
+    .{ .name = "overlay_revert", .description = "Soft-delete (revert) an overlay tweak by id", .schema = schema_overlay_revert },
+    .{ .name = "overlay_promote", .description = "Promote branch-scoped overlay tweaks to project-global (visible on every branch and worktree)", .schema = schema_overlay_promote },
 };
 
 const MAX_REQUESTS_PER_SEC: u32 = 100;
@@ -397,10 +416,185 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "dependency_tree_resolver")) return self.toolDependencyTreeResolver(id, args);
         if (std.mem.eql(u8, name, "unused_association_chain")) return self.toolUnusedAssociationChain(id, args);
 
+        if (std.mem.eql(u8, name, "overlay_annotate")) return self.toolOverlayAnnotate(id, args);
+        if (std.mem.eql(u8, name, "overlay_list")) return self.toolOverlayList(id, args);
+        if (std.mem.eql(u8, name, "overlay_revert")) return self.toolOverlayRevert(id, args);
+        if (std.mem.eql(u8, name, "overlay_promote")) return self.toolOverlayPromote(id, args);
+
         // Aliases for common guesses — forward to canonical handlers.
         if (std.mem.eql(u8, name, "find_symbol") or std.mem.eql(u8, name, "search_symbols")) return self.toolWorkspaceSymbols(id, args);
 
         return self.buildError(id, -32601, "Unknown tool");
+    }
+
+    // ---- overlay (agent/user-writable graph layer) ----
+
+    const OverlayCtx = struct {
+        pid: []u8,
+        branch: ?[]u8,
+        alloc: std.mem.Allocator,
+        fn deinit(self: OverlayCtx) void {
+            self.alloc.free(self.pid);
+            if (self.branch) |b| self.alloc.free(b);
+        }
+    };
+
+    /// Resolve project identity + current git branch for the workspace.
+    fn overlayCtx(self: *Server) ?OverlayCtx {
+        const root = self.workspace_root orelse return null;
+        const pid = git_branch.projectId(self.alloc, root);
+        var branch: ?[]u8 = null;
+        if (git_branch.readHead(self.alloc, root)) |h| {
+            if (h.branch) |b| branch = self.alloc.dupe(u8, b) catch null;
+            h.deinit();
+        }
+        return .{ .pid = pid, .branch = branch, .alloc = self.alloc };
+    }
+
+    fn overlayTable(kind: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, kind, "node")) return "overlay_nodes";
+        if (std.mem.eql(u8, kind, "edge")) return "overlay_edges";
+        if (std.mem.eql(u8, kind, "type")) return "overlay_types";
+        if (std.mem.eql(u8, kind, "suppress")) return "overlay_suppress";
+        return null;
+    }
+
+    fn gateMsg(e: overlay.GateError) []const u8 {
+        return switch (e) {
+            overlay.GateError.ReasonRequired => "reason is required",
+            overlay.GateError.ReasonTooLong => "reason exceeds size cap",
+            overlay.GateError.PayloadTooLong => "payload exceeds size cap",
+            overlay.GateError.BadOp => "unknown op",
+            overlay.GateError.MissingTarget => "missing required target field",
+        };
+    }
+
+    fn nowUs() i64 {
+        return @intCast(@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds(), std.time.ns_per_us));
+    }
+
+    fn nowS() i64 {
+        return @intCast(@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds(), std.time.ns_per_s));
+    }
+
+    fn auditOverlay(self: *Server, tool: []const u8, fqn: ?[]const u8, result_kind: []const u8) void {
+        const stmt = self.db.prepare("INSERT INTO audit_log(ts_us,tool_name,result_kind,affected_fqn) VALUES(?,?,?,?)") catch return;
+        defer stmt.finalize();
+        stmt.bind_int(1, nowUs());
+        stmt.bind_text(2, tool);
+        stmt.bind_text(3, result_kind);
+        if (fqn) |f| stmt.bind_text(4, f) else stmt.bind_null(4);
+        _ = stmt.step() catch {};
+    }
+
+    fn overlayOk(self: *Server, id: ?std.json.Value, new_id: i64, eff_branch: ?[]const u8, is_user: bool) !?[]u8 {
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+        try w.print("{{\"ok\":true,\"id\":{d},\"branch\":", .{new_id});
+        if (eff_branch) |b| try writeJsonStr(w, b) else try w.writeAll("null");
+        try w.print(",\"source\":\"{s}\",\"confidence\":{d}}}", .{ if (is_user) "USER" else "AGENT", @as(i64, if (is_user) overlay.CONF_USER else overlay.CONF_AGENT) });
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolOverlayAnnotate(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const op_s = getStrArg(args, "op") orelse return self.buildToolError(id, "missing 'op'");
+        const op = overlay.parseOp(op_s) orelse return self.buildToolError(id, "unknown 'op'");
+        const reason = getStrArg(args, "reason") orelse return self.buildToolError(id, "missing 'reason'");
+        const ctx = self.overlayCtx() orelse return self.buildToolError(id, "no workspace/project identity");
+        defer ctx.deinit();
+        const scope = getStrArg(args, "scope") orelse "branch";
+        const eff_branch: ?[]const u8 = if (std.mem.eql(u8, scope, "global")) null else ctx.branch;
+        const is_user = if (getStrArg(args, "source")) |s| std.mem.eql(u8, s, "user") else false;
+        const now_s = nowS();
+
+        var new_id: ?i64 = null;
+        var affected: ?[]const u8 = null;
+        switch (op) {
+            .note, .tag, .concept => {
+                const fqn = getStrArg(args, "fqn") orelse return self.buildToolError(id, "missing 'fqn'");
+                affected = fqn;
+                new_id = overlay.addNode(self.db, ctx.pid, eff_branch, fqn, op_s, getStrArg(args, "label"), getStrArg(args, "content"), is_user, reason, now_s) catch |e| {
+                    self.auditOverlay("overlay_annotate", fqn, "error");
+                    return self.buildToolError(id, gateMsg(e));
+                };
+            },
+            .edge => {
+                const from = getStrArg(args, "from") orelse return self.buildToolError(id, "edge requires 'from'");
+                const to = getStrArg(args, "to") orelse return self.buildToolError(id, "edge requires 'to'");
+                affected = from;
+                new_id = overlay.addEdge(self.db, ctx.pid, eff_branch, from, to, getStrArg(args, "edge_kind") orelse "related_to", getStrArg(args, "label"), is_user, reason, now_s) catch |e| {
+                    self.auditOverlay("overlay_annotate", from, "error");
+                    return self.buildToolError(id, gateMsg(e));
+                };
+            },
+            .override => {
+                const fqn = getStrArg(args, "fqn") orelse return self.buildToolError(id, "override requires 'fqn'");
+                const type_str = getStrArg(args, "type") orelse return self.buildToolError(id, "override requires 'type'");
+                affected = fqn;
+                new_id = overlay.addType(self.db, ctx.pid, eff_branch, fqn, getStrArg(args, "method"), getIntArg(args, "param_pos") orelse -1, type_str, is_user, reason, now_s) catch |e| {
+                    self.auditOverlay("overlay_annotate", fqn, "error");
+                    return self.buildToolError(id, gateMsg(e));
+                };
+            },
+            .suppress => {
+                const diag_code = getStrArg(args, "diag_code") orelse return self.buildToolError(id, "suppress requires 'diag_code'");
+                const fqn = getStrArg(args, "fqn");
+                const file = getStrArg(args, "file");
+                affected = fqn orelse file;
+                new_id = overlay.addSuppress(self.db, ctx.pid, eff_branch, fqn, file, diag_code, getIntArg(args, "line"), is_user, reason, now_s) catch |e| {
+                    self.auditOverlay("overlay_annotate", affected, "error");
+                    return self.buildToolError(id, gateMsg(e));
+                };
+            },
+        }
+        const nid = new_id orelse return self.buildToolError(id, "overlay write failed");
+        self.auditOverlay("overlay_annotate", affected, "ok");
+        return self.overlayOk(id, nid, eff_branch, is_user);
+    }
+
+    fn toolOverlayList(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const kind = getStrArg(args, "kind") orelse return self.buildToolError(id, "missing 'kind'");
+        const table = overlayTable(kind) orelse return self.buildToolError(id, "unknown 'kind'");
+        const ctx = self.overlayCtx() orelse return self.buildToolError(id, "no workspace/project identity");
+        defer ctx.deinit();
+        const all = if (args) |m| (if (m.get("all_branches")) |v| (v == .bool and v.bool) else false) else false;
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        overlay.listJson(self.db, self.alloc, &aw.writer, ctx.pid, table, ctx.branch, all);
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolOverlayRevert(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const kind = getStrArg(args, "kind") orelse return self.buildToolError(id, "missing 'kind'");
+        const table = overlayTable(kind) orelse return self.buildToolError(id, "unknown 'kind'");
+        const row_id = getIntArg(args, "id") orelse return self.buildToolError(id, "missing 'id'");
+        const reason = getStrArg(args, "reason") orelse return self.buildToolError(id, "missing 'reason'");
+        if (std.mem.trim(u8, reason, " \t\r\n").len == 0) return self.buildToolError(id, "reason is required");
+        const ok = overlay.revoke(self.db, self.alloc, table, row_id, nowS());
+        self.auditOverlay("overlay_revert", null, if (ok) "ok" else "error");
+        if (!ok) return self.buildToolError(id, "no live overlay row with that id");
+        return self.buildToolResult(id, "{\"ok\":true,\"reverted\":true}");
+    }
+
+    fn toolOverlayPromote(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const reason = getStrArg(args, "reason") orelse return self.buildToolError(id, "missing 'reason'");
+        if (std.mem.trim(u8, reason, " \t\r\n").len == 0) return self.buildToolError(id, "reason is required");
+        const ctx = self.overlayCtx() orelse return self.buildToolError(id, "no workspace/project identity");
+        defer ctx.deinit();
+        const from_branch = getStrArg(args, "from_branch") orelse (ctx.branch orelse return self.buildToolError(id, "detached HEAD — pass 'from_branch'"));
+        const n = overlay.promote(self.db, self.alloc, ctx.pid, from_branch, nowS());
+        self.auditOverlay("overlay_promote", null, "ok");
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        try aw.writer.print("{{\"ok\":true,\"promoted\":{d}}}", .{n});
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
     }
 
     fn toolResolveType(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
@@ -672,6 +866,15 @@ pub const Server = struct {
         const line = sym_stmt.column_int(3);
         const vis = sym_stmt.column_text(4);
 
+        // Overlay correction: a user/agent type-override on this method's return
+        // type supersedes the derived value. Keyed by the qualified "Class#method".
+        const ctx = self.overlayCtx();
+        defer if (ctx) |c| c.deinit();
+        const qualified = std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name }) catch "";
+        defer if (qualified.len > 0) self.alloc.free(qualified);
+        const ov_ret: ?[]u8 = if (ctx) |c| overlay.effectiveType(self.db, self.alloc, c.pid, c.branch, qualified, null, -1) else null;
+        defer if (ov_ret) |o| self.alloc.free(o);
+
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
@@ -682,7 +885,10 @@ pub const Server = struct {
         try w.print(",\"line\":{d},\"visibility\":", .{line});
         try writeJsonStr(w, vis);
         try w.writeAll(",\"return_type\":");
-        if (ret_type.len > 0) try writeJsonStr(w, ret_type) else try w.writeAll("null");
+        if (ov_ret) |o| {
+            try writeJsonStr(w, o);
+            try w.writeAll(",\"return_type_source\":\"overlay\"");
+        } else if (ret_type.len > 0) try writeJsonStr(w, ret_type) else try w.writeAll("null");
         try w.writeAll(",\"doc\":");
         if (doc.len > 0) try writeJsonStr(w, doc) else try w.writeAll("null");
         try w.writeAll(",\"params\":[");
@@ -1163,6 +1369,10 @@ pub const Server = struct {
         var offset = getIntArg(args, "offset") orelse 0;
         if (offset < 0) offset = 0;
 
+        // Overlay correction: drop diagnostics matched by a live suppression rule.
+        const ctx = self.overlayCtx();
+        defer if (ctx) |c| c.deinit();
+
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
@@ -1173,7 +1383,7 @@ pub const Server = struct {
             try w.writeAll(",\"errors\":[");
 
             const dstmt = self.db.prepare(
-                \\SELECT d.line, d.col, d.message, d.severity
+                \\SELECT d.line, d.col, d.message, d.severity, d.code
                 \\FROM diagnostics d JOIN files f ON f.id = d.file_id
                 \\WHERE f.path = ?
                 \\ORDER BY d.line
@@ -1189,9 +1399,13 @@ pub const Server = struct {
 
             var first_d = true;
             while (dstmt.step() catch |e| stepLog(e)) {
+                const dline = dstmt.column_int(0);
+                if (ctx) |c| {
+                    if (overlay.isSuppressed(self.db, c.pid, c.branch, dstmt.column_text(4), fpath, dline, null)) continue;
+                }
                 if (!first_d) try w.writeByte(',');
                 first_d = false;
-                try w.print("{{\"line\":{d},\"col\":{d},\"message\":", .{ dstmt.column_int(0), dstmt.column_int(1) });
+                try w.print("{{\"line\":{d},\"col\":{d},\"message\":", .{ dline, dstmt.column_int(1) });
                 try writeJsonStr(w, dstmt.column_text(2));
                 try w.print(",\"severity\":{d}}}", .{dstmt.column_int(3)});
             }
@@ -1199,7 +1413,7 @@ pub const Server = struct {
         } else {
             // Return workspace-level diagnostics from DB
             const wstmt = self.db.prepare(
-                \\SELECT f.path, d.line, d.col, d.message, d.severity
+                \\SELECT f.path, d.line, d.col, d.message, d.severity, d.code
                 \\FROM diagnostics d JOIN files f ON f.id = d.file_id
                 \\WHERE f.is_gem = 0
                 \\ORDER BY f.path, d.line
@@ -1223,6 +1437,9 @@ pub const Server = struct {
                 row_count += 1;
                 const rpath = wstmt.column_text(0);
                 const rline = wstmt.column_int(1);
+                if (ctx) |c| {
+                    if (overlay.isSuppressed(self.db, c.pid, c.branch, wstmt.column_text(5), rpath, rline, null)) continue;
+                }
                 const rcol = wstmt.column_int(2);
                 const rmsg = wstmt.column_text(3);
                 const rsev = wstmt.column_int(4);
@@ -2481,8 +2698,18 @@ pub const Server = struct {
             def_file = sym_stmt.column_text(2);
             def_line = sym_stmt.column_int(3);
             const yard = sym_stmt.column_text(4);
+            // Overlay correction: type-override on this method's return type wins.
+            const ctx = self.overlayCtx();
+            defer if (ctx) |c| c.deinit();
+            const qualified = std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name }) catch "";
+            defer if (qualified.len > 0) self.alloc.free(qualified);
+            const ov_ret: ?[]u8 = if (ctx) |c| overlay.effectiveType(self.db, self.alloc, c.pid, c.branch, qualified, null, -1) else null;
+            defer if (ov_ret) |o| self.alloc.free(o);
             try w.writeAll(",\"found\":true,\"return_type\":");
-            if (ret.len > 0) try writeJsonStr(w, ret) else try w.writeAll("null");
+            if (ov_ret) |o| {
+                try writeJsonStr(w, o);
+                try w.writeAll(",\"return_type_source\":\"overlay\"");
+            } else if (ret.len > 0) try writeJsonStr(w, ret) else try w.writeAll("null");
             try w.writeAll(",\"visibility\":");
             try writeJsonStr(w, vis);
             try w.writeAll(",\"defined_at\":{\"file\":");

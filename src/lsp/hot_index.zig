@@ -11,6 +11,8 @@ pub const SymbolKind = enum(u8) {
     scope,
     validation,
     callback,
+    test_desc,
+    namespace_label,
     other,
 
     pub fn fromText(s: []const u8) SymbolKind {
@@ -25,6 +27,14 @@ pub const SymbolKind = enum(u8) {
         if (std.mem.eql(u8, s, "scope")) return .scope;
         if (std.mem.eql(u8, s, "validation")) return .validation;
         if (std.mem.eql(u8, s, "callback")) return .callback;
+        // RSpec example descriptions (`describe "new"`, `it "works"`) carry the
+        // prose string as their name. They are never a valid go-to-def target for
+        // a code identifier, so they get their own kind to be excluded from
+        // definition resolution while staying available to document-outline.
+        if (std.mem.eql(u8, s, "test")) return .test_desc;
+        // Routing/grouping labels (namespace/resource/resources) — navigable via
+        // workspace-symbol/outline but excluded from identifier go-to-def.
+        if (std.mem.eql(u8, s, "namespace")) return .namespace_label;
         return .other;
     }
 

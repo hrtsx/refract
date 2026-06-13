@@ -2942,8 +2942,7 @@ test "P34 T34.3 wrong-arity flags too few args on a self-send" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     // triple takes 3 required params; the receiverless call triple(1, 2) inside #run is a
     // self-send (refs.kind='self_call', receiver_type NULL) and must be flagged too-few.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_arity.rb", .data =
-        "class Calc\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_arity.rb", .data = "class Calc\n" ++
         "  def triple(a, b, c); a + b + c; end\n" ++
         "  def run; triple(1, 2); end\n" ++
         "end\n" });
@@ -2972,8 +2971,7 @@ test "P34 T34.4 undefined-method flags an unknown self-send" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     // missing_helper is never defined and the class has no dynamic signals, so the
     // receiverless call must be flagged even without a close "did you mean?" suggestion.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_undef.rb", .data =
-        "class Calc\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/self_undef.rb", .data = "class Calc\n" ++
         "  def run; missing_helper(3); end\n" ++
         "end\n" });
     var s = try Session.init(alloc);
@@ -3004,8 +3002,7 @@ test "P34 T34.5 undefined-method suggestion is valid UTF-8 (no freed-slice garba
     // The undefined name `calculat` is a substring of all three real defs (so the
     // LIKE-based candidate query returns multiple rows) and within edit distance 2 of
     // each, forcing the best-candidate loop to step past the chosen row.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/sugg.rb", .data =
-        "class Calc\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/sugg.rb", .data = "class Calc\n" ++
         "  def calculate; end\n" ++
         "  def calculated; end\n" ++
         "  def calculates; end\n" ++
@@ -3039,8 +3036,7 @@ test "P34 T34.6 self-send into an unindexed-base method is not flagged" {
     // Cop < ExternalBase: the base is outside the workspace, so its methods are
     // invisible. A receiverless call must NOT be flagged (the ancestry is not
     // provably closed) — this was the RuboCop-cop false positive on Homebrew.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/cop.rb", .data =
-        "class Cop < ExternalBase\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/cop.rb", .data = "class Cop < ExternalBase\n" ++
         "  def run; offending_node(1); end\n" ++
         "end\n" });
     var s = try Session.init(alloc);
@@ -3065,8 +3061,7 @@ test "P34 T34.7 Sorbet sig DSL is not flagged as undefined" {
     try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     // `sig { ... }` and its chained returns/void are sorbet-runtime DSL, not undefined.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/typed.rb", .data =
-        "class Calc\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/typed.rb", .data = "class Calc\n" ++
         "  sig { returns(Integer) }\n" ++
         "  def answer; 42; end\n" ++
         "end\n" });
@@ -3096,8 +3091,7 @@ test "P34 T34.8 bare self-send inside a module is not flagged (concern pattern)"
     // A module is mixed into unknown hosts at runtime (Rails concern). A
     // receiverless call to a method provided by a sibling concern / the host must
     // NOT be flagged — this was the Solidus `permitted_address_attributes` FP.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/concern.rb", .data =
-        "module StrongParams\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/concern.rb", .data = "module StrongParams\n" ++
         "  def permitted_payment; {address: permitted_address}; end\n" ++
         "end\n" });
     var s = try Session.init(alloc);
@@ -3123,8 +3117,7 @@ test "P34 T34.9 RSpec before(:each) does not synthesize a duplicate 'each' metho
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     // Two `before(:each)` hooks previously each recorded a phantom def `each`,
     // tripping duplicate-method. The timing symbol is not a method name.
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/spec.rb", .data =
-        "describe Thing do\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/spec.rb", .data = "describe Thing do\n" ++
         "  before(:each) { setup_a }\n" ++
         "  before(:each) { setup_b }\n" ++
         "end\n" });
@@ -3152,8 +3145,7 @@ test "P34 T34.10 delegate of a name the class also defines is not a duplicate" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
     // `delegate :currency` synthesizes a def; a real `def currency` override must
     // not collide with it (Solidus Payment FP).
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/payment.rb", .data =
-        "class Payment\n" ++
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/payment.rb", .data = "class Payment\n" ++
         "  delegate :currency, to: :order\n" ++
         "  def currency; super || 'USD'; end\n" ++
         "end\n" });

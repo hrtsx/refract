@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 11;
+pub const CURRENT_SCHEMA: u32 = 12;
 
 pub const DbError = error{
     Open,
@@ -678,6 +678,91 @@ pub const Db = struct {
         );
         self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_state_unique ON plugin_state(plugin_id, key)") catch {};
 
+        // Schema v12: agent/user-writable OVERLAY layer. The only mutable graph
+        // surface — derived tables stay source-immutable. Rows reference derived
+        // symbols by fqn string (stable across reindex), never by symbols.id.
+        // Keyed by (project_id, branch): branch IS NULL = project-global. History
+        // model — no UNIQUE; reads take MAX(created_at) WHERE revoked_at IS NULL,
+        // revert soft-deletes by setting revoked_at. Every row carries source
+        // ('AGENT'|'USER'), confidence, and a required reason for audit.
+        // NOTE: overlay_* are deliberately absent from the needs_reset DROP list
+        // above — a newer-db/older-binary downgrade must never destroy tweaks.
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS overlay_nodes (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  project_id  TEXT NOT NULL,
+            \\  branch      TEXT,
+            \\  fqn         TEXT NOT NULL,
+            \\  kind        TEXT NOT NULL,
+            \\  label       TEXT,
+            \\  content     TEXT,
+            \\  source      TEXT NOT NULL,
+            \\  confidence  INTEGER NOT NULL DEFAULT 100,
+            \\  reason      TEXT NOT NULL,
+            \\  created_at  INTEGER NOT NULL,
+            \\  revoked_at  INTEGER
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_nodes_scope ON overlay_nodes(project_id, branch)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_nodes_fqn ON overlay_nodes(fqn)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS overlay_edges (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  project_id  TEXT NOT NULL,
+            \\  branch      TEXT,
+            \\  from_fqn    TEXT NOT NULL,
+            \\  to_fqn      TEXT NOT NULL,
+            \\  kind        TEXT NOT NULL,
+            \\  label       TEXT,
+            \\  source      TEXT NOT NULL,
+            \\  confidence  INTEGER NOT NULL DEFAULT 100,
+            \\  reason      TEXT NOT NULL,
+            \\  created_at  INTEGER NOT NULL,
+            \\  revoked_at  INTEGER
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_edges_scope ON overlay_edges(project_id, branch)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_edges_from ON overlay_edges(from_fqn)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_edges_to ON overlay_edges(to_fqn)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS overlay_types (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  project_id  TEXT NOT NULL,
+            \\  branch      TEXT,
+            \\  fqn         TEXT NOT NULL,
+            \\  method_name TEXT,
+            \\  param_pos   INTEGER NOT NULL DEFAULT -1,
+            \\  type_str    TEXT NOT NULL,
+            \\  source      TEXT NOT NULL,
+            \\  confidence  INTEGER NOT NULL DEFAULT 100,
+            \\  reason      TEXT NOT NULL,
+            \\  created_at  INTEGER NOT NULL,
+            \\  revoked_at  INTEGER
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_types_scope ON overlay_types(project_id, branch)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_types_lookup ON overlay_types(project_id, fqn, method_name, param_pos)") catch {};
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS overlay_suppress (
+            \\  id          INTEGER PRIMARY KEY,
+            \\  project_id  TEXT NOT NULL,
+            \\  branch      TEXT,
+            \\  fqn         TEXT,
+            \\  file_path   TEXT,
+            \\  diag_code   TEXT NOT NULL,
+            \\  line        INTEGER,
+            \\  source      TEXT NOT NULL,
+            \\  confidence  INTEGER NOT NULL DEFAULT 100,
+            \\  reason      TEXT NOT NULL,
+            \\  created_at  INTEGER NOT NULL,
+            \\  revoked_at  INTEGER
+            \\)
+        );
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_suppress_scope ON overlay_suppress(project_id, branch)") catch {};
+        self.exec("CREATE INDEX IF NOT EXISTS idx_overlay_suppress_diag ON overlay_suppress(diag_code)") catch {};
+        // Overlay-write audit trail: which fqn a tool call mutated.
+        self.execMigration("ALTER TABLE audit_log ADD COLUMN affected_fqn TEXT");
+
         // Wave-3 unified type-resolution view. Merges sorbet_results,
         // steep_results, and type_oracle behind a single relation tagged with
         // `source` and `confidence`. The reader queries this view instead of
@@ -717,7 +802,7 @@ pub const Db = struct {
 
         // Schema v9: refs.kind distinguishes self-sends ('self_call') from
         // explicit-receiver calls ('call'), enabling self-send arity/undefined checks.
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','11')");
+        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','12')");
         const final_ver = self.getSchemaVersion() orelse 0;
         if (final_ver != @as(i64, CURRENT_SCHEMA)) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});
@@ -745,6 +830,10 @@ pub const Db = struct {
 
     pub fn runVacuum(self: Db) void {
         _ = self.exec("PRAGMA incremental_vacuum(64)") catch {}; // maintenance
+    }
+
+    pub fn changes(self: Db) i64 {
+        return c.sqlite3_changes(self.raw);
     }
 
     fn execMigration(self: Db, sql: [*:0]const u8) void {

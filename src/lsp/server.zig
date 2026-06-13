@@ -23,6 +23,7 @@ const editing = @import("editing.zig");
 const rename = @import("rename.zig");
 const hot_index_mod = @import("hot_index.zig");
 const workspace_config = @import("workspace_config.zig");
+const git_branch = @import("git_branch.zig");
 const handler_registry = @import("handler_registry.zig");
 const observability = @import("observability.zig");
 const plugin_host = @import("plugin_host.zig");
@@ -298,6 +299,14 @@ fn preRenderHotDef(self: *Server, hot: *hot_index_mod.HotIndex) !void {
         var def_count: u32 = 0;
         for (syms) |s| {
             if (s.kind != .def and s.kind != .classdef and s.kind != .class_ and s.kind != .module) continue;
+            // Mirror the go-to-def exclusion: a routing-DSL `def` synthesized in a
+            // Rails routes file is not a real method definition (it lives in the
+            // routes table). Pre-rendering it here would bypass the resolver's
+            // filter for unambiguous names and wrong-jump `recv.<name>`.
+            if (s.kind == .def) {
+                const sp = hot.pathFor(s.file_id) orelse continue;
+                if (navigation.isRailsRoutesFile(sp)) continue;
+            }
             picked = s;
             def_count += 1;
         }
@@ -658,6 +667,9 @@ pub fn flushWorkerFn(server: *Server) void {
         }
         if (server.flush_thread_done.load(.acquire) or server.bg_cancelled.load(.acquire)) break;
         server.flushDirtyUrisDebounced();
+        // ~1s debounce (13 × 75ms): cheap HEAD stat → reconcile on branch switch.
+        server.git_check_tick +%= 1;
+        if (server.git_check_tick % 13 == 0) server.maybeReconcileBranch();
     }
 }
 
@@ -730,8 +742,8 @@ pub fn rubocopWorkerFn(server: *Server) void {
         writeEscapedJson(w, uri) catch continue;
         w.writeAll(",\"diagnostics\":[") catch continue;
         var first = true;
-        diagnostics_mod.writeDiagItems(server, w, prism_diags, diag_source, &first);
-        diagnostics_mod.writeDiagItems(server, w, rubocop_diags, diag_source, &first);
+        diagnostics_mod.writeDiagItems(server, w, prism_diags, diag_source, &first, path);
+        diagnostics_mod.writeDiagItems(server, w, rubocop_diags, diag_source, &first, path);
         w.writeAll("]}}") catch continue;
         const json = aw.toOwnedSlice() catch continue;
         defer server.alloc.free(json);
@@ -1422,6 +1434,13 @@ pub const Server = struct {
     rubocop_mtime_mu: std.Io.Mutex = std.Io.Mutex.init,
     flush_thread: ?std.Thread = null,
     flush_thread_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Branch-accuracy: last-seen git (branch,commit) token + the HEAD file path
+    // we stat each flush tick. On change the flush worker re-kicks the bg
+    // indexer, whose scan + cleanupStale reconciles the graph to the checkout.
+    git_head_token: ?[]u8 = null,
+    git_head_path: ?[]u8 = null,
+    git_head_mtime: i64 = 0,
+    git_check_tick: u32 = 0,
     env_keys_cache: std.ArrayListUnmanaged([]u8) = .empty,
     env_keys_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     env_keys_mu: std.Io.Mutex = std.Io.Mutex.init,
@@ -1552,6 +1571,14 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        if (self.git_head_token) |t| {
+            self.alloc.free(t);
+            self.git_head_token = null;
+        }
+        if (self.git_head_path) |p| {
+            self.alloc.free(p);
+            self.git_head_path = null;
+        }
         if (self.sorbet_worker_handle) |w| {
             w.requestStop();
             if (self.sorbet_worker_thread) |t| {
@@ -1688,6 +1715,66 @@ pub const Server = struct {
             ctx.run();
             break :blk null;
         };
+    }
+
+    fn setMetaStr(self: *Server, key: []const u8, val: []const u8) void {
+        const stmt = self.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)") catch return;
+        defer stmt.finalize();
+        stmt.bind_text(1, key);
+        stmt.bind_text(2, val);
+        _ = stmt.step() catch {};
+    }
+
+    /// Read git HEAD, persist (branch, commit, project_id) into meta, and cache
+    /// the token + HEAD stat path on the server. Call after each (re)index so
+    /// the flush worker has a baseline to compare against. No-op outside a repo.
+    pub fn recordGitHead(self: *Server) void {
+        const root = self.root_path orelse return;
+        const head = git_branch.readHead(self.alloc, root) orelse return;
+        defer head.deinit();
+        const token = std.fmt.allocPrint(self.alloc, "{s}\x1f{s}", .{ head.branch orelse "(detached)", head.commit }) catch return;
+
+        self.db_mutex.lockUncancelable(self.io);
+        self.setMetaStr("git_branch", head.branch orelse "(detached)");
+        self.setMetaStr("git_commit", head.commit);
+        const pid = git_branch.projectId(self.alloc, root);
+        defer self.alloc.free(pid);
+        self.setMetaStr("project_id", pid);
+        self.db_mutex.unlock(self.io);
+
+        if (self.git_head_token) |old| self.alloc.free(old);
+        self.git_head_token = token;
+        if (self.git_head_path == null) self.git_head_path = git_branch.headStatPath(self.alloc, root);
+        if (self.git_head_path) |p| {
+            if (std.Io.Dir.cwd().statFile(self.io, p, .{})) |st| {
+                self.git_head_mtime = st.mtime.toMilliseconds();
+            } else |_| {}
+        }
+    }
+
+    /// Cheap per-tick check from the flush worker: stat HEAD; on mtime change,
+    /// re-read the (branch, commit) token; if it differs, re-kick the bg indexer
+    /// to reconcile the derived graph to the new checkout before serving.
+    pub fn maybeReconcileBranch(self: *Server) void {
+        const path = self.git_head_path orelse return;
+        const st = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
+        const m = st.mtime.toMilliseconds();
+        if (m == self.git_head_mtime) return;
+        self.git_head_mtime = m;
+
+        const root = self.root_path orelse return;
+        const token = git_branch.readToken(self.alloc, root) orelse return;
+        const changed = if (self.git_head_token) |old| !std.mem.eql(u8, old, token) else true;
+        if (!changed) {
+            self.alloc.free(token);
+            return;
+        }
+        self.alloc.free(token);
+        self.sendLogMessage(3, "refract: git HEAD changed — reconciling index to current checkout");
+        // startBgIndexer cancels+rejoins any running pass, then re-scans and
+        // runs cleanupStale; recordGitHead refreshes the baseline token+meta.
+        self.startBgIndexer();
+        self.recordGitHead();
     }
 
     pub fn startWarmupIndexer(self: *Server) void {
@@ -1851,6 +1938,7 @@ pub const Server = struct {
                 );
             }
             self.startBgIndexer();
+            self.recordGitHead();
             if (self.rubocop_thread == null) {
                 self.rubocop_thread = std.Thread.spawn(.{}, rubocopWorkerFn, .{self}) catch null;
             }
@@ -3021,18 +3109,23 @@ pub const Server = struct {
     }
 };
 
-pub fn computeDbPath(alloc: std.mem.Allocator, root_path: []const u8) ![]u8 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(root_path);
-    const hash = hasher.final();
-
+/// Directory holding all per-project databases. Caller owns the result.
+pub fn computeDataDir(alloc: std.mem.Allocator) ![]u8 {
     const home: []const u8 = if (std.c.getenv("HOME")) |p| std.mem.span(p) else "/tmp";
-    const data_dir = if (std.c.getenv("XDG_DATA_HOME")) |xdg|
+    return if (std.c.getenv("XDG_DATA_HOME")) |xdg|
         try std.fmt.allocPrint(alloc, "{s}/refract", .{std.mem.span(xdg)})
     else if (builtin.os.tag == .macos)
         try std.fmt.allocPrint(alloc, "{s}/Library/Application Support/refract", .{home})
     else
         try std.fmt.allocPrint(alloc, "{s}/.local/share/refract", .{home});
+}
+
+pub fn computeDbPath(alloc: std.mem.Allocator, root_path: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(root_path);
+    const hash = hasher.final();
+
+    const data_dir = try computeDataDir(alloc);
     defer alloc.free(data_dir);
 
     std.Io.Dir.cwd().createDirPath(std.Options.debug_io, data_dir) catch |e| switch (e) {

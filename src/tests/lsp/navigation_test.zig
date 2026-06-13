@@ -4270,3 +4270,257 @@ test "parallel reindex computes correct symbol and ref counts" {
 
     try std.testing.expect(arr.items.len >= 3);
 }
+
+test "thread_mattr_accessor synthesizes reader and writer" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_thread_mattr";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/t.rb", .data = "class MyClass\n  thread_mattr_accessor :current_tenant\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/t.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Both the reader `current_tenant` and writer `current_tenant=` must exist.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"current_tenant\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // reader + writer = 2 symbols named current_tenant / current_tenant=
+    var saw_reader = false;
+    var saw_writer = false;
+    for (arr.items) |it| {
+        const io = switch (it) {
+            .object => |o| o,
+            else => continue,
+        };
+        const nm = switch (io.get("name") orelse continue) {
+            .string => |str| str,
+            else => continue,
+        };
+        if (std.mem.eql(u8, nm, "current_tenant")) saw_reader = true;
+        if (std.mem.eql(u8, nm, "current_tenant=")) saw_writer = true;
+    }
+    try std.testing.expect(saw_reader);
+    try std.testing.expect(saw_writer);
+}
+
+test "go-to-def prefers a real def over an RSpec describe-string of the same name" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_describe_precision";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws ++ "/spec", .default_dir) catch {};
+
+    // Real method `build` in lib/widget.rb.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/widget.rb",
+        .data = "class Widget\n  def build\n    42\n  end\nend\n",
+    });
+    // A spec whose `describe \"build\"` prose string collides with the method name,
+    // and which then CALLS `widget.build`. Go-to-def on the call must land on the
+    // real def in widget.rb, NOT on the same-file `describe \"build\"` prose line.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/spec/widget_spec.rb",
+        .data = "describe \"build\" do\n  it \"works\" do\n    widget.build\n  end\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/widget.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/spec/widget_spec.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Cursor on `build` in `widget.build` (line 2, char 11) inside the spec file.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/spec/widget_spec.rb\"},\"position\":{\"line\":2,\"character\":11}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const resp = getResponseById(responses, 2) orelse return error.NoDefResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // The real def must be found, and the describe-string prose line must NEVER
+    // be among the results. Other benign results (e.g. a bundled-RBS `build`) may
+    // appear depending on index timing, so check the two properties, not "all".
+    var saw_def = false;
+    var saw_prose = false;
+    for (arr.items) |it| {
+        const io = switch (it) {
+            .object => |o| o,
+            else => continue,
+        };
+        const uri = switch (io.get("uri") orelse io.get("targetUri") orelse continue) {
+            .string => |str| str,
+            else => continue,
+        };
+        if (std.mem.indexOf(u8, uri, "widget.rb") != null) saw_def = true;
+        if (std.mem.indexOf(u8, uri, "widget_spec.rb") != null) saw_prose = true;
+    }
+    try std.testing.expect(saw_def);
+    try std.testing.expect(!saw_prose);
+}
+
+test "go-to-def prefers a real def over a Rake task label of the same name" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_rake_task_precision";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    // Real method `seed` in seeder.rb.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/seeder.rb",
+        .data = "class Seeder\n  def seed\n    42\n  end\nend\n",
+    });
+    // A Rakefile whose `task :seed` label collides with the method name and then
+    // calls `seeder.seed`. Go-to-def on the call must land on the real def, not
+    // the Rake task label.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/Rakefile",
+        .data = "task :seed do\n  seeder.seed\nend\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/seeder.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/Rakefile\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Cursor on `seed` in `seeder.seed` (line 1, char 9) inside the Rakefile.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/Rakefile\"},\"position\":{\"line\":1,\"character\":11}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const resp = getResponseById(responses, 2) orelse return error.NoDefResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // The real def must be found, and the Rake `task :seed` label line must NEVER
+    // be among the results. Benign extra results (e.g. a bundled-RBS `seed`) may
+    // appear depending on index timing, so check the two properties, not "all".
+    var saw_def = false;
+    var saw_label = false;
+    for (arr.items) |it| {
+        const io = switch (it) {
+            .object => |o| o,
+            else => continue,
+        };
+        const uri = switch (io.get("uri") orelse io.get("targetUri") orelse continue) {
+            .string => |str| str,
+            else => continue,
+        };
+        if (std.mem.indexOf(u8, uri, "seeder.rb") != null) saw_def = true;
+        if (std.mem.indexOf(u8, uri, "Rakefile") != null) saw_label = true;
+    }
+    try std.testing.expect(saw_def);
+    try std.testing.expect(!saw_label);
+}
+
+test "go-to-def does not case-fold a lowercase probe onto a constant" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_casefold_probe";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    // A qualified constant `Outer::Inner::RB`.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/rbs.rb",
+        .data = "module Outer\n  module Inner\n    class RB\n    end\n  end\nend\n",
+    });
+    // A lowercase `rb` identifier in another file — no real `def rb` exists, so
+    // go-to-def falls to the qualified-suffix fallback, which must NOT match the
+    // case-folded constant `::RB`.
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/caller.rb",
+        .data = "puts rb\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/rbs.rb\",\"type\":1},{\"uri\":\"file://" ++ ws ++ "/caller.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    // Cursor on `rb` in `puts rb` (line 0, char 5).
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/caller.rb\"},\"position\":{\"line\":0,\"character\":5}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const resp = getResponseById(responses, 2) orelse return error.NoDefResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // The only `RB`-ish symbol is the case-folded constant; it must be rejected.
+    for (arr.items) |it| {
+        const io = switch (it) {
+            .object => |o| o,
+            else => continue,
+        };
+        const uri = switch (io.get("uri") orelse io.get("targetUri") orelse continue) {
+            .string => |str| str,
+            else => continue,
+        };
+        try std.testing.expect(std.mem.indexOf(u8, uri, "rbs.rb") == null);
+    }
+}
