@@ -449,6 +449,7 @@ pub const Db = struct {
         self.execMigration("ALTER TABLE symbols ADD COLUMN parent_name TEXT"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_name)") catch {}; // migration guard: index already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_refs_scope ON refs(scope_id)") catch {}; // migration guard: scope_id column may be absent on older schemas
+        self.exec("CREATE INDEX IF NOT EXISTS idx_refs_name_scope ON refs(name, scope_id)") catch {}; // cross-file references-by-scope (navigation.zig: WHERE name=? AND scope_id=?)
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_scope ON local_vars(scope_id)") catch {}; // migration guard: scope_id column may be absent on older schemas
         self.execMigration("ALTER TABLE symbols ADD COLUMN end_line INTEGER DEFAULT NULL"); // migration guard: column already exists on migrated schemas
         self.execMigration("ALTER TABLE symbols ADD COLUMN visibility TEXT DEFAULT 'public'"); // migration guard: column already exists on migrated schemas

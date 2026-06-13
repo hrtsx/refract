@@ -225,6 +225,73 @@ pub fn findRbsCollectionPaths(root_path: []const u8, alloc: std.mem.Allocator) !
     return &.{};
 }
 
+// Minimal `.bundle/config` reader: returns the BUNDLE_PATH value if set. The file is
+// YAML-ish (`BUNDLE_PATH: "vendor/bundle"`). Caller owns the returned slice.
+fn bundlePathFromConfig(root_path: []const u8, alloc: std.mem.Allocator) ?[]u8 {
+    const cfg_path = std.fmt.allocPrint(alloc, "{s}/.bundle/config", .{root_path}) catch return null;
+    defer alloc.free(cfg_path);
+    const content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, cfg_path, alloc, std.Io.Limit.limited(64 * 1024)) catch return null;
+    defer alloc.free(content);
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "BUNDLE_PATH:")) {
+            const v = std.mem.trim(u8, t["BUNDLE_PATH:".len..], " \t\"'");
+            if (v.len > 0) return alloc.dupe(u8, v) catch null;
+        }
+    }
+    return null;
+}
+
+// Filesystem fallback for gem discovery: when `bundle exec` / plain ruby yield no gem
+// paths (no ruby, broken bundle, offline CI), scan the on-disk bundler install layout
+// directly. Covers the common `bundle install --path vendor/bundle` shape:
+//   <base>/ruby/<ver>/gems/<gem>/lib
+//   <base>/ruby/<ver>/bundler/gems/<gem>/lib
+// where <base> is the .bundle/config BUNDLE_PATH override or `vendor/bundle`.
+fn scanVendorBundle(root_path: []const u8, alloc: std.mem.Allocator) ![][]u8 {
+    var out = std.ArrayList([]u8).empty;
+    errdefer {
+        for (out.items) |p| alloc.free(p);
+        out.deinit(alloc);
+    }
+
+    const base_rel = bundlePathFromConfig(root_path, alloc);
+    defer if (base_rel) |b| alloc.free(b);
+    const bundle_base = if (base_rel) |b|
+        (if (std.fs.path.isAbsolute(b)) try alloc.dupe(u8, b) else try std.fmt.allocPrint(alloc, "{s}/{s}", .{ root_path, b }))
+    else
+        try std.fmt.allocPrint(alloc, "{s}/vendor/bundle", .{root_path});
+    defer alloc.free(bundle_base);
+
+    const ruby_dir = try std.fmt.allocPrint(alloc, "{s}/ruby", .{bundle_base});
+    defer alloc.free(ruby_dir);
+
+    var rdir = std.Io.Dir.cwd().openDir(std.Options.debug_io, ruby_dir, .{ .iterate = true, .follow_symlinks = false }) catch return out.toOwnedSlice(alloc);
+    defer rdir.close(std.Options.debug_io);
+    var rit = rdir.iterate();
+    while (rit.next(std.Options.debug_io) catch null) |ver_entry| {
+        if (ver_entry.kind != .directory) continue;
+        for ([_][]const u8{ "gems", "bundler/gems" }) |sub| {
+            const gems_dir = std.fmt.allocPrint(alloc, "{s}/{s}/{s}", .{ ruby_dir, ver_entry.name, sub }) catch continue;
+            defer alloc.free(gems_dir);
+            var gdir = std.Io.Dir.cwd().openDir(std.Options.debug_io, gems_dir, .{ .iterate = true, .follow_symlinks = false }) catch continue;
+            defer gdir.close(std.Options.debug_io);
+            var git = gdir.iterate();
+            while (git.next(std.Options.debug_io) catch null) |gem_entry| {
+                if (gem_entry.kind != .directory) continue;
+                const lib_dir = std.fmt.allocPrint(alloc, "{s}/{s}/lib", .{ gems_dir, gem_entry.name }) catch continue;
+                defer alloc.free(lib_dir);
+                std.Io.Dir.cwd().access(std.Options.debug_io, lib_dir, .{}) catch continue;
+                const dir_paths = scanner.scan(lib_dir, alloc, &.{}) catch continue;
+                for (dir_paths) |p| out.append(alloc, p) catch continue;
+                alloc.free(dir_paths);
+            }
+        }
+    }
+    return out.toOwnedSlice(alloc);
+}
+
 pub fn findGemPaths(io: std.Io, root_path: []const u8, alloc: std.mem.Allocator, timeout_ns: u64) ![][]u8 {
     const lock_path = try std.fmt.allocPrint(alloc, "{s}/Gemfile.lock", .{root_path});
     defer alloc.free(lock_path);
@@ -243,7 +310,36 @@ pub fn findGemPaths(io: std.Io, root_path: []const u8, alloc: std.mem.Allocator,
 
     // Non-bundler fallback: plain ruby $LOAD_PATH filtered to gem install dirs only
     const plain_argv = &[_][]const u8{ "ruby", "--disable-gems", "-e", "puts $LOAD_PATH" };
-    const raw = runRubyCmd(io, root_path, alloc, plain_argv, timeout_ns) catch return &.{};
-    defer alloc.free(raw);
-    return collectPathsFromOutput(raw, alloc, true);
+    if (runRubyCmd(io, root_path, alloc, plain_argv, timeout_ns)) |raw| {
+        defer alloc.free(raw);
+        if (collectPathsFromOutput(raw, alloc, true)) |paths| {
+            if (paths.len > 0) return paths;
+            alloc.free(paths);
+        } else |_| {}
+    } else |_| {}
+
+    // Filesystem fallback: scan a vendored bundle directly — no ruby/bundle needed.
+    // Gives offline gem recall for `bundle install --path vendor/bundle` layouts.
+    return scanVendorBundle(root_path, alloc) catch &.{};
+}
+
+test "scanVendorBundle discovers gems in a vendored bundle layout" {
+    const alloc = std.testing.allocator;
+    const root = "/tmp/refract_vendor_bundle_test";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, root) catch {};
+    const lib = root ++ "/vendor/bundle/ruby/3.4.0/gems/foo-1.0/lib";
+    try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, lib);
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = lib ++ "/foo.rb", .data = "module Foo\n  def self.bar; end\nend\n" });
+
+    const paths = try scanVendorBundle(root, alloc);
+    defer {
+        for (paths) |p| alloc.free(p);
+        alloc.free(paths);
+    }
+    var found = false;
+    for (paths) |p| {
+        if (std.mem.endsWith(u8, p, "gems/foo-1.0/lib/foo.rb")) found = true;
+    }
+    try std.testing.expect(found);
 }
