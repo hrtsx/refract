@@ -6432,11 +6432,6 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             s.bind_int(1, file_id);
             _ = s.step() catch {}; // cleanup
         } else |_| {}
-        if (db.prepare("DELETE FROM aliases WHERE file_id = ?")) |s| {
-            defer s.finalize();
-            s.bind_int(1, file_id);
-            _ = s.step() catch {}; // cleanup
-        } else |_| {}
 
         // Routes: index config/routes*.rb, routes/*.rb, and common Sinatra entry points
         const is_route_file = (std.mem.containsAtLeast(u8, path, 1, "config/routes") or
@@ -6627,7 +6622,7 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
 
     // Domain tables (routes, i18n) are generated per-file in mem_db too; clear the
     // real_db copies for this file before re-inserting so a re-index doesn't leave
-    // stale rows. (aliases is vestigial — never populated.)
+    // stale rows.
     const del_rt = try real_db.prepare("DELETE FROM routes WHERE file_id = ?");
     defer del_rt.finalize();
     del_rt.bind_int(1, real_file_id);
@@ -6904,21 +6899,14 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
         _ = s.step() catch |err| {
             logRateLimited("indexSource_i18n", err, path, &indexsource_cleanup_error_count);
         };
-    } else |_| {}
+    } else |err| logRateLimited("indexSource_i18n_prepare", err, path, &indexsource_cleanup_error_count);
     if (db.prepare("DELETE FROM routes WHERE file_id = ?")) |s| {
         defer s.finalize();
         s.bind_int(1, file_id);
         _ = s.step() catch |err| {
             logRateLimited("indexSource_routes", err, path, &indexsource_cleanup_error_count);
         };
-    } else |_| {}
-    if (db.prepare("DELETE FROM aliases WHERE file_id = ?")) |s| {
-        defer s.finalize();
-        s.bind_int(1, file_id);
-        _ = s.step() catch |err| {
-            logRateLimited("indexSource_aliases", err, path, &indexsource_cleanup_error_count);
-        };
-    } else |_| {}
+    } else |err| logRateLimited("indexSource_routes_prepare", err, path, &indexsource_cleanup_error_count);
 
     var arena = prism.Arena{ .current = null, .block_count = 0 };
     defer prism.arena_free(&arena);
