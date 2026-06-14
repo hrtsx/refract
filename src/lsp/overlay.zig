@@ -319,10 +319,18 @@ pub fn listJson(
         return;
     }
     const where_branch: []const u8 = if (all_branches) "" else " AND (branch IS NULL OR branch=?)";
+    const extras = listExtras(table);
+    // Build the per-table subject column list appended after the common envelope.
+    var extra_sql = std.Io.Writer.Allocating.init(alloc);
+    defer extra_sql.deinit();
+    for (extras) |e| {
+        extra_sql.writer.writeByte(',') catch return;
+        extra_sql.writer.writeAll(e.col) catch return;
+    }
     const sql = std.fmt.allocPrintSentinel(
         alloc,
-        "SELECT id,branch,source,confidence,reason,created_at FROM {s} WHERE project_id=? AND revoked_at IS NULL{s} ORDER BY created_at DESC",
-        .{ table, where_branch },
+        "SELECT id,branch,source,confidence,reason,created_at{s} FROM {s} WHERE project_id=? AND revoked_at IS NULL{s} ORDER BY created_at DESC",
+        .{ extra_sql.written(), table, where_branch },
         0,
     ) catch {
         w.writeAll("[]") catch return;
@@ -347,9 +355,50 @@ pub fn listJson(
         jsonStr(w, stmt.column_text(2));
         w.print(",\"confidence\":{d},\"reason\":", .{stmt.column_int(3)}) catch return;
         jsonStr(w, stmt.column_text(4));
-        w.print(",\"created_at\":{d}}}", .{stmt.column_int(5)}) catch return;
+        w.print(",\"created_at\":{d}", .{stmt.column_int(5)}) catch return;
+        for (extras, 0..) |e, j| {
+            const col: c_int = @intCast(6 + j);
+            w.writeByte(',') catch return;
+            jsonStr(w, e.key);
+            w.writeByte(':') catch return;
+            if (e.is_int) {
+                if (stmt.column_type(col) == 5) w.writeAll("null") catch return // SQLITE_NULL
+                else w.print("{d}", .{stmt.column_int(col)}) catch return;
+            } else {
+                const v = stmt.column_text(col);
+                if (v.len == 0) w.writeAll("null") catch return else jsonStr(w, v);
+            }
+        }
+        w.writeByte('}') catch return;
     }
     w.writeByte(']') catch return;
+}
+
+const ListExtra = struct { key: []const u8, col: []const u8, is_int: bool };
+fn listExtras(table: []const u8) []const ListExtra {
+    if (std.mem.eql(u8, table, "overlay_nodes")) return &.{
+        .{ .key = "fqn", .col = "fqn", .is_int = false },
+        .{ .key = "kind", .col = "kind", .is_int = false },
+        .{ .key = "label", .col = "label", .is_int = false },
+    };
+    if (std.mem.eql(u8, table, "overlay_edges")) return &.{
+        .{ .key = "from_fqn", .col = "from_fqn", .is_int = false },
+        .{ .key = "to_fqn", .col = "to_fqn", .is_int = false },
+        .{ .key = "kind", .col = "kind", .is_int = false },
+        .{ .key = "label", .col = "label", .is_int = false },
+    };
+    if (std.mem.eql(u8, table, "overlay_types")) return &.{
+        .{ .key = "fqn", .col = "fqn", .is_int = false },
+        .{ .key = "method_name", .col = "method_name", .is_int = false },
+        .{ .key = "type", .col = "type_str", .is_int = false },
+    };
+    if (std.mem.eql(u8, table, "overlay_suppress")) return &.{
+        .{ .key = "fqn", .col = "fqn", .is_int = false },
+        .{ .key = "file_path", .col = "file_path", .is_int = false },
+        .{ .key = "diag_code", .col = "diag_code", .is_int = false },
+        .{ .key = "line", .col = "line", .is_int = true },
+    };
+    return &.{};
 }
 
 /// Export project-global overlay rows AND branch-scoped rows to a portable JSON

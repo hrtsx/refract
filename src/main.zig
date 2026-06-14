@@ -89,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
     var flag_dump_symbols: bool = false;
     var flag_workspace_info: bool = false;
     var flag_max_workers: ?u32 = null;
+    var flag_max_rps: ?u32 = null;
     var flag_json: bool = false;
     var flag_last_crash: bool = false;
     var flag_doctor: bool = false;
@@ -134,6 +135,7 @@ pub fn main(init: std.process.Init) !void {
                     "  --stats              Print index statistics and exit\n" ++
                     "  --json               Output statistics as JSON (with --stats)\n" ++
                     "  --max-workers N      Set max indexing worker threads\n" ++
+                    "  --max-rps N          MCP per-second request cap (0=unlimited; also REFRACT_MAX_RPS)\n" ++
                     "  --index-only         Index workspace and exit\n" ++
                     "  --dump-symbols       Dump all indexed symbols as JSON and exit\n" ++
                     "  --workspace-info     Print workspace info and exit\n" ++
@@ -194,6 +196,11 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i < args.len) {
                 flag_max_workers = std.fmt.parseInt(u32, args[i], 10) catch null;
+            }
+        } else if (std.mem.eql(u8, arg, "--max-rps")) {
+            i += 1;
+            if (i < args.len) {
+                flag_max_rps = std.fmt.parseInt(u32, args[i], 10) catch null;
             }
         } else if (std.mem.eql(u8, arg, "--mcp")) {
             flag_mcp = true;
@@ -830,6 +837,7 @@ pub fn main(init: std.process.Init) !void {
         indexStdlibRbs(io, db, cwd, alloc);
         var mcp_server = mcp.Server.init(db, alloc);
         defer mcp_server.deinit();
+        if (flag_max_rps) |n| mcp_server.max_rps = n; // CLI override (also: REFRACT_MAX_RPS)
         var file_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buf);
         var file_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buf);
         const reader = &file_reader.interface;

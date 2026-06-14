@@ -43,23 +43,41 @@ fn resolveRel(alloc: std.mem.Allocator, base: []const u8, p: []const u8) ![]u8 {
 }
 
 fn resolveGitDirs(alloc: std.mem.Allocator, root_path: []const u8) ?GitDirs {
-    const dot_git = std.fmt.allocPrint(alloc, "{s}/.git", .{root_path}) catch return null;
-    defer alloc.free(dot_git);
+    // Walk up from root_path to the enclosing repo: a project rooted in a
+    // repo subdir (monorepo package, vendored corpus) must still resolve the
+    // branch. `git` itself walks up; mirror that. Cap depth to bound work.
+    var dir: []const u8 = root_path;
+    var depth: usize = 0;
+    while (depth < 40) : (depth += 1) {
+        const dot_git = std.fmt.allocPrint(alloc, "{s}/.git", .{dir}) catch return null;
+        defer alloc.free(dot_git);
 
-    const st = std.Io.Dir.cwd().statFile(io, dot_git, .{}) catch return null;
+        if (std.Io.Dir.cwd().statFile(io, dot_git, .{})) |st| {
+            var gitdir: []u8 = undefined;
+            if (st.kind == .directory) {
+                gitdir = alloc.dupe(u8, dot_git) catch return null;
+            } else {
+                // Linked worktree: `.git` is a file `gitdir: <path>`.
+                const content = readTrimmed(alloc, dot_git) orelse return null;
+                defer alloc.free(content);
+                const prefix = "gitdir:";
+                if (!std.mem.startsWith(u8, content, prefix)) return null;
+                const ptr = std.mem.trim(u8, content[prefix.len..], " \t");
+                gitdir = resolveRel(alloc, dir, ptr) catch return null;
+            }
+            return finishGitDirs(alloc, gitdir);
+        } else |_| {}
 
-    var gitdir: []u8 = undefined;
-    if (st.kind == .directory) {
-        gitdir = alloc.dupe(u8, dot_git) catch return null;
-    } else {
-        // Linked worktree: `.git` is a file `gitdir: <path>`.
-        const content = readTrimmed(alloc, dot_git) orelse return null;
-        defer alloc.free(content);
-        const prefix = "gitdir:";
-        if (!std.mem.startsWith(u8, content, prefix)) return null;
-        const ptr = std.mem.trim(u8, content[prefix.len..], " \t");
-        gitdir = resolveRel(alloc, root_path, ptr) catch return null;
+        // Ascend one directory; stop at filesystem root.
+        const slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse return null;
+        if (slash == 0) return null; // reached "/"
+        dir = dir[0..slash];
     }
+    return null;
+}
+
+/// Given a resolved per-worktree gitdir, attach the shared commondir (if any).
+fn finishGitDirs(alloc: std.mem.Allocator, gitdir: []u8) ?GitDirs {
 
     // commondir: present for linked worktrees, points at the main git dir.
     const commondir_file = std.fmt.allocPrint(alloc, "{s}/commondir", .{gitdir}) catch {
