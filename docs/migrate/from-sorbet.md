@@ -31,7 +31,7 @@ Hover shows the highest-confidence result. `explain_type_chain` (MCP tool) shows
 ## What Refract gives you that Sorbet alone doesn't
 
 - Hover, definition, completion, references, rename, code actions — full LSP 3.17. Sorbet's LSP is hover/def-only and slow.
-- 34 MCP tools for LLM coding agents.
+- 41 MCP tools for LLM coding agents.
 - Built-in DAP (`refract --dap`) proxying rdbg.
 - RuboCop, Brakeman, Semgrep diagnostics out of the box.
 - No annotation overhead — works on a fresh codebase with zero `.rbi` files.

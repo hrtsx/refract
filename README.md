@@ -9,7 +9,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
               ▼
    refract  ── parses Ruby with Prism ── persists to per-project SQLite ── serves LSP queries
               │
-              └─ also: refract --mcp  (39 tools for AI agents)
+              └─ also: refract --mcp  (41 tools for AI agents)
 ```
 
 **Why pick refract**
@@ -18,7 +18,7 @@ Powered by [Prism](https://github.com/ruby/prism) 1.9.0.
 - **Rails 5.2–8.0 DSL coverage** — `has_many`, `has_one_attached`, `delegated_type`, `composed_of`, `attribute :x, :integer`, etc.
 - **Type-aware** — RBS + Sorbet sigs + literal narrowing power completion, hover, inlay hints
 - **Light type checking** — `refract/nil-receiver` and `refract/wrong-arity` ship in v0.1, confidence-gated
-- **AI-native** — `refract --mcp` exposes 39 tools your agent can call directly
+- **AI-native** — `refract --mcp` exposes 41 tools your agent can call directly
 - **Single binary** — drop into Docker, CI, anywhere. No Ruby on the path.
 
 See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the head-to-head numbers vs Solargraph, Ruby LSP, Sorbet, and Steep — perf, accuracy, DX, RAM — plus when to pick each.
@@ -154,7 +154,7 @@ Install the extension from the Zed extension registry (search "refract"), or via
 }
 ```
 
-See [`docs/LSP_CAPABILITIES.md`](docs/LSP_CAPABILITIES.md) for the full per-editor capability matrix and `initializationOptions` examples.
+See [`docs/lsp_capabilities.md`](docs/lsp_capabilities.md) for the full per-editor capability matrix and `initializationOptions` examples.
 
 ## Configuration
 
@@ -234,27 +234,24 @@ To suppress a diagnostic for the workspace, append it to `.refract/disabled.txt`
 
 ## MCP Server
 
-Start with `refract --mcp`. Exposes 39 tools for AI agent integration.
+Start with `refract --mcp`. Exposes 41 tools for AI agent integration.
 
 **Highest-value tools for Rails projects:**
 
 | Tool | What it gives | Latency |
 |------|--------------|---------|
-| `workspace_symbols` | Ranked fuzzy symbol search | ~9 ms |
+| `workspace_symbols` | Ranked fuzzy symbol search (FTS5 trigram) | ~2 ms |
 | `class_summary` | Full method roster with visibility and types | ~3 ms |
 | `association_graph` | `has_many`/`has_one`/`belongs_to` with typed returns | ~1 ms |
 | `explain_symbol` | Signature + callers + diagnostics in one call | ~2 ms |
 | `find_references` | Call-site hits with surrounding context | ~8 ms |
 | `workspace_health` | File counts, type coverage, schema version | ~15 ms |
 
-See [`docs/MCP_TOOLS.md`](docs/MCP_TOOLS.md) for the full tool reference.
+See [`docs/mcp_tools.md`](docs/mcp_tools.md) for the full tool reference.
 
 ## RuboCop
 
-refract auto-detects RuboCop at startup. When a `Gemfile.lock` is present it probes `bundle exec rubocop` first, then falls back to bare `rubocop` in PATH — project-local versions are used automatically.
-
-To re-run detection after adding RuboCop, use the `Refract: Re-check RuboCop` command.  
-Set `disableRubocop: true` to disable entirely.
+Auto-detected at startup: with a `Gemfile.lock`, refract probes `bundle exec rubocop`, then bare `rubocop` in PATH (project-local version wins). Re-run detection with the `Refract: Re-check RuboCop` command; `disableRubocop: true` turns it off.
 
 ## Gem Indexing
 
@@ -284,9 +281,7 @@ zig build --release=safe
 
 ## How it works
 
-On `initialized`, refract scans the workspace for `.rb`, `.rbs`, `.rbi`, `.erb`, `.rake`, `.gemspec`, `.ru` files plus `Gemfile`/`Rakefile`, and indexes classes, modules, methods, constants, routes, associations, and i18n keys into a per-project SQLite database. All LSP requests are answered by querying that database. File saves update the index incrementally via `workspace/didChangeWatchedFiles`.
-
-Supports Ruby 2.7 – 3.4 syntax (via Prism 1.9.0). Works with Rails, plain gems, Rack apps, scripts, and monorepos.
+On `initialized`, refract scans `.rb`, `.rbs`, `.rbi`, `.erb`, `.rake`, `.gemspec`, `.ru` plus `Gemfile`/`Rakefile`, and indexes classes, modules, methods, constants, routes, associations, and i18n keys into a per-project SQLite database. All LSP requests query that database; saves update it incrementally via `workspace/didChangeWatchedFiles`. Works with Rails, plain gems, Rack apps, scripts, and monorepos.
 
 ## Reproduce benchmarks
 

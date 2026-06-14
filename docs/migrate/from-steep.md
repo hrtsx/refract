@@ -15,7 +15,7 @@ The `Type bridges` line in `refract --doctor` shows `steep: ok` when wired.
 ## What Refract adds
 
 - Steep's LSP supports hover, definition, completion. Refract adds: rename, references, code actions, document symbol, semantic tokens, inlay hints, signature help, type hierarchy, call hierarchy.
-- 34 MCP tools for agents.
+- 41 MCP tools for agents.
 - Faster startup. Steep cold-start is 5-10 s on a Rails monolith. Refract is 50-150 ms.
 
 ## Side-by-side workflow
