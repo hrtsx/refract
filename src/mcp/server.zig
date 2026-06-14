@@ -704,7 +704,7 @@ pub const Server = struct {
 
         const sym_stmt = self.db.prepare(
             \\SELECT name, kind, return_type, doc, line, end_line, visibility
-            \\FROM symbols WHERE parent_name = ? AND kind IN ('def','classdef','constant')
+            \\FROM symbols WHERE parent_name = ? AND kind IN ('def','classdef')
             \\ORDER BY kind, name LIMIT 200
         ) catch return self.buildToolError(id, "database error");
         defer sym_stmt.finalize();
@@ -846,6 +846,35 @@ pub const Server = struct {
             if (sret.len > 0) try writeJsonStr(w, sret) else try w.writeAll("null");
             try w.print(",\"line\":{d}}}", .{sline});
         }
+        try w.writeAll("],\"constants\":[");
+
+        // Constants are listed separately, not folded into `methods` — a constant
+        // is not callable, and method_signature/explain resolve them via a distinct
+        // path. Keeping them out of `methods` stops consumers probing a constant as
+        // a method (which silently failed before).
+        const const_stmt = self.db.prepare(
+            \\SELECT name, line FROM symbols
+            \\WHERE parent_name = ? AND kind = 'constant'
+            \\ORDER BY name LIMIT 100
+        ) catch {
+            try w.writeAll("]}");
+            const text4 = try aw.toOwnedSlice();
+            defer self.alloc.free(text4);
+            return self.buildToolResult(id, text4);
+        };
+        defer const_stmt.finalize();
+        const_stmt.bind_text(1, class_name);
+
+        var kfirst = true;
+        while (const_stmt.step() catch |e| stepLog(e)) {
+            if (!kfirst) try w.writeByte(',');
+            kfirst = false;
+            const kname = const_stmt.column_text(0);
+            const kline = const_stmt.column_int(1);
+            try w.writeAll("{\"name\":");
+            try writeJsonStr(w, kname);
+            try w.print(",\"line\":{d}}}", .{kline});
+        }
         try w.writeAll("]}");
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
@@ -941,6 +970,18 @@ pub const Server = struct {
             mix.bind_int(1, cid);
             while (mix.step() catch false) self.enqueueAncestor(&queue, mix.column_text(0));
         }
+
+        // Final fallback: the "method" is actually a constant defined on the class
+        // (e.g. `Foo::VERSION`). Resolve it so a `Class#CONST` probe returns the
+        // symbol instead of found:false. owner stays null (defined directly).
+        const ks = self.db.prepare(
+            \\SELECT id FROM symbols
+            \\WHERE parent_name = ? AND name = ? AND kind = 'constant' LIMIT 1
+        ) catch return null;
+        defer ks.finalize();
+        ks.bind_text(1, class_name);
+        ks.bind_text(2, method_name);
+        if (ks.step() catch |e| stepLog(e)) return .{ .sym_id = ks.column_int(0), .owner = null };
         return null;
     }
 
@@ -1239,17 +1280,33 @@ pub const Server = struct {
         var offset = getIntArg(args, "offset") orelse 0;
         if (offset < 0) offset = 0;
 
-        const like_pat = std.fmt.allocPrint(self.alloc, "%{s}%", .{query}) catch return self.buildToolError(id, "OOM");
-        defer self.alloc.free(like_pat);
+        const q_trim = std.mem.trim(u8, query, " \t\r\n");
+        const use_fts = q_trim.len >= 3;
 
-        const stmt = self.db.prepare(
+        // Substring search ('%q%') can't use the name B-tree (leading wildcard) and
+        // full-scans symbols. The trigram FTS makes it index-backed; LIKE remains
+        // for queries shorter than the 3-char trigram floor.
+        const match_or_like = if (use_fts)
+            ftsQuote(self.alloc, q_trim) catch return self.buildToolError(id, "OOM")
+        else
+            std.fmt.allocPrint(self.alloc, "%{s}%", .{query}) catch return self.buildToolError(id, "OOM");
+        defer self.alloc.free(match_or_like);
+
+        const stmt = self.db.prepare(if (use_fts)
+            \\SELECT s.name, s.kind, s.parent_name, s.return_type, f.path, s.line
+            \\FROM symbols_fts
+            \\JOIN symbols s ON s.id = symbols_fts.rowid
+            \\JOIN files f ON f.id = s.file_id
+            \\WHERE symbols_fts MATCH ? AND (? IS NULL OR s.kind = ?)
+            \\ORDER BY s.name LIMIT 501 OFFSET ?
+        else
             \\SELECT s.name, s.kind, s.parent_name, s.return_type, f.path, s.line
             \\FROM symbols s JOIN files f ON f.id = s.file_id
             \\WHERE s.name LIKE ? AND (? IS NULL OR s.kind = ?)
             \\ORDER BY s.name LIMIT 501 OFFSET ?
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
-        stmt.bind_text(1, like_pat);
+        stmt.bind_text(1, match_or_like);
         if (kind_filter) |kf| {
             stmt.bind_text(2, kf);
             stmt.bind_text(3, kf);
@@ -3966,6 +4023,21 @@ fn splitQualified(s: []const u8) ?QualifiedSymbol {
     const i = std.mem.lastIndexOfScalar(u8, s, '#') orelse return null;
     if (i == 0 or i + 1 >= s.len) return null;
     return .{ .class_name = s[0..i], .method_name = s[i + 1 ..] };
+}
+
+/// Wrap a user query as an FTS5 double-quoted string literal so the trigram
+/// tokenizer matches it as a literal substring (any embedded special chars,
+/// including `"`, are neutralized). Caller frees.
+fn ftsQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(alloc);
+    try buf.append(alloc, '"');
+    for (s) |c| {
+        if (c == '"') try buf.append(alloc, '"');
+        try buf.append(alloc, c);
+    }
+    try buf.append(alloc, '"');
+    return buf.toOwnedSlice(alloc);
 }
 
 fn normalizeFileArg(alloc: std.mem.Allocator, file: []const u8) ?[:0]u8 {

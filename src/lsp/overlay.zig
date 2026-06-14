@@ -38,9 +38,19 @@ fn bindOptText(stmt: anytype, col: c_int, val: ?[]const u8) void {
     if (val) |v| stmt.bind_text(col, v) else stmt.bind_null(col);
 }
 
+/// Log an overlay write failure to stderr. A null return from a write otherwise
+/// looks identical to a gate rejection; surface the DB cause so a real failure
+/// (locked db, I/O error) is not silently swallowed and the agent's edit lost.
+fn logOverlayDbError(op: []const u8, e: anyerror) void {
+    std.debug.print("refract: overlay {s} write failed: {s}\n", .{ op, @errorName(e) });
+}
+
 /// Insert returning the new row id. Caller holds db_mutex.
 fn insertReturningId(stmt: db_mod.Stmt) ?i64 {
-    if (stmt.step() catch return null) return stmt.column_int(0);
+    if (stmt.step() catch |e| {
+        logOverlayDbError("insert", e);
+        return null;
+    }) return stmt.column_int(0);
     return null;
 }
 
@@ -64,7 +74,10 @@ pub fn addNode(
     const stmt = db.prepare(
         \\INSERT INTO overlay_nodes(project_id,branch,fqn,kind,label,content,source,confidence,reason,created_at)
         \\VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id
-    ) catch return null;
+    ) catch |e| {
+        logOverlayDbError("addNode", e);
+        return null;
+    };
     defer stmt.finalize();
     stmt.bind_text(1, pid);
     bindOptText(stmt, 2, branch);
@@ -96,7 +109,10 @@ pub fn addEdge(
     const stmt = db.prepare(
         \\INSERT INTO overlay_edges(project_id,branch,from_fqn,to_fqn,kind,label,source,confidence,reason,created_at)
         \\VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id
-    ) catch return null;
+    ) catch |e| {
+        logOverlayDbError("addEdge", e);
+        return null;
+    };
     defer stmt.finalize();
     stmt.bind_text(1, pid);
     bindOptText(stmt, 2, branch);
@@ -129,7 +145,10 @@ pub fn addType(
     const stmt = db.prepare(
         \\INSERT INTO overlay_types(project_id,branch,fqn,method_name,param_pos,type_str,source,confidence,reason,created_at)
         \\VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id
-    ) catch return null;
+    ) catch |e| {
+        logOverlayDbError("addType", e);
+        return null;
+    };
     defer stmt.finalize();
     stmt.bind_text(1, pid);
     bindOptText(stmt, 2, branch);
@@ -162,7 +181,10 @@ pub fn addSuppress(
     const stmt = db.prepare(
         \\INSERT INTO overlay_suppress(project_id,branch,fqn,file_path,diag_code,line,source,confidence,reason,created_at)
         \\VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id
-    ) catch return null;
+    ) catch |e| {
+        logOverlayDbError("addSuppress", e);
+        return null;
+    };
     defer stmt.finalize();
     stmt.bind_text(1, pid);
     bindOptText(stmt, 2, branch);
