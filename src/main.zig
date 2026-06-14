@@ -11,6 +11,9 @@ const scanner = @import("indexer/scanner.zig");
 const gems = @import("indexer/gems.zig");
 const crash = @import("lsp/crash.zig");
 const doctor = @import("cli/doctor.zig");
+const lifecycle = @import("cli/lifecycle.zig");
+const overlay = @import("lsp/overlay.zig");
+const git_branch = @import("lsp/git_branch.zig");
 const sandbox = @import("lsp/sandbox.zig");
 const sorbet_harness = @import("tests/sorbet_harness.zig");
 
@@ -27,6 +30,18 @@ const REINDEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 var g_sigterm = std.atomic.Value(bool).init(false);
 var g_tmp_dir: ?[:0]u8 = null;
+
+/// Project identity for overlay export/import: prefer the stored meta value
+/// (written by the LSP), else derive from the workspace via git. Caller frees.
+fn lifecycleProjectId(db: db_mod.Db, alloc: std.mem.Allocator, cwd: []const u8) []u8 {
+    const stmt = db.prepare("SELECT value FROM meta WHERE key='project_id'") catch return git_branch.projectId(alloc, cwd);
+    defer stmt.finalize();
+    if (stmt.step() catch false) {
+        const v = stmt.column_text(0);
+        if (v.len > 0) return alloc.dupe(u8, v) catch git_branch.projectId(alloc, cwd);
+    }
+    return git_branch.projectId(alloc, cwd);
+}
 
 fn onSigterm(_: std.posix.SIG) callconv(.c) void {
     g_sigterm.store(true, .seq_cst);
@@ -82,6 +97,14 @@ pub fn main(init: std.process.Init) !void {
     var bench_steep_root: ?[]const u8 = null;
     var flag_no_color: bool = false;
     var flag_self_test: bool = false;
+    var flag_list_projects: bool = false;
+    var flag_gc: bool = false;
+    var flag_vacuum_all: bool = false;
+    var flag_dry_run: bool = false;
+    var gc_size_cap_mb: ?u64 = null;
+    var gc_age_days: ?u32 = null;
+    var export_overlay_path: ?[]const u8 = null;
+    var import_overlay_path: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -206,6 +229,30 @@ pub fn main(init: std.process.Init) !void {
             }
             i += 1;
             bench_steep_root = args[i];
+        } else if (std.mem.eql(u8, arg, "--list-projects")) {
+            flag_list_projects = true;
+        } else if (std.mem.eql(u8, arg, "--gc")) {
+            flag_gc = true;
+        } else if (std.mem.eql(u8, arg, "--vacuum-all")) {
+            flag_vacuum_all = true;
+        } else if (std.mem.eql(u8, arg, "--dry-run")) {
+            flag_dry_run = true;
+        } else if (std.mem.eql(u8, arg, "--size-cap-mb")) {
+            if (i + 1 >= args.len) return error.InvalidArgument;
+            i += 1;
+            gc_size_cap_mb = std.fmt.parseInt(u64, args[i], 10) catch return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--evict-older-than-days")) {
+            if (i + 1 >= args.len) return error.InvalidArgument;
+            i += 1;
+            gc_age_days = std.fmt.parseInt(u32, args[i], 10) catch return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--export-overlay")) {
+            if (i + 1 >= args.len) return error.InvalidArgument;
+            i += 1;
+            export_overlay_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--import-overlay")) {
+            if (i + 1 >= args.len) return error.InvalidArgument;
+            i += 1;
+            import_overlay_path = args[i];
         } else if (std.mem.startsWith(u8, arg, "--") and !std.mem.eql(u8, arg, "--stdio")) {
             var wbuf: [256]u8 = undefined;
             const wmsg = std.fmt.bufPrint(&wbuf, "refract: unrecognized flag: {s}\n", .{arg}) catch "refract: unrecognized flag\n";
@@ -279,6 +326,55 @@ pub fn main(init: std.process.Init) !void {
         }
         const msg = std.fmt.bufPrint(&buf, "refract: database reset: {s}\n", .{db_path}) catch "refract: database reset\n";
         try std.Io.File.stdout().writeStreamingAll(io, msg);
+        return;
+    }
+
+    if (flag_list_projects) {
+        try lifecycle.listProjects(alloc, flag_json);
+        return;
+    }
+    if (flag_vacuum_all) {
+        try lifecycle.vacuumAll(alloc);
+        return;
+    }
+    if (flag_gc) {
+        try lifecycle.gc(alloc, .{
+            .size_cap_mb = gc_size_cap_mb,
+            .age_days = gc_age_days,
+            .dry_run = flag_dry_run,
+            .now_ns = std.Io.Timestamp.now(io, .real).toNanoseconds(),
+        });
+        return;
+    }
+    if (export_overlay_path orelse import_overlay_path) |ov_path| {
+        const ov_pathz = try alloc.dupeZ(u8, db_path);
+        defer alloc.free(ov_pathz);
+        const ov_db = db_mod.Db.open(ov_pathz) catch {
+            try std.Io.File.stderr().writeStreamingAll(io, "refract: overlay: could not open database\n");
+            return error.DatabaseOpen;
+        };
+        defer ov_db.close();
+        ov_db.init_schema() catch {};
+        const pid = lifecycleProjectId(ov_db, alloc, cwd);
+        defer alloc.free(pid);
+        var buf2: [512]u8 = undefined;
+        if (import_overlay_path) |ip| {
+            const n = overlay.importJson(ov_db, alloc, pid, ip) catch 0;
+            const m = std.fmt.bufPrint(&buf2, "refract: imported {d} overlay row(s) from {s}\n", .{ n, ip }) catch "refract: overlay imported\n";
+            try std.Io.File.stdout().writeStreamingAll(io, m);
+        } else {
+            if (std.fs.path.dirname(ov_path)) |dir| {
+                std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+            }
+            // If exporting into a .refract dir, keep the file git-committable.
+            if (overlay.portablePath(alloc, cwd)) |pp| alloc.free(pp);
+            overlay.exportJson(ov_db, alloc, pid, ov_path) catch {
+                try std.Io.File.stderr().writeStreamingAll(io, "refract: overlay export failed\n");
+                return error.OverlayExportFailed;
+            };
+            const m = std.fmt.bufPrint(&buf2, "refract: exported overlay to {s}\n", .{ov_path}) catch "refract: overlay exported\n";
+            try std.Io.File.stdout().writeStreamingAll(io, m);
+        }
         return;
     }
 

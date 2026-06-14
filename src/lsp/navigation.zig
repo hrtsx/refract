@@ -967,6 +967,13 @@ fn tryEmitFromHotIndex(
     for (hot.lookupName(name)) |sym| {
         if (emitted >= 10) break;
         const path = hot.pathFor(sym.file_id) orelse continue;
+        // RSpec example-description prose (`describe "new"`) is never a valid
+        // go-to-def target for a code identifier. Routing-DSL names (`resource
+        // :ship_address`) synthesize a `def`-kind symbol in a Rails routes file,
+        // but those files define routes (→ routes table), not methods — so a
+        // bare `recv.ship_address` should resolve to the model, not the route.
+        if (sym.kind == .test_desc or sym.kind == .namespace_label) continue;
+        if (sym.kind == .def and isRailsRoutesFile(path)) continue;
         const key = hashSymbol(sym);
         if (seen.contains(key)) continue;
         seen.put(key, {}) catch return emitted;
@@ -990,6 +997,15 @@ fn hashSymbol(sym: hot_index_mod.HotSymbol) u64 {
     return (@as(u64, sym.file_id) << 32) ^ (@as(u64, sym.line) << 16) ^ @as(u64, sym.col);
 }
 
+/// A Rails routes file holds routing DSL (resources/namespace/…), mapped to the
+/// `routes` table, not method definitions. Used to keep synthesized routing-DSL
+/// `def` symbols out of identifier go-to-def. Mirrors the SQL path-LIKE guards
+/// in queryAndEmitDefinitions.
+pub fn isRailsRoutesFile(path: []const u8) bool {
+    return std.mem.indexOf(u8, path, "/config/routes") != null or
+        std.mem.indexOf(u8, path, "/routes/") != null;
+}
+
 pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u8, found_any: *bool, frc: *std.StringHashMapUnmanaged([]const u8), origin: ?DefOrigin, cursor_path: []const u8) !void {
     const hot_hits = tryEmitFromHotIndex(self, w, name, found_any, frc, origin) catch 0;
     if (hot_hits > 0) return;
@@ -1000,7 +1016,9 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
     const stmt_exact = try self.cachedStmt(
         \\SELECT s.name, s.line, s.col, f.path
         \\FROM symbols s JOIN files f ON s.file_id = f.id
-        \\WHERE s.name = ? ORDER BY (f.path = ?) DESC LIMIT 20
+        \\WHERE s.name = ? AND s.kind NOT IN ('test', 'namespace')
+        \\  AND NOT (s.kind = 'def' AND (f.path LIKE '%/config/routes%' OR f.path LIKE '%/routes/%'))
+        \\ORDER BY (f.path = ?) DESC LIMIT 20
     );
     defer stmt_exact.reset();
     stmt_exact.bind_text(1, name);
@@ -1048,11 +1066,17 @@ pub fn queryAndEmitDefinitions(self: *Server, w: *std.Io.Writer, name: []const u
         defer stmt_qualified.reset();
         stmt_qualified.bind_text(1, name);
         while (try stmt_qualified.step()) {
+            const sym_name = stmt_qualified.column_text(0);
+            // SQLite LIKE is ASCII-case-insensitive, so `'%::' || 'rb'` also matches
+            // `...::RB`. Re-confirm the `::name` suffix byte-exact so a lowercase
+            // probe can't wrong-jump to a case-folded constant.
+            if (!std.mem.endsWith(u8, sym_name, name) or
+                sym_name.len < name.len + 2 or
+                !std.mem.eql(u8, sym_name[sym_name.len - name.len - 2 .. sym_name.len - name.len], "::")) continue;
             if (found_any.*) try w.writeByte(',');
             found_any.* = true;
             found_count += 1;
             if (found_count > 10) break;
-            const sym_name = stmt_qualified.column_text(0);
             const sym_line = stmt_qualified.column_int(1);
             const sym_col = stmt_qualified.column_int(2);
             const sym_path = stmt_qualified.column_text(3);

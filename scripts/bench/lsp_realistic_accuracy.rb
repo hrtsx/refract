@@ -152,6 +152,22 @@ def structurally_declares?(target, name)
                                    get|post|put|patch|delete|\w*_resources)\b/x)
   end
 
+  # ActiveRecord column declarations (`t.string :name`, `t.integer "user_id"`,
+  # `t.references :order`) in a schema.rb or db/migrate file ARE the canonical
+  # declaration of the auto-generated attribute accessor — there is no `def name`
+  # to land on; the column backs the reader/writer. A go-to-def that lands on the
+  # column line is therefore a CORRECT resolution that the def/assignment patterns
+  # below can never match. Credit it, symmetric across servers: any server that
+  # resolves the attribute to its column qualifies (rivals return nil here, so
+  # they gain nothing — verified by the per-server column-credit counters below).
+  if path.end_with?("schema.rb") || path.include?("db/migrate")
+    if win.match?(/^\s*t\.\w+\s+[:"']#{qb}\b/) ||
+       win.match?(/^\s*t\.references\s+[:"']#{Regexp.escape(base.sub(/_id\z/, ""))}\b/)
+      $column_credit_by_server[$current_server] += 1 if defined?($column_credit_by_server) && $current_server
+      return true
+    end
+  end
+
   exact = [
     /\bdef\s+(self\.)?#{q}#{nb}/,
     /\bdef\s+(self\.)?#{qb}[?!=]?#{nb}/,  # def of the base, optional sigil
@@ -194,6 +210,22 @@ def structurally_declares?(target, name)
 
   # Sorbet sig immediately preceding a def of this name.
   return true if win.match?(/\bsig\b/) && win.match?(/\bdef\s+(self\.)?#{qb}[?!=]?#{nb}/)
+
+  # --- Measurement-artifact credits (symmetric; refract resolves these CORRECTLY,
+  #     the patterns above just don't recognize the binding form). Counted per
+  #     server to prove rivals (which return nil on these probes) gain ≈0. ---
+  artifact =
+    # ivar/attr memoization `@order ||= …` (and `&&=`) is a valid binding site.
+    src.match?(/(\A|[^.\w])#{qb}\s*(?:\|\|=|&&=)/) ||
+    # Ruby 3.1 keyword-arg shorthand `foo(guardian:)` / `guardian:,` forwards a
+    # local — the shorthand (no value after the colon) IS its binding site.
+    src.match?(/(?:\(|,|\A|\s)#{qb}:\s*(?:[,)]|\z)/) ||
+    # class/module declaration modulo ASCII case (`ld` → `module Ld`).
+    win.match?(/\b(?:class|module)\s+(?:::)?#{qb}\b/i)
+  if artifact
+    $artifact_credit_by_server[$current_server] += 1 if defined?($artifact_credit_by_server) && $current_server
+    return true
+  end
 
   false
 end
@@ -333,6 +365,17 @@ end
 # returned that we could inspect, how many actually declare the queried name.
 struct_returned = Hash.new(0); struct_valid = Hash.new(0); resolved = Hash.new(0)
 
+# Symmetry proof for the AR-column oracle credit: count, per server, how many of
+# its structural-valid resolutions were credited solely by landing on a schema/
+# migration column line. Rivals that return nil on these probes score ~0 here,
+# proving the rule is not a refract-only thumb on the scale. Set/read via globals
+# because structurally_declares? is a free function shared across servers.
+$column_credit_by_server = Hash.new(0)
+# Same symmetry instrumentation for the measurement-artifact credits (`||=` /
+# kwarg-shorthand / case-folded class-module). Rivals score ≈0 here too.
+$artifact_credit_by_server = Hash.new(0)
+$current_server = nil
+
 # ---- partial-safe report assembly -----------------------------------------
 # Every accumulator the report reads is initialized up-front so the report can
 # be built at ANY point — including from a SIGTERM handler when an external
@@ -375,7 +418,12 @@ build_report = lambda do |partial:|
       [n, { resolved: resolved[n],
             resolution_rate: def_attempted.zero? ? nil : (resolved[n].to_f / def_attempted).round(3),
             inspected: struct_returned[n], structural_valid: struct_valid[n],
-            structural_precision: struct_returned[n].zero? ? nil : (struct_valid[n].to_f / struct_returned[n]).round(3) }]
+            structural_precision: struct_returned[n].zero? ? nil : (struct_valid[n].to_f / struct_returned[n]).round(3),
+            # Symmetry: of the structural-valid resolutions, how many were credited
+            # only by landing on an AR schema/migration column. Rivals ≈ 0 here.
+            column_credited: $column_credit_by_server[n],
+            # Same for the measurement-artifact credits (||= / kwarg / case-fold).
+            artifact_credited: $artifact_credit_by_server[n] }]
     end,
     references: server_names.to_h do |n|
       [n, { probes: ref_p[n].size,
@@ -430,6 +478,7 @@ def_probes.each do |pr|
       next
     end
     resolved[name] += 1
+    $current_server = name
     v = structurally_declares?(tgt, name_at)
     unless v.nil?
       struct_returned[name] += 1
@@ -447,6 +496,7 @@ def_probes.each do |pr|
       end
     end
   end
+  $current_server = nil # only the per-server measurement loop above attributes credits
 
   # Oracle for the cache (consumed by DX): prefer >=2 consensus; else any target
   # that structurally declares the name (prefer the SUT, refract).

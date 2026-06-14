@@ -457,6 +457,20 @@ fn insertRescueFromHandler(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     }
 }
 
+/// Grouping/label DSLs whose argument is a LABEL, not a method name (Rails routing
+/// `namespace`/`resource`/`resources`, Rake `task`, FactoryBot/Fabrication
+/// `sequence` — a named generator reached via `generate(:x)`, never `recv.x`).
+/// Their argument is indexed for workspace-symbol/outline under the non-goto
+/// `namespace` kind so it never shadows a real method in identifier go-to-def.
+/// `scope` is deliberately NOT here — AR `scope :active` IS a callable method.
+fn isScopeLabelDsl(name: []const u8) bool {
+    return std.mem.eql(u8, name, "namespace") or
+        std.mem.eql(u8, name, "resource") or
+        std.mem.eql(u8, name, "resources") or
+        std.mem.eql(u8, name, "task") or
+        std.mem.eql(u8, name, "sequence");
+}
+
 fn isAttrMethod(name: []const u8) bool {
     return std.mem.eql(u8, name, "attr_reader") or
         std.mem.eql(u8, name, "attr_writer") or
@@ -466,7 +480,13 @@ fn isAttrMethod(name: []const u8) bool {
         std.mem.eql(u8, name, "mattr_writer") or
         std.mem.eql(u8, name, "cattr_accessor") or
         std.mem.eql(u8, name, "cattr_reader") or
-        std.mem.eql(u8, name, "cattr_writer");
+        std.mem.eql(u8, name, "cattr_writer") or
+        std.mem.eql(u8, name, "thread_mattr_accessor") or
+        std.mem.eql(u8, name, "thread_mattr_reader") or
+        std.mem.eql(u8, name, "thread_mattr_writer") or
+        std.mem.eql(u8, name, "thread_cattr_accessor") or
+        std.mem.eql(u8, name, "thread_cattr_reader") or
+        std.mem.eql(u8, name, "thread_cattr_writer");
 }
 
 fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
@@ -483,7 +503,8 @@ fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u
         try insertSymbol(ctx, "def", attr_name, lc.line, lc.col, null);
         if (std.mem.eql(u8, mname, "attr_writer") or std.mem.eql(u8, mname, "attr_accessor") or
             std.mem.eql(u8, mname, "mattr_writer") or std.mem.eql(u8, mname, "mattr_accessor") or
-            std.mem.eql(u8, mname, "cattr_writer") or std.mem.eql(u8, mname, "cattr_accessor"))
+            std.mem.eql(u8, mname, "cattr_writer") or std.mem.eql(u8, mname, "cattr_accessor") or
+            std.mem.endsWith(u8, mname, "_writer") or std.mem.endsWith(u8, mname, "_accessor"))
         {
             const writer_name = try std.fmt.allocPrint(ctx.alloc, "{s}=", .{attr_name});
             defer ctx.alloc.free(writer_name);
@@ -666,13 +687,13 @@ fn isIterationMethod(name: []const u8) bool {
 // gem, so the undefined-method checker must not flag them.
 fn isSorbetDsl(name: []const u8) bool {
     const methods = [_][]const u8{
-        "sig",       "params",        "returns",     "void",      "override",
-        "overridable", "abstract",    "implementation", "checked", "on_failure",
-        "type_parameters", "type_member", "type_template", "bind",  "let",
-        "cast",      "must",          "unsafe",      "reveal_type", "absurd",
-        "mixes_in_class_methods", "requires_ancestor", "nilable", "any", "all",
-        "untyped",   "noreturn",      "attached_class", "self_type", "class_of",
-        "enums",     "sealed",
+        "sig",                    "params",            "returns",        "void",        "override",
+        "overridable",            "abstract",          "implementation", "checked",     "on_failure",
+        "type_parameters",        "type_member",       "type_template",  "bind",        "let",
+        "cast",                   "must",              "unsafe",         "reveal_type", "absurd",
+        "mixes_in_class_methods", "requires_ancestor", "nilable",        "any",         "all",
+        "untyped",                "noreturn",          "attached_class", "self_type",   "class_of",
+        "enums",                  "sealed",
     };
     for (methods) |m| if (std.mem.eql(u8, name, m)) return true;
     return false;
@@ -939,7 +960,11 @@ fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         sym_name = sn.unescaped.source[0..sn.unescaped.length];
     } else return;
     const kind: []const u8 =
-        if (std.mem.eql(u8, mname, "scope")) "scope" else if (std.mem.eql(u8, mname, "belongs_to") or
+        // Grouping/scoping labels (Rails routes, Rake tasks/namespaces, Grape API
+        // scopes, custom settings DSLs): indexed for workspace/symbol + outline, but
+        // kept OUT of method go-to-def — `namespace :web` / `task :seed` are labels,
+        // not callable `recv.web` / `recv.seed`.
+        if (isScopeLabelDsl(mname)) "namespace" else if (std.mem.eql(u8, mname, "scope")) "scope" else if (std.mem.eql(u8, mname, "belongs_to") or
         std.mem.eql(u8, mname, "has_many") or
         std.mem.eql(u8, mname, "has_one") or
         std.mem.eql(u8, mname, "has_and_belongs_to_many") or
@@ -5255,11 +5280,11 @@ const MethodResolution = enum {
 // receiverless call inside one must not be flagged.
 fn isBuiltinCoreClass(name: []const u8) bool {
     const core = [_][]const u8{
-        "Array",    "Hash",     "String",   "Integer",  "Float",     "Numeric",
-        "Symbol",   "Range",    "Regexp",   "Proc",     "Method",    "Module",
-        "Class",    "Object",   "BasicObject", "Kernel", "Comparable", "Enumerable",
-        "Struct",   "Set",      "Time",     "IO",       "File",      "Exception",
-        "Thread",   "Mutex",    "Rational", "Complex",  "MatchData", "Enumerator",
+        "Array",    "Hash",      "String",      "Integer", "Float",      "Numeric",
+        "Symbol",   "Range",     "Regexp",      "Proc",    "Method",     "Module",
+        "Class",    "Object",    "BasicObject", "Kernel",  "Comparable", "Enumerable",
+        "Struct",   "Set",       "Time",        "IO",      "File",       "Exception",
+        "Thread",   "Mutex",     "Rational",    "Complex", "MatchData",  "Enumerator",
         "NilClass", "TrueClass", "FalseClass",
     };
     for (core) |c| if (std.mem.eql(u8, name, c)) return true;

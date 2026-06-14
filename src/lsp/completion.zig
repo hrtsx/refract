@@ -20,6 +20,8 @@ fn kindStr(k: hot_index_mod.SymbolKind) []const u8 {
         .scope => "scope",
         .validation => "validation",
         .callback => "callback",
+        .test_desc => "test",
+        .namespace_label => "namespace",
         .other => "other",
     };
 }

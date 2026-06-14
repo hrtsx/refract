@@ -5,8 +5,29 @@ const types = @import("types.zig");
 const db_mod = @import("../db.zig");
 const indexer = @import("../indexer/index.zig");
 const disabled_codes = @import("disabled_codes.zig");
+const overlay = @import("overlay.zig");
 
 const extractTextDocumentUri = S.extractTextDocumentUri;
+
+/// Cheap gate: does any live overlay suppression exist at all? Lets the hot
+/// diagnostics path skip per-row overlay checks entirely in the common case.
+fn overlayAnySuppress(db: db_mod.Db) bool {
+    const stmt = db.prepare("SELECT EXISTS(SELECT 1 FROM overlay_suppress WHERE revoked_at IS NULL)") catch return false;
+    defer stmt.finalize();
+    if (stmt.step() catch false) return stmt.column_int(0) != 0;
+    return false;
+}
+
+fn metaDup(db: db_mod.Db, alloc: std.mem.Allocator, key: []const u8) ?[]u8 {
+    const stmt = db.prepare("SELECT value FROM meta WHERE key=?") catch return null;
+    defer stmt.finalize();
+    stmt.bind_text(1, key);
+    if (stmt.step() catch false) {
+        const v = stmt.column_text(0);
+        if (v.len > 0) return alloc.dupe(u8, v) catch null;
+    }
+    return null;
+}
 const emptyResult = S.emptyResult;
 const uriToPath = S.uriToPath;
 const computeDiagCol = S.computeDiagCol;
@@ -20,9 +41,21 @@ pub fn writeDiagItems(
     diags: []const indexer.DiagEntry,
     diag_source: ?[]const u8,
     first_ptr: *bool,
+    path: []const u8,
 ) void {
     var disabled_set_opt: ?disabled_codes.DisabledSet = null;
     defer if (disabled_set_opt) |*s| s.deinit();
+
+    // Overlay corrections: live suppression rules drop matching diagnostics.
+    // Gated by a single EXISTS check so the common (no-suppression) path is free.
+    var ov_pid: ?[]u8 = null;
+    var ov_branch: ?[]u8 = null;
+    defer if (ov_pid) |p| self.alloc.free(p);
+    defer if (ov_branch) |b| self.alloc.free(b);
+    if (overlayAnySuppress(self.db)) {
+        ov_pid = metaDup(self.db, self.alloc, "project_id");
+        ov_branch = metaDup(self.db, self.alloc, "git_branch");
+    }
     const tc_disabled = self.disable_type_checker.load(.monotonic);
     const tc_sev = self.type_checker_severity.load(.monotonic);
     var has_refract_code = false;
@@ -47,6 +80,10 @@ pub fn writeDiagItems(
                 break;
             };
             if (skip_via_config) continue;
+        }
+        if (ov_pid) |pid| {
+            const dl: i64 = if (d.line > 0) d.line else 0;
+            if (overlay.isSuppressed(self.db, pid, ov_branch, d.code, path, dl, null)) continue;
         }
         if (!first_ptr.*) w.writeByte(',') catch return;
         first_ptr.* = false;
@@ -137,7 +174,7 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
     writeEscapedJson(w, uri) catch return;
     w.writeAll(",\"diagnostics\":[") catch return;
     var first = true;
-    writeDiagItems(self, w, prism_diags, diag_source, &first);
+    writeDiagItems(self, w, prism_diags, diag_source, &first, path);
 
     // Semantic checks (unused vars, undefined methods)
     sem_blk: {
@@ -153,7 +190,7 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
             for (sem_diags.items) |d| self.alloc.free(d.message);
             sem_diags.deinit(self.alloc);
         }
-        writeDiagItems(self, w, sem_diags.items, diag_source, &first);
+        writeDiagItems(self, w, sem_diags.items, diag_source, &first, path);
     }
 
     w.writeAll("]}}") catch return;
@@ -449,7 +486,7 @@ pub fn handlePullDiagnostic(self: *Server, msg: types.RequestMessage) !?types.Re
     const w = &aw.writer;
     try w.print("{{\"kind\":\"full\",\"resultId\":\"{s}\",\"items\":[", .{result_id});
     var first = true;
-    writeDiagItems(self, w, prism_diags, diag_source, &first);
+    writeDiagItems(self, w, prism_diags, diag_source, &first, path);
     try w.writeAll("]}");
     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
 }
