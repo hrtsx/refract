@@ -126,7 +126,7 @@ const ToolEntry = struct {
 };
 
 const schema_overlay_annotate =
-    \\{"type":"object","properties":{"op":{"type":"string","enum":["note","tag","concept","edge","override","suppress"],"description":"Overlay write kind"},"reason":{"type":"string","description":"Required justification (audited)"},"fqn":{"type":"string","description":"Target symbol 'Class#method' or 'Class' (note/tag/concept/override; or suppress target)"},"from":{"type":"string","description":"edge: source fqn"},"to":{"type":"string","description":"edge: target fqn"},"edge_kind":{"type":"string","description":"edge relation: depends_on|related_to|alias|overrides|custom (default related_to)"},"label":{"type":"string","description":"short label (concept/edge/tag)"},"content":{"type":"string","description":"note/comment body"},"method":{"type":"string","description":"override: method name (omit for class-level)"},"param_pos":{"type":"integer","description":"override: -1 return type, >=0 param index (default -1)"},"type":{"type":"string","description":"override: asserted type string"},"diag_code":{"type":"string","description":"suppress: diagnostic code"},"file":{"type":"string","description":"suppress: file path (alternative to fqn)"},"line":{"type":"integer","description":"suppress: optional line"},"source":{"type":"string","enum":["agent","user"],"description":"default agent (lower trust)"},"scope":{"type":"string","enum":["branch","global"],"description":"default branch (current git branch); global = all branches"}},"required":["op","reason"]}
+    \\{"type":"object","properties":{"op":{"type":"string","enum":["note","tag","concept","edge","override","suppress"],"description":"Overlay write kind"},"reason":{"type":"string","description":"Required justification (audited)"},"fqn":{"type":"string","description":"Target symbol 'Class#method' or 'Class' (note/tag/concept/override; or suppress target)"},"from":{"type":"string","description":"edge: source fqn"},"to":{"type":"string","description":"edge: target fqn"},"edge_kind":{"type":"string","description":"edge relation: depends_on|related_to|alias|overrides|custom (default related_to)"},"label":{"type":"string","description":"short label (concept/edge/tag)"},"content":{"type":"string","description":"note/comment body"},"method":{"type":"string","description":"override: method name (omit for class-level)"},"param_pos":{"type":"integer","description":"override: -1 return type, >=0 param index (default -1)"},"type":{"type":"string","description":"override: asserted type string"},"diag_code":{"type":"string","description":"suppress: diagnostic code"},"file":{"type":"string","description":"suppress: file path (alternative to fqn)"},"line":{"type":"integer","description":"suppress: optional line"},"source":{"type":"string","enum":["agent","user"],"description":"default agent (lower trust)"},"scope":{"type":"string","enum":["branch","global"],"description":"default branch (current git branch); global = all branches"},"branch":{"type":"string","description":"explicit branch to scope this tweak to (overrides scope/current branch)"}},"required":["op","reason"]}
 ;
 const schema_overlay_list =
     \\{"type":"object","properties":{"kind":{"type":"string","enum":["node","edge","type","suppress"],"description":"Overlay table to list"},"all_branches":{"type":"boolean","description":"include every branch (default false = current branch + global)"}},"required":["kind"]}
@@ -184,7 +184,10 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "overlay_promote", .description = "Promote branch-scoped overlay tweaks to project-global (visible on every branch and worktree)", .schema = schema_overlay_promote },
 };
 
-const MAX_REQUESTS_PER_SEC: u32 = 100;
+// Default per-second request cap. stdio MCP is a trusted single-user local
+// process, so the default is generous; raise/disable via REFRACT_MAX_RPS
+// (integer; 0 = unlimited). Guards only against runaway loops, not abuse.
+const DEFAULT_MAX_REQUESTS_PER_SEC: u32 = 1000;
 pub const MAX_RESPONSE_BYTES: usize = 1_048_576; // 1 MiB
 pub const MAX_LINE_BODY_BYTES: usize = 512; // per-line cap for grep_source match/context
 
@@ -193,6 +196,8 @@ pub const Server = struct {
     alloc: std.mem.Allocator,
     request_count: u32 = 0,
     request_window_ms: i64 = 0,
+    /// Per-second request cap (0 = unlimited). Set from REFRACT_MAX_RPS in init().
+    max_rps: u32 = DEFAULT_MAX_REQUESTS_PER_SEC,
     audit_lock_err_logged: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Real (symlink-resolved) absolute path of the workspace root. Used to
     /// containment-check fpaths read by grep_source / get_symbol_source.
@@ -200,6 +205,9 @@ pub const Server = struct {
 
     pub fn init(db: db_mod.Db, alloc: std.mem.Allocator) Server {
         var s = Server{ .db = db, .alloc = alloc };
+        if (std.c.getenv("REFRACT_MAX_RPS")) |v| {
+            if (std.fmt.parseInt(u32, std.mem.span(v), 10) catch null) |n| s.max_rps = n;
+        }
         // Resolve cwd's realpath once. Stored for containment checks; freed in deinit().
         if (std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", alloc)) |root| {
             s.workspace_root = root;
@@ -256,7 +264,7 @@ pub const Server = struct {
                 self.request_window_ms = now_ms;
             }
             self.request_count += 1;
-            if (self.request_count > MAX_REQUESTS_PER_SEC) {
+            if (self.max_rps != 0 and self.request_count > self.max_rps) {
                 if (id != null) {
                     const rl_resp = self.buildError(id, -32600, "rate limit exceeded") catch null;
                     if (rl_resp) |resp| {
@@ -478,13 +486,16 @@ pub const Server = struct {
     }
 
     fn auditOverlay(self: *Server, tool: []const u8, fqn: ?[]const u8, result_kind: []const u8) void {
-        const stmt = self.db.prepare("INSERT INTO audit_log(ts_us,tool_name,result_kind,affected_fqn) VALUES(?,?,?,?)") catch return;
+        const stmt = self.db.prepare("INSERT INTO audit_log(ts_us,tool_name,result_kind,affected_fqn) VALUES(?,?,?,?)") catch {
+            logAuditDbError(self);
+            return;
+        };
         defer stmt.finalize();
         stmt.bind_int(1, nowUs());
         stmt.bind_text(2, tool);
         stmt.bind_text(3, result_kind);
         if (fqn) |f| stmt.bind_text(4, f) else stmt.bind_null(4);
-        _ = stmt.step() catch {};
+        _ = stmt.step() catch logAuditDbError(self);
     }
 
     fn overlayOk(self: *Server, id: ?std.json.Value, new_id: i64, eff_branch: ?[]const u8, is_user: bool) !?[]u8 {
@@ -506,7 +517,14 @@ pub const Server = struct {
         const ctx = self.overlayCtx() orelse return self.buildToolError(id, "no workspace/project identity");
         defer ctx.deinit();
         const scope = getStrArg(args, "scope") orelse "branch";
-        const eff_branch: ?[]const u8 = if (std.mem.eql(u8, scope, "global")) null else ctx.branch;
+        // Explicit 'branch' wins; else 'scope':global => project-global (null);
+        // else the server-detected current branch.
+        const eff_branch: ?[]const u8 = if (getStrArg(args, "branch")) |b|
+            b
+        else if (std.mem.eql(u8, scope, "global"))
+            null
+        else
+            ctx.branch;
         const is_user = if (getStrArg(args, "source")) |s| std.mem.eql(u8, s, "user") else false;
         const now_s = nowS();
 
@@ -834,6 +852,132 @@ pub const Server = struct {
         return self.buildToolResult(id, text);
     }
 
+    /// A method resolved either directly on a class or via its ancestors/mixins.
+    /// `owner` is null for a direct hit; otherwise the (alloc'd) name of the
+    /// ancestor/module that actually defines the method — caller frees it.
+    const ResolvedMethod = struct { sym_id: i64, owner: ?[]u8 };
+
+    /// Look up a method (`def`/`classdef`) directly owned by `class_name`.
+    fn lookupMethodIn(self: *Server, class_name: []const u8, method_name: []const u8) ?i64 {
+        const s = self.db.prepare(
+            \\SELECT id FROM symbols
+            \\WHERE parent_name = ? AND name = ? AND kind IN ('def','classdef') LIMIT 1
+        ) catch return null;
+        defer s.finalize();
+        s.bind_text(1, class_name);
+        s.bind_text(2, method_name);
+        if (s.step() catch |e| stepLog(e)) return s.column_int(0);
+        return null;
+    }
+
+    /// Resolve a method to its defining symbol: direct first, then walking the
+    /// inheritance + mixin chain (same recursive CTE as type_hierarchy) so that
+    /// inherited / included methods resolve — closes the plain-Ruby recall gap.
+    fn resolveMethodSym(self: *Server, class_name: []const u8, method_name: []const u8) ?ResolvedMethod {
+        if (self.lookupMethodIn(class_name, method_name)) |sid| return .{ .sym_id = sid, .owner = null };
+
+        // Walk the ancestor closure — real superclass (FQN-resolved), lexical
+        // parent_name (carries the superclass for top-level classes), and every
+        // include/prepend/extend — breadth-first with a `seen` set. A SQL
+        // recursive CTE over this graph blows up on cycles (no in-recursion
+        // dedup); the deduped BFS is bounded. Same closure the diagnostics
+        // ancestor-walker uses (indexer/index.zig resolveMethodInAncestors).
+        var seen = std.StringHashMap(void).init(self.alloc);
+        defer {
+            var it = seen.keyIterator();
+            while (it.next()) |k| self.alloc.free(k.*);
+            seen.deinit();
+        }
+        var queue = std.ArrayList([]u8).empty;
+        defer {
+            for (queue.items) |item| self.alloc.free(item);
+            queue.deinit(self.alloc);
+        }
+        const seed = self.alloc.dupe(u8, class_name) catch return null;
+        queue.append(self.alloc, seed) catch {
+            self.alloc.free(seed);
+            return null;
+        };
+
+        var steps: u32 = 0;
+        var first = true;
+        while (queue.items.len > 0) {
+            if (steps >= 64) break;
+            steps += 1;
+            const name = queue.orderedRemove(0);
+            defer self.alloc.free(name);
+            if (seen.contains(name)) {
+                first = false;
+                continue;
+            }
+            const key = self.alloc.dupe(u8, name) catch break;
+            seen.put(key, {}) catch {
+                self.alloc.free(key);
+                break;
+            };
+
+            // Method defined directly on this ancestor? (skip the seed class —
+            // its direct lookup already failed above.)
+            if (!first) {
+                if (self.lookupMethodIn(name, method_name)) |sid| {
+                    return .{ .sym_id = sid, .owner = self.alloc.dupe(u8, name) catch null };
+                }
+            }
+            first = false;
+
+            const q = self.db.prepare(
+                \\SELECT id, parent_name, superclass FROM symbols
+                \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef') LIMIT 1
+            ) catch continue;
+            defer q.finalize();
+            q.bind_text(1, name);
+            if (!(q.step() catch false)) continue;
+            const cid = q.column_int(0);
+            self.enqueueAncestor(&queue, q.column_text(2)); // superclass
+            self.enqueueAncestor(&queue, q.column_text(1)); // parent_name
+
+            const mix = self.db.prepare("SELECT module_name FROM mixins WHERE class_id = ?") catch continue;
+            defer mix.finalize();
+            mix.bind_int(1, cid);
+            while (mix.step() catch false) self.enqueueAncestor(&queue, mix.column_text(0));
+        }
+        return null;
+    }
+
+    fn enqueueAncestor(self: *Server, queue: *std.ArrayList([]u8), name: []const u8) void {
+        if (name.len == 0) return;
+        const dup = self.alloc.dupe(u8, name) catch return;
+        queue.append(self.alloc, dup) catch self.alloc.free(dup);
+    }
+
+    /// Emit the comma-separated params array body for a method symbol_id into `w`.
+    /// Shared by method_signature and explain_symbol (single source of truth for
+    /// the param shape; querying by symbol_id, never the missing `default_val`).
+    fn writeMethodParams(self: *Server, w: *std.Io.Writer, sym_id: i64) !void {
+        const ps = self.db.prepare(
+            \\SELECT name, kind, type_hint, position
+            \\FROM params WHERE symbol_id = ? ORDER BY position
+        ) catch return;
+        defer ps.finalize();
+        ps.bind_int(1, sym_id);
+        var first = true;
+        while (ps.step() catch |e| stepLog(e)) {
+            if (!first) try w.writeByte(',');
+            first = false;
+            const pname = ps.column_text(0);
+            const pkind = ps.column_text(1);
+            const phint = ps.column_text(2);
+            const ppos = ps.column_int(3);
+            try w.print("{{\"position\":{d},\"name\":", .{ppos});
+            try writeJsonStr(w, pname);
+            try w.writeAll(",\"kind\":");
+            try writeJsonStr(w, pkind);
+            try w.writeAll(",\"type_hint\":");
+            if (phint.len > 0) try writeJsonStr(w, phint) else try w.writeAll("null");
+            try w.writeByte('}');
+        }
+    }
+
     fn toolMethodSignature(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         var class_name: []const u8 = "";
         var method_name: []const u8 = "";
@@ -847,31 +991,29 @@ pub const Server = struct {
             method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
         }
 
+        const resolved = self.resolveMethodSym(class_name, method_name) orelse
+            return self.buildToolResult(id, "{\"found\":false}");
+        defer if (resolved.owner) |o| self.alloc.free(o);
+
         const sym_stmt = self.db.prepare(
-            \\SELECT s.id, s.return_type, s.doc, s.line, s.visibility
-            \\FROM symbols s
-            \\WHERE s.parent_name = ? AND s.name = ? AND s.kind IN ('def','classdef')
-            \\LIMIT 1
+            \\SELECT return_type, doc, line, visibility FROM symbols WHERE id = ? LIMIT 1
         ) catch return self.buildToolError(id, "database error");
         defer sym_stmt.finalize();
-        sym_stmt.bind_text(1, class_name);
-        sym_stmt.bind_text(2, method_name);
-
+        sym_stmt.bind_int(1, resolved.sym_id);
         if (!(sym_stmt.step() catch |e| stepLog(e))) {
             return self.buildToolResult(id, "{\"found\":false}");
         }
-        const sym_id = sym_stmt.column_int(0);
-        const ret_type = sym_stmt.column_text(1);
-        const doc = sym_stmt.column_text(2);
-        const line = sym_stmt.column_int(3);
-        const vis = sym_stmt.column_text(4);
+        const ret_type = sym_stmt.column_text(0);
+        const doc = sym_stmt.column_text(1);
+        const line = sym_stmt.column_int(2);
+        const vis = sym_stmt.column_text(3);
 
         // Overlay correction: a user/agent type-override on this method's return
         // type supersedes the derived value. Keyed by the qualified "Class#method".
         const ctx = self.overlayCtx();
         defer if (ctx) |c| c.deinit();
-        const qualified = std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name }) catch "";
-        defer if (qualified.len > 0) self.alloc.free(qualified);
+        const qualified = try std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name });
+        defer self.alloc.free(qualified);
         const ov_ret: ?[]u8 = if (ctx) |c| overlay.effectiveType(self.db, self.alloc, c.pid, c.branch, qualified, null, -1) else null;
         defer if (ov_ret) |o| self.alloc.free(o);
 
@@ -882,6 +1024,8 @@ pub const Server = struct {
         try writeJsonStr(w, class_name);
         try w.writeAll(",\"method\":");
         try writeJsonStr(w, method_name);
+        try w.writeAll(",\"inherited_from\":");
+        if (resolved.owner) |o| try writeJsonStr(w, o) else try w.writeAll("null");
         try w.print(",\"line\":{d},\"visibility\":", .{line});
         try writeJsonStr(w, vis);
         try w.writeAll(",\"return_type\":");
@@ -892,35 +1036,7 @@ pub const Server = struct {
         try w.writeAll(",\"doc\":");
         if (doc.len > 0) try writeJsonStr(w, doc) else try w.writeAll("null");
         try w.writeAll(",\"params\":[");
-
-        const par_stmt = self.db.prepare(
-            \\SELECT name, kind, type_hint, position
-            \\FROM params WHERE symbol_id = ? ORDER BY position
-        ) catch {
-            try w.writeAll("]}");
-            const text = try aw.toOwnedSlice();
-            defer self.alloc.free(text);
-            return self.buildToolResult(id, text);
-        };
-        defer par_stmt.finalize();
-        par_stmt.bind_int(1, sym_id);
-
-        var first = true;
-        while (par_stmt.step() catch |e| stepLog(e)) {
-            if (!first) try w.writeByte(',');
-            first = false;
-            const pname = par_stmt.column_text(0);
-            const pkind = par_stmt.column_text(1);
-            const phint = par_stmt.column_text(2);
-            const ppos = par_stmt.column_int(3);
-            try w.print("{{\"position\":{d},\"name\":", .{ppos});
-            try writeJsonStr(w, pname);
-            try w.writeAll(",\"kind\":");
-            try writeJsonStr(w, pkind);
-            try w.writeAll(",\"type_hint\":");
-            if (phint.len > 0) try writeJsonStr(w, phint) else try w.writeAll("null");
-            try w.writeByte('}');
-        }
+        try self.writeMethodParams(w, resolved.sym_id);
         try w.writeAll("]}");
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
@@ -2674,12 +2790,21 @@ pub const Server = struct {
         try w.writeAll(",\"method\":");
         try writeJsonStr(w, method_name);
 
-        // Signature fields
+        // Signature fields — resolve directly or via ancestors/mixins.
+        const resolved = self.resolveMethodSym(class_name, method_name);
+        if (resolved == null) {
+            try w.writeAll(",\"found\":false}");
+            const text = try aw.toOwnedSlice();
+            defer self.alloc.free(text);
+            return self.buildToolResult(id, text);
+        }
+        const rm = resolved.?;
+        defer if (rm.owner) |o| self.alloc.free(o);
+
         const sym_stmt = self.db.prepare(
             \\SELECT s.return_type, s.visibility, f.path, s.line, s.doc
             \\FROM symbols s JOIN files f ON f.id = s.file_id
-            \\WHERE s.parent_name = ? AND s.name = ? AND s.kind IN ('def','classdef')
-            \\LIMIT 1
+            \\WHERE s.id = ? LIMIT 1
         ) catch {
             try w.writeAll(",\"found\":false}");
             const text = try aw.toOwnedSlice();
@@ -2687,8 +2812,7 @@ pub const Server = struct {
             return self.buildToolResult(id, text);
         };
         defer sym_stmt.finalize();
-        sym_stmt.bind_text(1, class_name);
-        sym_stmt.bind_text(2, method_name);
+        sym_stmt.bind_int(1, rm.sym_id);
 
         var def_file: []const u8 = "";
         var def_line: i64 = 0;
@@ -2701,11 +2825,13 @@ pub const Server = struct {
             // Overlay correction: type-override on this method's return type wins.
             const ctx = self.overlayCtx();
             defer if (ctx) |c| c.deinit();
-            const qualified = std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name }) catch "";
-            defer if (qualified.len > 0) self.alloc.free(qualified);
+            const qualified = try std.fmt.allocPrint(self.alloc, "{s}#{s}", .{ class_name, method_name });
+            defer self.alloc.free(qualified);
             const ov_ret: ?[]u8 = if (ctx) |c| overlay.effectiveType(self.db, self.alloc, c.pid, c.branch, qualified, null, -1) else null;
             defer if (ov_ret) |o| self.alloc.free(o);
-            try w.writeAll(",\"found\":true,\"return_type\":");
+            try w.writeAll(",\"found\":true,\"inherited_from\":");
+            if (rm.owner) |o| try writeJsonStr(w, o) else try w.writeAll("null");
+            try w.writeAll(",\"return_type\":");
             if (ov_ret) |o| {
                 try writeJsonStr(w, o);
                 try w.writeAll(",\"return_type_source\":\"overlay\"");
@@ -2726,39 +2852,9 @@ pub const Server = struct {
             return self.buildToolResult(id, text);
         }
 
-        // Parameter list
-        const par_stmt = self.db.prepare(
-            \\SELECT p.name, p.type_hint, p.default_val FROM params p
-            \\JOIN symbols s ON s.id = p.symbol_id
-            \\WHERE s.parent_name = ? AND s.name = ? AND s.kind IN ('def','classdef')
-            \\ORDER BY p.position
-            \\LIMIT 50
-        ) catch null;
+        // Parameter list (shared helper; queries by symbol_id).
         try w.writeAll(",\"params\":[");
-        if (par_stmt) |ps| {
-            defer ps.finalize();
-            ps.bind_text(1, class_name);
-            ps.bind_text(2, method_name);
-            var pfirst = true;
-            while (ps.step() catch |e| stepLog(e)) {
-                if (!pfirst) try w.writeByte(',');
-                pfirst = false;
-                const pname = ps.column_text(0);
-                const ptype = ps.column_text(1);
-                const pdef = ps.column_text(2);
-                try w.writeAll("{\"name\":");
-                try writeJsonStr(w, pname);
-                if (ptype.len > 0) {
-                    try w.writeAll(",\"type\":");
-                    try writeJsonStr(w, ptype);
-                }
-                if (pdef.len > 0) {
-                    try w.writeAll(",\"default\":");
-                    try writeJsonStr(w, pdef);
-                }
-                try w.writeByte('}');
-            }
-        }
+        try self.writeMethodParams(w, rm.sym_id);
         try w.writeByte(']');
 
         // Caller count + up to 3 sample sites
@@ -3973,9 +4069,9 @@ fn validateGlobPattern(pattern: []const u8) ?[]const u8 {
 }
 
 fn logAuditDbError(self: *Server) void {
+    // Log once per process (stderr; stdout carries the JSON-RPC stream).
     if (self.audit_lock_err_logged.cmpxchgStrong(false, true, .acquire, .monotonic) == null) {
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("refract: audit_log database write failed (locked or unavailable)\n", .{}) catch {};
+        std.debug.print("refract: audit_log database write failed (locked or unavailable)\n", .{});
     }
 }
 

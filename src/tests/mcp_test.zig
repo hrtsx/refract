@@ -1163,7 +1163,9 @@ test "P47 T47.26 MCP rate limiting rejects excess requests" {
         try s.sendLine(line);
     }
     try s.sendLine("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
-    const raw = try s.runWithArgs(&.{"--mcp"});
+    // Pin a low cap so the 110-request burst deterministically trips the limiter
+    // regardless of the generous default.
+    const raw = try s.runWithArgs(&.{ "--mcp", "--max-rps", "50" });
     defer alloc.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "rate limit exceeded") != null);
 }

@@ -421,6 +421,7 @@ pub const Db = struct {
             \\)
         );
         self.exec("CREATE INDEX IF NOT EXISTS idx_i18n_key ON i18n_keys(key)") catch {}; // migration
+        self.exec("CREATE INDEX IF NOT EXISTS idx_i18n_keys_file ON i18n_keys(file_id)") catch {}; // per-file reindex DELETEs by file_id; without this they full-scan (O(n^2) index on i18n-heavy repos)
         // Routes table (populated by routes.zig route parser)
         try self.exec(
             \\CREATE TABLE IF NOT EXISTS routes (
