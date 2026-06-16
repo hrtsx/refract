@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 12;
+pub const CURRENT_SCHEMA: u32 = 13;
 
 pub const DbError = error{
     Open,
@@ -251,9 +251,9 @@ pub const Db = struct {
     pub fn init_schema(self: Db) DbError!void {
         const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
         const schema_start = if (profiling) std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() else 0;
+        var needs_reindex = false;
         {
             var needs_reset = false;
-            var needs_reindex = false;
             {
                 const ver_stmt = self.prepare("SELECT value FROM meta WHERE key='schema_version'") catch null;
                 if (ver_stmt) |vs| {
@@ -478,6 +478,27 @@ pub const Db = struct {
         // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
         self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {}; // migration
         self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {}; // migration
+        // Schema v13: trigram FTS over symbol names. workspace_symbols substring
+        // search ('%q%') cannot use the B-tree name index (leading wildcard) and
+        // full-scans the symbols table; trigram FTS makes it index-backed. External
+        // content (no name copy); AFTER INSERT/DELETE triggers mirror every symbol
+        // write — including per-file reindex DELETE/INSERT — so the index path needs
+        // no changes. Queries < 3 chars (trigram floor) fall back to LIKE.
+        self.exec("CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(name, content='symbols', content_rowid='id', tokenize='trigram')") catch {};
+        self.exec(
+            \\CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+            \\  INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
+            \\END
+        ) catch {};
+        self.exec(
+            \\CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+            \\  INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', old.id, old.name);
+            \\END
+        ) catch {};
+        // Backfill once when migrating an existing index (stored schema < v13): the
+        // forced reindex would eventually repopulate via triggers, but seed now so
+        // substring search works before the next index pass completes.
+        if (needs_reindex) self.exec("INSERT INTO symbols_fts(rowid, name) SELECT id, name FROM symbols") catch {};
         // Phase 4: YARD @param description text (text after [Type] in @param tags)
         self.execMigration("ALTER TABLE params ADD COLUMN description TEXT"); // migration guard: column already exists on migrated schemas
         // Schema v6: type_oracle, doc_blocks, perf_metrics, audit_log, deprecations, gem_versions, worktree
@@ -801,9 +822,11 @@ pub const Db = struct {
         self.execMigration("ALTER TABLE refs ADD COLUMN def_id INTEGER DEFAULT NULL");
         self.exec("CREATE INDEX IF NOT EXISTS idx_refs_def ON refs(def_id)") catch {}; // migration guard: def_id column may be absent on older schemas
 
-        // Schema v9: refs.kind distinguishes self-sends ('self_call') from
-        // explicit-receiver calls ('call'), enabling self-send arity/undefined checks.
-        try self.exec("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','12')");
+        // Stamp the current schema version. Derived from CURRENT_SCHEMA so a bump
+        // can't drift from a hardcoded literal (the v12->v13 trigger relies on it).
+        var ver_buf: [96]u8 = undefined;
+        const ver_sql = std.fmt.bufPrintZ(&ver_buf, "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','{d}')", .{CURRENT_SCHEMA}) catch return DbError.Exec;
+        try self.exec(ver_sql);
         const final_ver = self.getSchemaVersion() orelse 0;
         if (final_ver != @as(i64, CURRENT_SCHEMA)) {
             std.debug.print("{s}", .{"refract: schema migration incomplete; run --reset-db\n"});

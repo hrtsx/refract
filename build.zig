@@ -34,7 +34,7 @@ fn addVendorDeps(b: *std.Build, m: *std.Build.Module) void {
     m.addIncludePath(b.path("vendor/prism/include"));
     m.addCSourceFile(.{
         .file = b.path("vendor/sqlite/sqlite3.c"),
-        .flags = &.{ "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-w" },
+        .flags = &.{ "-DSQLITE_OMIT_LOAD_EXTENSION=1", "-DSQLITE_ENABLE_FTS5=1", "-w" },
     });
     m.addCSourceFile(.{
         .file = b.path("vendor/sqlite/bind_helpers.c"),
