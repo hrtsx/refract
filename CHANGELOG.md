@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.0-rc1] - 2026-06-23
+
+Release-candidate hardening on top of beta.1. Green across the lsp/mcp/edge
+suites on Linux, Alpine (musl), and macOS.
+
+### MCP
+
+- Agent-writable overlay graph (schema v13): `overlay_annotate`, `overlay_list`,
+  `overlay_revert`, `overlay_promote` — branch-scoped, reversible, audited.
+  Derived facts stay immutable.
+- `workspace_symbols` backed by an FTS5 trigram index; substring search drops to
+  low-single-digit ms on 10k-file workspaces.
+- Constant resolution: `class_summary` splits constants from methods, and
+  `method_signature`/`explain_symbol` resolve `Class::CONST`.
+- Tool surface is now 41 tools (overlay graph added; two workspace_symbols aliases dropped).
+
+### Reliability
+
+- Cold-index persistence fix: routes and i18n keys front-loaded on first index.
+- Binding-exact references and rename via `refs.def_id`.
+
 ## [0.1.0-beta.1] - 2026-06-15
 
 Hardening on top of the alpha.1 surface. Green across the lsp/mcp/edge suites

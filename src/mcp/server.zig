@@ -176,8 +176,6 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "migration_chain_analyzer", .description = "Analyze Rails migrations for dependency hazards", .schema = schema_migration_chain_analyzer },
     .{ .name = "dependency_tree_resolver", .description = "Build transitive dependency DAG from Gemfile.lock", .schema = schema_dependency_tree_resolver },
     .{ .name = "unused_association_chain", .description = "Find unused ActiveRecord associations", .schema = schema_unused_association_chain },
-    .{ .name = "find_symbol", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
-    .{ .name = "search_symbols", .description = "Alias for workspace_symbols — search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
     .{ .name = "overlay_annotate", .description = "Add a gated overlay tweak (note/tag/concept/edge/type-override/diagnostic-suppress) — branch-scoped, reversible, audited. The only writable graph surface; derived facts stay immutable", .schema = schema_overlay_annotate },
     .{ .name = "overlay_list", .description = "List live overlay tweaks (node/edge/type/suppress) for the current project and branch (plus project-global)", .schema = schema_overlay_list },
     .{ .name = "overlay_revert", .description = "Soft-delete (revert) an overlay tweak by id", .schema = schema_overlay_revert },
@@ -428,9 +426,6 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "overlay_list")) return self.toolOverlayList(id, args);
         if (std.mem.eql(u8, name, "overlay_revert")) return self.toolOverlayRevert(id, args);
         if (std.mem.eql(u8, name, "overlay_promote")) return self.toolOverlayPromote(id, args);
-
-        // Aliases for common guesses — forward to canonical handlers.
-        if (std.mem.eql(u8, name, "find_symbol") or std.mem.eql(u8, name, "search_symbols")) return self.toolWorkspaceSymbols(id, args);
 
         return self.buildError(id, -32601, "Unknown tool");
     }

@@ -12,7 +12,7 @@ Refract is a Ruby language server for VS Code, Neovim, Emacs, JetBrains, Zed, He
 - **Type bridges**. Native ingest of Sorbet (`srb tc --lsp`) and Steep (`steep langserver`) results into a unified type oracle, surfaced to hover/completion/diagnostics.
 - **Debugger**. Built-in DAP front-end (`refract --dap`) proxies `rdbg` for breakpoint, step, and evaluate.
 - **Extensible**. Subprocess plugin protocol — write extensions in any language. See [extensions/AUTHORING.md](extensions/AUTHORING.md).
-- **Agent-native**. 33-tool MCP server for Claude / Codex / custom agents.
+- **Agent-native**. 41-tool MCP server for Claude / Codex / custom agents.
 
 ## 30-second start
 
