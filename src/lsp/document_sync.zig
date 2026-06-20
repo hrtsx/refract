@@ -769,7 +769,12 @@ pub fn handleWaitForIdle(self: *Server, msg: types.RequestMessage) !?types.Respo
     // mutex for the whole `indexer.reindex` call). Re-check the queue under lock
     // and loop until it is observed empty while no reindex is in flight, so the
     // following query is guaranteed to see the new symbols on every platform.
-    while (true) {
+    // Bound the drain so a pathological re-queue (bg worker re-appending a path
+    // every cycle) can never livelock the reply. In practice this converges in
+    // 1–2 iterations; the cap only guards against a never-empty queue, in which
+    // case returning "idle" is strictly better than blocking the client forever.
+    var drain_iters: u32 = 0;
+    while (drain_iters < 1000) : (drain_iters += 1) {
         self.flushIncrPaths();
         self.db_mutex.lockUncancelable(std.Options.debug_io);
         self.incr_paths_mu.lockUncancelable(std.Options.debug_io);

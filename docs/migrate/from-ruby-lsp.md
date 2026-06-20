@@ -28,7 +28,7 @@
 | diagnostics: steep          | ❌       | ✅ (native bridge) |
 | inline AI completion        | ❌       | ✅ (BYOK, off by default) |
 | Debug Adapter (DAP)         | ❌       | ✅ (`refract --dap`) |
-| MCP server for agents       | ❌       | ✅ (41 tools) |
+| MCP server for agents       | ❌       | ✅ (30 tools) |
 | Plugin SDK                  | partial  | ✅ (subprocess JSON-RPC) |
 
 ## Behavioral differences

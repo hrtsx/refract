@@ -32,7 +32,7 @@ jobs:
         if: steps.zig-bin-cache.outputs.cache-hit != 'true'
         run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
       - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3 git
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y sqlite3 git
       - name: Build refract
         run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
       - name: Fetch soak corpus (full Discourse + Mastodon)

@@ -3,6 +3,7 @@ const db_mod = @import("../db.zig");
 const refactor_mod = @import("../lsp/refactor.zig");
 const overlay = @import("../lsp/overlay.zig");
 const git_branch = @import("../lsp/git_branch.zig");
+const indexer = @import("../indexer/index.zig");
 const build_meta = @import("build_meta");
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -16,9 +17,6 @@ const schema_class_summary =
 const schema_method_signature =
     \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
 ;
-const schema_find_callers =
-    \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' or bare method name (preferred)"},"class_name":{"type":"string","description":"Receiver class name (optional filter, legacy)"},"method_name":{"type":"string","description":"Method name to find callers of (legacy, use 'symbol' instead)"},"ref_kind":{"type":"string","description":"Optional kind filter: call, assign, decl, super, yield, alias"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":[]}
-;
 const schema_find_implementations =
     \\{"type":"object","properties":{"method_name":{"type":"string","description":"Method name to find implementations of"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["method_name"]}
 ;
@@ -30,9 +28,6 @@ const schema_type_hierarchy =
 ;
 const schema_association_graph =
     \\{"type":"object","properties":{"class_name":{"type":"string","description":"ActiveRecord class name"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":["class_name"]}
-;
-const schema_route_map =
-    \\{"type":"object","properties":{"prefix":{"type":"string","description":"Optional prefix filter for route helper names"},"offset":{"type":"integer","description":"Pagination offset, default 0"}},"required":[]}
 ;
 const schema_diagnostics =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the file (omit for all files)"},"offset":{"type":"integer","description":"Pagination offset for workspace mode, default 0"}},"required":[]}
@@ -70,9 +65,6 @@ const schema_find_references =
 const schema_explain_symbol =
     \\{"type":"object","properties":{"symbol":{"type":"string","description":"Qualified form 'Class#method' (preferred)"},"class_name":{"type":"string","description":"Fully qualified class or module name (legacy, use 'symbol' instead)"},"method_name":{"type":"string","description":"Method name (legacy, use 'symbol' instead)"}},"required":[]}
 ;
-const schema_batch_resolve =
-    \\{"type":"object","properties":{"positions":{"type":"array","description":"Array of source positions to resolve (max 20)","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"col":{"type":"integer"}},"required":["file","line"]}}},"required":["positions"]}
-;
 const schema_workspace_health =
     \\{"type":"object","properties":{},"required":[]}
 ;
@@ -88,35 +80,11 @@ const schema_refactor =
 const schema_available_code_actions =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"line":{"type":"integer","description":"0-based line number"},"character":{"type":"integer","description":"0-based column (default 0)"}},"required":["file","line"]}
 ;
-const schema_diagnostic_summary =
-    \\{"type":"object","properties":{"file":{"type":"string","description":"Optional file path filter"},"severity_filter":{"type":"string","enum":["error","warning","info"],"description":"Filter by severity"},"code_filter":{"type":"string","description":"Filter by diagnostic code"}},"required":[]}
-;
-const schema_type_coverage =
-    \\{"type":"object","properties":{"file":{"type":"string","description":"Optional file path — omit for workspace-wide"},"min_coverage":{"type":"number","description":"Only show files below this percentage (0-100, default 100)"}},"required":[]}
-;
-const schema_find_similar =
-    \\{"type":"object","properties":{"method_name":{"type":"string","description":"Method name to find similar methods for"},"max_distance":{"type":"integer","description":"Maximum edit distance (default 2)"}},"required":["method_name"]}
-;
 const schema_explain_type_chain =
     \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"line":{"type":"integer","description":"1-based line number"},"col":{"type":"integer","description":"0-based column offset"}},"required":["file","line"]}
 ;
-const schema_suggest_types =
-    \\{"type":"object","properties":{"file":{"type":"string","description":"Absolute path to the source file"},"limit":{"type":"integer","description":"Max suggestions (default 20)"}},"required":["file"]}
-;
-const schema_coverage_gap_analyzer =
-    \\{"type":"object","properties":{"file":{"type":"string"},"threshold":{"type":"integer"}},"required":[]}
-;
-const schema_security_audit_summary =
-    \\{"type":"object","properties":{"file":{"type":"string"}},"required":[]}
-;
-const schema_migration_chain_analyzer =
-    \\{"type":"object","properties":{},"required":[]}
-;
-const schema_dependency_tree_resolver =
-    \\{"type":"object","properties":{},"required":[]}
-;
-const schema_unused_association_chain =
-    \\{"type":"object","properties":{"class_name":{"type":"string"}},"required":[]}
+const schema_resolve_constant =
+    \\{"type":"object","properties":{"name":{"type":"string","description":"Constant reference as written: bare ('CONST'), qualified ('Foo::Bar'), or absolute ('::Foo::Bar')"},"nesting":{"type":"array","items":{"type":"string"},"description":"Lexical nesting at the reference site, outermost-first (e.g. ['Foo','Foo::Bar']); omit for top-level"}},"required":["name"]}
 ;
 
 const ToolEntry = struct {
@@ -142,12 +110,10 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "resolve_type", .description = "Resolve the inferred type of a local variable at a source position", .schema = schema_resolve_type },
     .{ .name = "class_summary", .description = "Get methods, constants, and mixins for a class or module", .schema = schema_class_summary },
     .{ .name = "method_signature", .description = "Get the full signature and parameter types of a method", .schema = schema_method_signature },
-    .{ .name = "find_callers", .description = "Find all call sites of a method in the workspace", .schema = schema_find_callers },
     .{ .name = "find_implementations", .description = "Find all classes that define a given method name", .schema = schema_find_implementations },
     .{ .name = "workspace_symbols", .description = "Search symbols across the entire workspace by name", .schema = schema_workspace_symbols },
     .{ .name = "type_hierarchy", .description = "Get ancestor chain and known descendants of a class", .schema = schema_type_hierarchy },
     .{ .name = "association_graph", .description = "Get ActiveRecord associations (has_many, belongs_to, etc) for a class", .schema = schema_association_graph },
-    .{ .name = "route_map", .description = "List all Rails route helpers with optional prefix filter", .schema = schema_route_map },
     .{ .name = "diagnostics", .description = "Get parse and semantic diagnostics for a file", .schema = schema_diagnostics },
     .{ .name = "get_symbol_source", .description = "Get the source code of a class method", .schema = schema_get_symbol_source },
     .{ .name = "grep_source", .description = "Search for literal text across all workspace source files with surrounding context", .schema = schema_grep_source },
@@ -160,22 +126,13 @@ const TOOLS = [_]ToolEntry{
     .{ .name = "concern_usage", .description = "Find all classes that include/prepend/extend a given module or concern", .schema = schema_concern_usage },
     .{ .name = "find_references", .description = "Find all recorded call-site references to a method or symbol name", .schema = schema_find_references },
     .{ .name = "explain_symbol", .description = "Get a full picture of a method: signature, callers, and diagnostics in one call", .schema = schema_explain_symbol },
-    .{ .name = "batch_resolve", .description = "Resolve types at multiple source positions in one call (max 20 positions)", .schema = schema_batch_resolve },
     .{ .name = "workspace_health", .description = "Get workspace quality metrics: file counts, type coverage, diagnostic summary, schema version", .schema = schema_workspace_health },
     .{ .name = "test_summary", .description = "List discovered tests in a file with their kind (rspec/minitest) and line numbers", .schema = schema_test_summary },
     .{ .name = "list_routes", .description = "List all Rails route helpers with controller and action details", .schema = schema_list_routes },
     .{ .name = "refactor", .description = "Apply refactoring operations (extract_method, extract_variable) to source code", .schema = schema_refactor },
     .{ .name = "available_code_actions", .description = "Get list of available code actions at a specific location", .schema = schema_available_code_actions },
-    .{ .name = "diagnostic_summary", .description = "Get diagnostics with optional filtering by file, severity, or code", .schema = schema_diagnostic_summary },
     .{ .name = "explain_type_chain", .description = "Explain how a local variable's type was inferred — shows chain from source (RBS, YARD, literal, chain)", .schema = schema_explain_type_chain },
-    .{ .name = "suggest_types", .description = "Suggest YARD/RBS type annotations for untyped methods in a file", .schema = schema_suggest_types },
-    .{ .name = "type_coverage", .description = "Show type annotation coverage per file — percentage of methods with return types", .schema = schema_type_coverage },
-    .{ .name = "find_similar", .description = "Find methods with similar names (typo detection, naming consistency)", .schema = schema_find_similar },
-    .{ .name = "coverage_gap_analyzer", .description = "Identify untested definitions by reference count", .schema = schema_coverage_gap_analyzer },
-    .{ .name = "security_audit_summary", .description = "Aggregate security findings with severity scoring", .schema = schema_security_audit_summary },
-    .{ .name = "migration_chain_analyzer", .description = "Analyze Rails migrations for dependency hazards", .schema = schema_migration_chain_analyzer },
-    .{ .name = "dependency_tree_resolver", .description = "Build transitive dependency DAG from Gemfile.lock", .schema = schema_dependency_tree_resolver },
-    .{ .name = "unused_association_chain", .description = "Find unused ActiveRecord associations", .schema = schema_unused_association_chain },
+    .{ .name = "resolve_constant", .description = "Resolve a constant reference to its declaration using Ruby's lexical+ancestor lookup (nesting-aware) — disambiguates same-named constants across namespaces", .schema = schema_resolve_constant },
     .{ .name = "overlay_annotate", .description = "Add a gated overlay tweak (note/tag/concept/edge/type-override/diagnostic-suppress) — branch-scoped, reversible, audited. The only writable graph surface; derived facts stay immutable", .schema = schema_overlay_annotate },
     .{ .name = "overlay_list", .description = "List live overlay tweaks (node/edge/type/suppress) for the current project and branch (plus project-global)", .schema = schema_overlay_list },
     .{ .name = "overlay_revert", .description = "Soft-delete (revert) an overlay tweak by id", .schema = schema_overlay_revert },
@@ -387,12 +344,10 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "resolve_type")) return self.toolResolveType(id, args);
         if (std.mem.eql(u8, name, "class_summary")) return self.toolClassSummary(id, args);
         if (std.mem.eql(u8, name, "method_signature")) return self.toolMethodSignature(id, args);
-        if (std.mem.eql(u8, name, "find_callers")) return self.toolFindCallers(id, args);
         if (std.mem.eql(u8, name, "find_implementations")) return self.toolFindImplementations(id, args);
         if (std.mem.eql(u8, name, "workspace_symbols")) return self.toolWorkspaceSymbols(id, args);
         if (std.mem.eql(u8, name, "type_hierarchy")) return self.toolTypeHierarchy(id, args);
         if (std.mem.eql(u8, name, "association_graph")) return self.toolAssociationGraph(id, args);
-        if (std.mem.eql(u8, name, "route_map")) return self.toolRouteMap(id, args);
         if (std.mem.eql(u8, name, "diagnostics")) return self.toolDiagnostics(id, args);
         if (std.mem.eql(u8, name, "get_symbol_source")) return self.toolGetSymbolSource(id, args);
         if (std.mem.eql(u8, name, "grep_source")) return self.toolGrepSource(id, args);
@@ -405,22 +360,13 @@ pub const Server = struct {
         if (std.mem.eql(u8, name, "concern_usage")) return self.toolConcernUsage(id, args);
         if (std.mem.eql(u8, name, "find_references")) return self.toolFindReferences(id, args);
         if (std.mem.eql(u8, name, "explain_symbol")) return self.toolExplainSymbol(id, args);
-        if (std.mem.eql(u8, name, "batch_resolve")) return self.toolBatchResolve(id, params_obj.get("arguments"));
         if (std.mem.eql(u8, name, "workspace_health")) return self.toolWorkspaceHealth(id);
         if (std.mem.eql(u8, name, "test_summary")) return self.toolTestSummary(id, args);
         if (std.mem.eql(u8, name, "list_routes")) return self.toolListRoutes(id, args);
         if (std.mem.eql(u8, name, "refactor")) return self.toolRefactor(id, args);
         if (std.mem.eql(u8, name, "available_code_actions")) return self.toolAvailableCodeActions(id, args);
-        if (std.mem.eql(u8, name, "diagnostic_summary")) return self.toolDiagnosticSummary(id, args);
         if (std.mem.eql(u8, name, "explain_type_chain")) return self.toolExplainTypeChain(id, args);
-        if (std.mem.eql(u8, name, "suggest_types")) return self.toolSuggestTypes(id, args);
-        if (std.mem.eql(u8, name, "type_coverage")) return self.toolTypeCoverage(id, args);
-        if (std.mem.eql(u8, name, "find_similar")) return self.toolFindSimilar(id, args);
-        if (std.mem.eql(u8, name, "coverage_gap_analyzer")) return self.toolCoverageGapAnalyzer(id, args);
-        if (std.mem.eql(u8, name, "security_audit_summary")) return self.toolSecurityAuditSummary(id, args);
-        if (std.mem.eql(u8, name, "migration_chain_analyzer")) return self.toolMigrationChainAnalyzer(id, args);
-        if (std.mem.eql(u8, name, "dependency_tree_resolver")) return self.toolDependencyTreeResolver(id, args);
-        if (std.mem.eql(u8, name, "unused_association_chain")) return self.toolUnusedAssociationChain(id, args);
+        if (std.mem.eql(u8, name, "resolve_constant")) return self.toolResolveConstant(id, args);
 
         if (std.mem.eql(u8, name, "overlay_annotate")) return self.toolOverlayAnnotate(id, args);
         if (std.mem.eql(u8, name, "overlay_list")) return self.toolOverlayList(id, args);
@@ -1132,97 +1078,6 @@ pub const Server = struct {
         return null;
     }
 
-    fn toolFindCallers(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        var method_name: []const u8 = "";
-        var class_name: ?[]const u8 = null;
-        if (getStrArg(args, "symbol")) |sym| {
-            if (splitQualified(sym)) |q| {
-                class_name = q.class_name;
-                method_name = q.method_name;
-            } else {
-                method_name = sym;
-            }
-        } else {
-            method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name' (or pass 'symbol':'Class#method')");
-            class_name = getStrArg(args, "class_name");
-        }
-        const ref_kind = getStrArg(args, "ref_kind");
-        var offset = getIntArg(args, "offset") orelse 0;
-        if (offset < 0) offset = 0;
-
-        const stmt = if (ref_kind != null)
-            self.db.prepare(
-                \\SELECT f.path, r.line, r.col
-                \\FROM refs r JOIN files f ON f.id = r.file_id
-                \\WHERE r.name = ? AND r.kind = ?
-                \\ORDER BY f.path, r.line
-                \\LIMIT 201 OFFSET ?
-            ) catch return self.buildToolError(id, "database error")
-        else
-            self.db.prepare(
-                \\SELECT f.path, r.line, r.col
-                \\FROM refs r JOIN files f ON f.id = r.file_id
-                \\WHERE r.name = ?
-                \\ORDER BY f.path, r.line
-                \\LIMIT 201 OFFSET ?
-            ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        var param_idx: c_int = 1;
-        stmt.bind_text(param_idx, method_name);
-        param_idx += 1;
-        if (ref_kind) |kind| {
-            stmt.bind_text(param_idx, kind);
-            param_idx += 1;
-        }
-        stmt.bind_int(param_idx, offset);
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"method\":");
-        try writeJsonStr(w, method_name);
-        if (class_name) |cn| {
-            try w.writeAll(",\"class_filter\":");
-            try writeJsonStr(w, cn);
-        }
-        try w.writeAll(",\"callers\":[");
-
-        var file_cache = std.StringHashMap([]const u8).init(self.alloc);
-        defer {
-            var it = file_cache.iterator();
-            while (it.next()) |entry| {
-                self.alloc.free(entry.key_ptr.*);
-                self.alloc.free(entry.value_ptr.*);
-            }
-            file_cache.deinit();
-        }
-
-        var row_count: usize = 0;
-        while (stmt.step() catch |e| stepLog(e)) {
-            if (row_count >= 200) break;
-            const fpath = stmt.column_text(0);
-            const fline = stmt.column_int(1);
-            const fcol = stmt.column_int(2);
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-            try w.writeAll("{\"file\":");
-            try writeJsonStr(w, fpath);
-            try w.print(",\"line\":{d},\"col\":{d}", .{ fline, fcol });
-            const ctx_line = self.readFileLineFromCache(&file_cache, fpath, fline);
-            defer if (ctx_line) |cl| self.alloc.free(cl);
-            if (ctx_line) |cl| {
-                try w.writeAll(",\"context\":");
-                try writeJsonStr(w, cl);
-            }
-            try w.writeByte('}');
-        }
-        const has_more = stmt.step() catch false;
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
     fn toolFindImplementations(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const method_name = getStrArg(args, "method_name") orelse return self.buildToolError(id, "missing 'method_name'");
         var offset = getIntArg(args, "offset") orelse 0;
@@ -1287,18 +1142,23 @@ pub const Server = struct {
             std.fmt.allocPrint(self.alloc, "%{s}%", .{query}) catch return self.buildToolError(id, "OOM");
         defer self.alloc.free(match_or_like);
 
+        // Rank by kind first — classes/modules, then constants/defs — so a query for
+        // "Product" surfaces the Spree::Product class above local variables and RSpec
+        // example descriptions (both indexed as symbols but rarely what a search wants).
+        // Within a kind tier: exact-name hit, then shorter names, then alphabetical.
+        // ?4 is the trimmed query for the exact-match tiebreak; ?5 is the offset.
         const stmt = self.db.prepare(if (use_fts)
             \\SELECT s.name, s.kind, s.parent_name, s.return_type, f.path, s.line
             \\FROM symbols_fts
             \\JOIN symbols s ON s.id = symbols_fts.rowid
             \\JOIN files f ON f.id = s.file_id
-            \\WHERE symbols_fts MATCH ? AND (? IS NULL OR s.kind = ?)
-            \\ORDER BY s.name LIMIT 501 OFFSET ?
+            \\WHERE symbols_fts MATCH ?1 AND (?2 IS NULL OR s.kind = ?3)
+            \\ORDER BY CASE s.kind WHEN 'class' THEN 0 WHEN 'module' THEN 0 WHEN 'constant' THEN 1 WHEN 'classdef' THEN 1 WHEN 'def' THEN 1 WHEN 'variable' THEN 8 WHEN 'test' THEN 9 ELSE 4 END, (s.name = ?4) DESC, (substr(s.name, 1, 1) GLOB '[A-Z]') DESC, length(s.name), s.name LIMIT 501 OFFSET ?5
         else
             \\SELECT s.name, s.kind, s.parent_name, s.return_type, f.path, s.line
             \\FROM symbols s JOIN files f ON f.id = s.file_id
-            \\WHERE s.name LIKE ? AND (? IS NULL OR s.kind = ?)
-            \\ORDER BY s.name LIMIT 501 OFFSET ?
+            \\WHERE s.name LIKE ?1 AND (?2 IS NULL OR s.kind = ?3)
+            \\ORDER BY CASE s.kind WHEN 'class' THEN 0 WHEN 'module' THEN 0 WHEN 'constant' THEN 1 WHEN 'classdef' THEN 1 WHEN 'def' THEN 1 WHEN 'variable' THEN 8 WHEN 'test' THEN 9 ELSE 4 END, (s.name = ?4) DESC, (substr(s.name, 1, 1) GLOB '[A-Z]') DESC, length(s.name), s.name LIMIT 501 OFFSET ?5
         ) catch return self.buildToolError(id, "database error");
         defer stmt.finalize();
         stmt.bind_text(1, match_or_like);
@@ -1309,7 +1169,8 @@ pub const Server = struct {
             stmt.bind_null(2);
             stmt.bind_null(3);
         }
-        stmt.bind_int(4, offset);
+        stmt.bind_text(4, q_trim);
+        stmt.bind_int(5, offset);
 
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
@@ -1484,58 +1345,54 @@ pub const Server = struct {
         return self.buildToolResult(id, text);
     }
 
-    fn toolRouteMap(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const prefix = getStrArg(args, "prefix");
-        var offset = getIntArg(args, "offset") orelse 0;
-        if (offset < 0) offset = 0;
+    // Compute a file's diagnostics on demand (the same engine the LSP uses): Prism
+    // parse diagnostics + refract semantic checks (nil-receiver, wrong-arity), merged
+    // into one owned list. Nothing is persisted to a table, so this is the only source.
+    // Caller owns the result: free each `.message`, then `deinit(self.alloc)`.
+    // DiagEntry.line/col are 1-based, matching the rest of the MCP surface.
+    // Look up a file's id, tolerant of symlink/canonicalisation differences between
+    // the path the indexer stored and the path passed here (e.g. macOS /tmp vs the
+    // realpath /private/tmp). Tries the path as-is, then its realpath. 0 = not indexed.
+    fn fileIdFor(self: *Server, path: []const u8) i64 {
+        if (self.db.prepare("SELECT id FROM files WHERE path = ?")) |q| {
+            defer q.finalize();
+            q.bind_text(1, path);
+            if (q.step() catch false) return q.column_int(0);
+        } else |_| return 0;
+        const rp = std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, path, self.alloc) catch return 0;
+        defer self.alloc.free(rp);
+        if (std.mem.eql(u8, rp, path)) return 0;
+        if (self.db.prepare("SELECT id FROM files WHERE path = ?")) |q2| {
+            defer q2.finalize();
+            q2.bind_text(1, rp);
+            if (q2.step() catch false) return q2.column_int(0);
+        } else |_| return 0;
+        return 0;
+    }
 
-        var like_buf: [256]u8 = undefined;
-        const like_pat: []const u8 = if (prefix) |p|
-            std.fmt.bufPrint(&like_buf, "{s}%", .{p}) catch "%"
-        else
-            "%";
-
-        const stmt = self.db.prepare(
-            \\SELECT name, doc, return_type FROM symbols
-            \\WHERE kind = 'route_helper' AND name LIKE ?
-            \\ORDER BY name LIMIT 201 OFFSET ?
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        stmt.bind_text(1, like_pat);
-        stmt.bind_int(2, offset);
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"routes\":[");
-
-        var row_count: usize = 0;
-        while (stmt.step() catch |e| stepLog(e)) {
-            if (row_count >= 200) break;
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-            const rname = stmt.column_text(0);
-            const rdoc = stmt.column_text(1);
-            const rret = stmt.column_text(2);
-            try w.writeAll("{\"name\":");
-            try writeJsonStr(w, rname);
-            try w.writeAll(",\"doc\":");
-            if (rdoc.len > 0) try writeJsonStr(w, rdoc) else try w.writeAll("null");
-            try w.writeAll(",\"return_type\":");
-            if (rret.len > 0) try writeJsonStr(w, rret) else try w.writeAll("null");
-            try w.writeByte('}');
-        }
-        const has_more = stmt.step() catch false;
-        try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
+    fn fileDiags(self: *Server, path: []const u8) std.ArrayList(indexer.DiagEntry) {
+        var out: std.ArrayList(indexer.DiagEntry) = .empty;
+        const parse = indexer.getDiags(path, self.alloc) catch &.{};
+        defer self.alloc.free(parse); // entries' `.message` ownership moves into `out`
+        for (parse) |d| out.append(self.alloc, d) catch self.alloc.free(d.message);
+        const fid = self.fileIdFor(path);
+        if (fid == 0) return out; // not indexed → parse diags only
+        var sem = indexer.runSemanticChecks(self.db, fid, self.alloc) catch return out;
+        defer sem.deinit(self.alloc);
+        for (sem.items) |d| out.append(self.alloc, d) catch self.alloc.free(d.message);
+        return out;
     }
 
     fn toolDiagnostics(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file = getStrArg(args, "file");
-        var offset = getIntArg(args, "offset") orelse 0;
-        if (offset < 0) offset = 0;
+        const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file'");
+        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
+        defer self.alloc.free(resolved);
+
+        var diags = self.fileDiags(resolved);
+        defer {
+            for (diags.items) |d| self.alloc.free(d.message);
+            diags.deinit(self.alloc);
+        }
 
         // Overlay correction: drop diagnostics matched by a live suppression rule.
         const ctx = self.overlayCtx();
@@ -1544,94 +1401,29 @@ pub const Server = struct {
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
+        try w.writeAll("{\"file\":");
+        try writeJsonStr(w, resolved);
+        try w.writeAll(",\"errors\":[");
 
-        if (file) |fpath| {
-            try w.writeAll("{\"file\":");
-            try writeJsonStr(w, fpath);
-            try w.writeAll(",\"errors\":[");
-
-            const dstmt = self.db.prepare(
-                \\SELECT d.line, d.col, d.message, d.severity, d.code
-                \\FROM diagnostics d JOIN files f ON f.id = d.file_id
-                \\WHERE f.path = ?
-                \\ORDER BY d.line
-                \\LIMIT 1000
-            ) catch {
-                try w.writeAll("]}");
-                const text = try aw.toOwnedSlice();
-                defer self.alloc.free(text);
-                return self.buildToolResult(id, text);
-            };
-            defer dstmt.finalize();
-            dstmt.bind_text(1, fpath);
-
-            var first_d = true;
-            while (dstmt.step() catch |e| stepLog(e)) {
-                const dline = dstmt.column_int(0);
-                if (ctx) |c| {
-                    if (overlay.isSuppressed(self.db, c.pid, c.branch, dstmt.column_text(4), fpath, dline, null)) continue;
-                }
-                if (!first_d) try w.writeByte(',');
-                first_d = false;
-                try w.print("{{\"line\":{d},\"col\":{d},\"message\":", .{ dline, dstmt.column_int(1) });
-                try writeJsonStr(w, dstmt.column_text(2));
-                try w.print(",\"severity\":{d}}}", .{dstmt.column_int(3)});
+        var first_d = true;
+        for (diags.items) |d| {
+            if (ctx) |c| {
+                const dl: i64 = if (d.line > 0) d.line else 0;
+                if (overlay.isSuppressed(self.db, c.pid, c.branch, d.code, resolved, dl, null)) continue;
             }
-            try w.writeAll("]}");
-        } else {
-            // Return workspace-level diagnostics from DB
-            const wstmt = self.db.prepare(
-                \\SELECT f.path, d.line, d.col, d.message, d.severity, d.code
-                \\FROM diagnostics d JOIN files f ON f.id = d.file_id
-                \\WHERE f.is_gem = 0
-                \\ORDER BY f.path, d.line
-                \\LIMIT 2001 OFFSET ?
-            ) catch {
-                try w.writeAll("{\"files\":[]}");
-                const text = try aw.toOwnedSlice();
-                defer self.alloc.free(text);
-                return self.buildToolResult(id, text);
-            };
-            defer wstmt.finalize();
-            wstmt.bind_int(1, offset);
-
-            try w.writeAll("{\"files\":[");
-            var cur_file: ?[]u8 = null;
-            defer if (cur_file) |cf| self.alloc.free(cf);
-            var in_file = false;
-            var row_count: usize = 0;
-            while (wstmt.step() catch |e| stepLog(e)) {
-                if (row_count >= 2000) break;
-                row_count += 1;
-                const rpath = wstmt.column_text(0);
-                const rline = wstmt.column_int(1);
-                if (ctx) |c| {
-                    if (overlay.isSuppressed(self.db, c.pid, c.branch, wstmt.column_text(5), rpath, rline, null)) continue;
-                }
-                const rcol = wstmt.column_int(2);
-                const rmsg = wstmt.column_text(3);
-                const rsev = wstmt.column_int(4);
-                const new_file = cur_file == null or !std.mem.eql(u8, cur_file.?, rpath);
-                if (new_file) {
-                    if (in_file) try w.writeAll("]}");
-                    if (cur_file != null) try w.writeByte(',');
-                    if (cur_file) |cf| self.alloc.free(cf);
-                    cur_file = self.alloc.dupe(u8, rpath) catch null;
-                    in_file = true;
-                    try w.writeAll("{\"file\":");
-                    try writeJsonStr(w, rpath);
-                    try w.writeAll(",\"errors\":[");
-                }
-                if (!new_file) try w.writeByte(',');
-                try w.print("{{\"line\":{d},\"col\":{d},\"message\":", .{ rline, rcol });
-                try writeJsonStr(w, rmsg);
-                try w.print(",\"severity\":{d}}}", .{rsev});
+            if (!first_d) try w.writeByte(',');
+            first_d = false;
+            try w.print("{{\"line\":{d},\"col\":{d},\"severity\":{d},\"message\":", .{ d.line, d.col, d.severity });
+            try writeJsonStr(w, d.message);
+            if (d.code.len > 0) {
+                try w.writeAll(",\"code\":");
+                try writeJsonStr(w, d.code);
             }
-            if (in_file) try w.writeAll("]}");
-            const has_more = wstmt.step() catch false;
-            try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
+            try w.writeAll(",\"source\":");
+            try writeJsonStr(w, d.source);
+            try w.writeByte('}');
         }
-
+        try w.writeAll("]}");
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -1870,19 +1662,16 @@ pub const Server = struct {
                 else => return,
             } else return else return;
 
-            const diag_stmt = self.db.prepare(
-                \\SELECT d.line, d.col, d.message, d.severity
-                \\FROM diagnostics d JOIN files f ON f.id = d.file_id
-                \\WHERE f.path = ? ORDER BY d.line
-            ) catch return;
-            defer diag_stmt.finalize();
-            diag_stmt.bind_text(1, file);
-
+            var fb_diags = self.fileDiags(file);
+            defer {
+                for (fb_diags.items) |d| self.alloc.free(d.message);
+                fb_diags.deinit(self.alloc);
+            }
             var diag_count: usize = 0;
-            while (diag_stmt.step() catch |e| stepLog(e)) {
+            for (fb_diags.items) |d| {
                 if (diag_count == 0) try w.writeAll("Diagnostics:\n");
                 diag_count += 1;
-                try w.print("  line {d}: {s}\n", .{ diag_stmt.column_int(0), diag_stmt.column_text(2) });
+                try w.print("  line {d}: {s}\n", .{ d.line, d.message });
             }
             if (diag_count > 0) try w.writeByte('\n');
 
@@ -2220,6 +2009,72 @@ pub const Server = struct {
         }
         const has_more = stmt.step() catch false;
         try w.print("],\"has_more\":{s},\"offset\":{d}}}", .{ if (has_more) "true" else "false", offset });
+        const text = try aw.toOwnedSlice();
+        defer self.alloc.free(text);
+        return self.buildToolResult(id, text);
+    }
+
+    fn toolResolveConstant(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
+        const name = getStrArg(args, "name") orelse return self.buildToolError(id, "missing 'name'");
+        // nesting: outermost-first array; the innermost (last) entry is the enclosing
+        // scope path. Mirrors the ref_ns captured at index time.
+        var ref_ns: []const u8 = "";
+        if (args) |a| {
+            if (a.get("nesting")) |nv| {
+                if (nv == .array and nv.array.items.len > 0) {
+                    const last = nv.array.items[nv.array.items.len - 1];
+                    if (last == .string) ref_ns = last.string;
+                }
+            }
+        }
+
+        const sym_id = indexer.resolveConstantNested(self.db, name, ref_ns, self.alloc);
+
+        var aw = std.Io.Writer.Allocating.init(self.alloc);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+        try w.writeAll("{\"query\":");
+        try writeJsonStr(w, name);
+        try w.writeAll(",\"nesting\":");
+        try writeJsonStr(w, ref_ns);
+        if (sym_id == 0) {
+            try w.writeAll(",\"resolved\":false}");
+        } else {
+            const stmt = self.db.prepare(
+                \\SELECT s.name, s.kind, s.parent_name, s.line, s.col, f.path, s.deprecated
+                \\FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?
+            ) catch return self.buildToolError(id, "database error");
+            defer stmt.finalize();
+            stmt.bind_int(1, sym_id);
+            if (stmt.step() catch false) {
+                const sname = stmt.column_text(0);
+                const skind = stmt.column_text(1);
+                const sparent = stmt.column_text(2);
+                const sline = stmt.column_int(3);
+                const scol = stmt.column_int(4);
+                const spath = stmt.column_text(5);
+                const sdeprecated = stmt.column_int(6);
+                // Fully-qualified name: a constant stores its namespace in parent_name
+                // and only the simple name in `name`; class/module names are already
+                // qualified. Join only when the name isn't already qualified.
+                try w.writeAll(",\"resolved\":true,\"fqn\":");
+                if (std.mem.eql(u8, skind, "constant") and sparent.len > 0 and std.mem.indexOf(u8, sname, "::") == null) {
+                    var fqn_buf = std.Io.Writer.Allocating.init(self.alloc);
+                    defer fqn_buf.deinit();
+                    try fqn_buf.writer.print("{s}::{s}", .{ sparent, sname });
+                    try writeJsonStr(w, fqn_buf.written());
+                } else {
+                    try writeJsonStr(w, sname);
+                }
+                try w.writeAll(",\"kind\":");
+                try writeJsonStr(w, skind);
+                try w.writeAll(",\"file\":");
+                try writeJsonStr(w, spath);
+                try w.print(",\"line\":{d},\"col\":{d},\"deprecated\":{s}}}", .{ sline, scol, if (sdeprecated != 0) "true" else "false" });
+            } else {
+                try w.writeAll(",\"resolved\":false}");
+            }
+        }
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);
@@ -2941,108 +2796,30 @@ pub const Server = struct {
         }
         try w.writeByte(']');
 
-        // Diagnostics on the defining file
+        // Diagnostics on the defining file — computed on demand (parse + semantic).
         try w.writeAll(",\"diagnostics\":[");
         if (def_file.len > 0) {
-            if (self.db.prepare(
-                \\SELECT d.message, d.severity, d.line FROM diagnostics d
-                \\JOIN files f ON f.id = d.file_id
-                \\WHERE f.path = ? ORDER BY d.line LIMIT 10
-            )) |ds| {
-                defer ds.finalize();
-                ds.bind_text(1, def_file);
-                var dfirst = true;
-                while (ds.step() catch |e| stepLog(e)) {
-                    if (!dfirst) try w.writeByte(',');
-                    dfirst = false;
-                    try w.writeAll("{\"message\":");
-                    try writeJsonStr(w, ds.column_text(0));
-                    try w.writeAll(",\"severity\":");
-                    try writeJsonStr(w, ds.column_text(1));
-                    try w.print(",\"line\":{d}}}", .{ds.column_int(2)});
-                }
-            } else |_| {}
-        }
-        try w.writeAll("]}");
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolBatchResolve(self: *Server, id: ?std.json.Value, args_val: ?std.json.Value) !?[]u8 {
-        const positions_val = switch (args_val orelse return self.buildToolError(id, "missing arguments")) {
-            .object => |o| o.get("positions") orelse return self.buildToolError(id, "missing 'positions'"),
-            else => return self.buildToolError(id, "arguments must be object"),
-        };
-        const positions = switch (positions_val) {
-            .array => |a| a,
-            else => return self.buildToolError(id, "'positions' must be array"),
-        };
-        if (positions.items.len > 20) return self.buildToolError(id, "too many positions (max 20)");
-
-        const stmt = self.db.prepare(
-            \\SELECT lv.name, lv.type_hint, lv.confidence
-            \\FROM local_vars lv JOIN files f ON f.id = lv.file_id
-            \\WHERE f.path = ? AND lv.line = ? AND lv.type_hint IS NOT NULL
-            \\ORDER BY ABS(lv.col - ?) LIMIT 1
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"results\":[");
-
-        for (positions.items, 0..) |pos_val, pi| {
-            if (pi > 0) try w.writeByte(',');
-            const pos = switch (pos_val) {
-                .object => |o| o,
-                else => {
-                    try w.writeAll("{\"error\":\"position must be object\"}");
-                    continue;
-                },
-            };
-            const file = switch (pos.get("file") orelse {
-                try w.writeAll("{\"error\":\"missing file\"}");
-                continue;
-            }) {
-                .string => |s| s,
-                else => {
-                    try w.writeAll("{\"error\":\"file must be string\"}");
-                    continue;
-                },
-            };
-            const line = switch (pos.get("line") orelse {
-                try w.writeAll("{\"error\":\"missing line\"}");
-                continue;
-            }) {
-                .integer => |i| i,
-                .float => |f| @as(i64, @intFromFloat(f)),
-                else => {
-                    try w.writeAll("{\"error\":\"line must be integer\"}");
-                    continue;
-                },
-            };
-            const col: i64 = if (pos.get("col")) |cv| switch (cv) {
-                .integer => |i| i,
-                .float => |f| @as(i64, @intFromFloat(f)),
-                else => 0,
-            } else 0;
-
-            stmt.reset();
-            stmt.bind_text(1, file);
-            stmt.bind_int(2, line);
-            stmt.bind_int(3, col);
-
-            try w.print("{{\"line\":{d},\"col\":{d}", .{ line, col });
-            if (stmt.step() catch |e| stepLog(e)) {
-                try w.writeAll(",\"type\":");
-                try writeJsonStr(w, stmt.column_text(1));
-                try w.print(",\"confidence\":{d}", .{stmt.column_int(2)});
-            } else {
-                try w.writeAll(",\"type\":null,\"confidence\":0");
+            var diags = self.fileDiags(def_file);
+            defer {
+                for (diags.items) |d| self.alloc.free(d.message);
+                diags.deinit(self.alloc);
             }
-            try w.writeByte('}');
+            var dfirst = true;
+            var demitted: usize = 0;
+            for (diags.items) |d| {
+                if (demitted >= 10) break;
+                if (!dfirst) try w.writeByte(',');
+                dfirst = false;
+                demitted += 1;
+                try w.writeAll("{\"message\":");
+                try writeJsonStr(w, d.message);
+                try w.print(",\"severity\":{d},\"line\":{d}", .{ d.severity, d.line });
+                if (d.code.len > 0) {
+                    try w.writeAll(",\"code\":");
+                    try writeJsonStr(w, d.code);
+                }
+                try w.writeByte('}');
+            }
         }
         try w.writeAll("]}");
         const text = try aw.toOwnedSlice();
@@ -3104,19 +2881,7 @@ pub const Server = struct {
             total_files, total_symbols, typed_pct, unused_defs,
         });
 
-        // Diagnostics by severity
-        try w.writeAll(",\"diagnostic_count_by_severity\":{");
-        if (self.db.prepare("SELECT severity, COUNT(*) FROM diagnostics GROUP BY severity ORDER BY severity")) |ds| {
-            defer ds.finalize();
-            var dfirst = true;
-            while (ds.step() catch |e| stepLog(e)) {
-                if (!dfirst) try w.writeByte(',');
-                dfirst = false;
-                try writeJsonStr(w, ds.column_text(0));
-                try w.print(":{d}", .{ds.column_int(1)});
-            }
-        } else |_| {}
-        try w.writeAll("},\"schema_version\":");
+        try w.writeAll(",\"schema_version\":");
         try writeJsonStr(w, schema_ver);
         try w.writeByte('}');
 
@@ -3348,71 +3113,6 @@ pub const Server = struct {
         return self.buildToolResult(id, text);
     }
 
-    fn toolDiagnosticSummary(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file_filter = getStrArg(args, "file");
-        const severity_filter = getStrArg(args, "severity_filter");
-        const code_filter = getStrArg(args, "code_filter");
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("[");
-
-        if (self.db.prepare(
-            \\SELECT d.line, d.col, d.message, d.severity, d.code, f.path
-            \\FROM diagnostics d JOIN files f ON f.id = d.file_id
-            \\ORDER BY f.path, d.line
-        )) |stmt| {
-            defer stmt.finalize();
-
-            var first = true;
-            var result_count: u32 = 0;
-            const max_results: u32 = 500;
-            while (stmt.step() catch |e| stepLog(e)) {
-                const line = stmt.column_int(0);
-                const col = stmt.column_int(1);
-                const msg = stmt.column_text(2);
-                const severity = stmt.column_int(3);
-                const code = stmt.column_text(4);
-                const fpath = stmt.column_text(5);
-
-                if (file_filter) |ff| {
-                    if (!std.mem.eql(u8, fpath, ff)) continue;
-                }
-
-                if (severity_filter) |sf| {
-                    var sev_match = false;
-                    if (std.mem.eql(u8, sf, "error") and severity == 1) sev_match = true;
-                    if (std.mem.eql(u8, sf, "warning") and severity == 2) sev_match = true;
-                    if (std.mem.eql(u8, sf, "info") and severity == 3) sev_match = true;
-                    if (!sev_match) continue;
-                }
-
-                if (code_filter) |cf| {
-                    if (!std.mem.eql(u8, code, cf)) continue;
-                }
-
-                if (result_count >= max_results) break;
-
-                if (!first) try w.writeByte(',');
-                first = false;
-                try w.print("{{\"file\":", .{});
-                try writeJsonStr(w, fpath);
-                try w.print(",\"line\":{d},\"col\":{d},\"severity\":{d},\"message\":", .{ line, col, severity });
-                try writeJsonStr(w, msg);
-                try w.writeAll(",\"code\":");
-                if (code.len > 0) try writeJsonStr(w, code) else try w.writeAll("null");
-                try w.writeAll("}");
-                result_count += 1;
-            }
-        } else |_| {}
-
-        try w.writeAll("]");
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
     fn toolExplainTypeChain(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
         const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
         const line = getIntArg(args, "line") orelse return self.buildToolError(id, "missing 'line' argument");
@@ -3462,472 +3162,6 @@ pub const Server = struct {
         } else {
             try w.writeAll("]}");
         }
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolSuggestTypes(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file = getStrArg(args, "file") orelse return self.buildToolError(id, "missing 'file' argument");
-        const limit_raw = getIntArg(args, "limit");
-        const limit: i64 = if (limit_raw) |l| (if (l > 0 and l <= 100) l else 20) else 20;
-        const resolved = normalizeFileArg(self.alloc, file) orelse return self.buildToolError(id, "cannot resolve file path");
-        defer self.alloc.free(resolved);
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"suggestions\":[");
-
-        const stmt = self.db.prepare(
-            \\SELECT s.name, s.kind, s.line, s.return_type
-            \\FROM symbols s JOIN files f ON f.id = s.file_id
-            \\WHERE f.path = ? AND s.kind = 'def' AND s.return_type IS NULL
-            \\ORDER BY s.line LIMIT ?
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        stmt.bind_text(1, resolved);
-        stmt.bind_int(2, limit);
-
-        var first = true;
-        while (stmt.step() catch false) {
-            if (!first) try w.writeByte(',');
-            first = false;
-            const method_name = stmt.column_text(0);
-            const method_line = stmt.column_int(2);
-
-            // Try to infer from return statements or callers
-            var suggested_buf: ?[]u8 = null;
-            defer if (suggested_buf) |b| self.alloc.free(b);
-            const ret_stmt = self.db.prepare("SELECT lv.type_hint FROM local_vars lv WHERE lv.name = ? AND lv.type_hint IS NOT NULL ORDER BY lv.confidence DESC LIMIT 1") catch null;
-            if (ret_stmt) |rs| {
-                defer rs.finalize();
-                rs.bind_text(1, method_name);
-                if (rs.step() catch false) {
-                    suggested_buf = self.alloc.dupe(u8, rs.column_text(0)) catch null;
-                }
-            }
-            const suggested: []const u8 = suggested_buf orelse "untyped";
-
-            try w.writeAll("{\"method\":");
-            try writeJsonStr(w, method_name);
-            try w.print(",\"line\":{d},\"suggested_return_type\":", .{method_line});
-            try writeJsonStr(w, suggested);
-            try w.writeAll("}");
-        }
-        try w.writeAll("]}");
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolTypeCoverage(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file_filter = if (args) |a| if (a.get("file")) |v| switch (v) {
-            .string => |s| s,
-            else => null,
-        } else null else null;
-        const min_cov: f64 = if (args) |a| if (a.get("min_coverage")) |v| switch (v) {
-            .float => |f| f,
-            .integer => |i| @floatFromInt(i),
-            else => 100.0,
-        } else 100.0 else 100.0;
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        const w = &aw.writer;
-        try w.writeAll("{\"files\":[");
-
-        const query = if (file_filter != null)
-            "SELECT f.path, " ++
-                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def') as total, " ++
-                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def' AND return_type IS NOT NULL) as typed " ++
-                "FROM files f WHERE f.is_gem=0 AND f.path=? ORDER BY f.path"
-        else
-            "SELECT f.path, " ++
-                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def') as total, " ++
-                "(SELECT COUNT(*) FROM symbols WHERE file_id=f.id AND kind='def' AND return_type IS NOT NULL) as typed " ++
-                "FROM files f WHERE f.is_gem=0 ORDER BY f.path";
-
-        const stmt = self.db.prepare(query) catch return self.buildError(id, -32603, "DB error");
-        defer stmt.finalize();
-        if (file_filter) |ff| stmt.bind_text(1, ff);
-
-        var first = true;
-        var ws_total: u32 = 0;
-        var ws_typed: u32 = 0;
-        while (stmt.step() catch false) {
-            const fpath = stmt.column_text(0);
-            const total: u32 = @intCast(stmt.column_int(1));
-            const typed: u32 = @intCast(stmt.column_int(2));
-            if (total == 0) continue;
-            const pct: f64 = @as(f64, @floatFromInt(typed)) / @as(f64, @floatFromInt(total)) * 100.0;
-            if (pct > min_cov) continue;
-            ws_total += total;
-            ws_typed += typed;
-            if (!first) try w.writeAll(",");
-            first = false;
-            try w.writeAll("{\"file\":");
-            try writeJsonStr(w, fpath);
-            try w.print(",\"total_methods\":{d},\"typed_methods\":{d},\"coverage_pct\":{d:.1}}}", .{ total, typed, pct });
-        }
-        const ws_pct: f64 = if (ws_total > 0) @as(f64, @floatFromInt(ws_typed)) / @as(f64, @floatFromInt(ws_total)) * 100.0 else 0.0;
-        try w.print("],\"workspace_total\":{d},\"workspace_typed\":{d},\"workspace_coverage_pct\":{d:.1}}}", .{ ws_total, ws_typed, ws_pct });
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolFindSimilar(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const method_name = if (args) |a| if (a.get("method_name")) |v| switch (v) {
-            .string => |s| s,
-            else => return self.buildError(id, -32602, "method_name required"),
-        } else return self.buildError(id, -32602, "method_name required") else return self.buildError(id, -32602, "method_name required");
-
-        const max_dist: u32 = if (args) |a| if (a.get("max_distance")) |v| switch (v) {
-            .integer => |i| if (i > 0 and i <= 10) @intCast(i) else 3,
-            else => 3,
-        } else 3 else 3;
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        const w = &aw.writer;
-        try w.writeAll("{\"query\":");
-        try writeJsonStr(w, method_name);
-        try w.writeAll(",\"similar\":[");
-
-        // Use LIKE for prefix filtering, then edit distance for ranking
-        const stmt = self.db.prepare("SELECT DISTINCT name, parent_name, kind FROM symbols WHERE kind='def' AND name != ? AND file_id IN (SELECT id FROM files WHERE is_gem=0) LIMIT 5000") catch return self.buildError(id, -32603, "DB error");
-        defer stmt.finalize();
-        stmt.bind_text(1, method_name);
-
-        var first = true;
-        var count: u32 = 0;
-        while (stmt.step() catch false) {
-            if (count >= 50) break;
-            const cand = stmt.column_text(0);
-            if (cand.len == 0) continue;
-            const dist = editDistance(method_name, cand);
-            const is_substring = method_name.len >= 3 and cand.len >= 3 and
-                (std.mem.indexOf(u8, cand, method_name) != null or
-                    std.mem.indexOf(u8, method_name, cand) != null);
-            if (dist <= max_dist or is_substring) {
-                if (!first) try w.writeAll(",");
-                first = false;
-                try w.writeAll("{\"name\":");
-                try writeJsonStr(w, cand);
-                const parent = stmt.column_text(1);
-                if (parent.len > 0) {
-                    try w.writeAll(",\"class\":");
-                    try writeJsonStr(w, parent);
-                }
-                const match_kind: []const u8 = if (dist <= max_dist) "edit_distance" else "substring";
-                try w.print(",\"distance\":{d},\"match\":", .{dist});
-                try writeJsonStr(w, match_kind);
-                try w.writeByte('}');
-                count += 1;
-            }
-        }
-        try w.writeAll("]}");
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolCoverageGapAnalyzer(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file_filter = getStrArg(args, "file");
-        const threshold = getIntArg(args, "threshold") orelse 1;
-
-        const stmt = self.db.prepare(
-            \\SELECT s.name, s.parent_name, f.path, s.line, COUNT(r.name) as ref_count
-            \\FROM symbols s
-            \\JOIN files f ON f.id = s.file_id
-            \\LEFT JOIN refs r ON r.name = s.name AND EXISTS (
-            \\  SELECT 1 FROM files rf WHERE rf.id = r.file_id AND (rf.path LIKE '%_test.rb' OR rf.path LIKE '%_spec.rb')
-            \\)
-            \\WHERE s.kind = 'def' AND f.is_gem = 0
-            \\  AND (? IS NULL OR f.path = ?)
-            \\GROUP BY s.id
-            \\HAVING ref_count < ?
-            \\ORDER BY f.path, s.line LIMIT 100
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        if (file_filter) |ff| {
-            stmt.bind_text(1, ff);
-            stmt.bind_text(2, ff);
-        } else {
-            stmt.bind_null(1);
-            stmt.bind_null(2);
-        }
-        stmt.bind_int(3, threshold);
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"gaps\":[");
-
-        var row_count: usize = 0;
-        while (stmt.step() catch |e| stepLog(e)) {
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-            const name = stmt.column_text(0);
-            const parent_name = stmt.column_text(1);
-            const file_path = stmt.column_text(2);
-            const line = stmt.column_int(3);
-            const ref_count = stmt.column_int(4);
-            try w.writeAll("{\"name\":");
-            try writeJsonStr(w, name);
-            try w.writeAll(",\"parent_name\":");
-            if (parent_name.len > 0) try writeJsonStr(w, parent_name) else try w.writeAll("null");
-            try w.writeAll(",\"file\":");
-            try writeJsonStr(w, file_path);
-            try w.print(",\"line\":{d},\"test_ref_count\":{d}", .{ line, ref_count });
-            try w.writeByte('}');
-        }
-        try w.print("],\"threshold\":{d},\"note\":\"finds defs with <threshold test refs\"}}", .{threshold});
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolSecurityAuditSummary(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const file_filter = getStrArg(args, "file");
-
-        const stmt = self.db.prepare(
-            \\SELECT f.path, b.code, b.severity, b.message, 'brakeman' as tool_type
-            \\FROM brakeman_findings b
-            \\JOIN files f ON f.id = b.file_id
-            \\WHERE (? IS NULL OR f.path = ?)
-            \\UNION ALL
-            \\SELECT f.path, s.rule_id, s.severity, s.message, 'semgrep' as tool_type
-            \\FROM semgrep_findings s
-            \\JOIN files f ON f.id = s.file_id
-            \\WHERE (? IS NULL OR f.path = ?)
-            \\ORDER BY f.path
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        if (file_filter) |ff| {
-            stmt.bind_text(1, ff);
-            stmt.bind_text(2, ff);
-            stmt.bind_text(3, ff);
-            stmt.bind_text(4, ff);
-        } else {
-            stmt.bind_null(1);
-            stmt.bind_null(2);
-            stmt.bind_null(3);
-            stmt.bind_null(4);
-        }
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"findings\":[");
-
-        var row_count: usize = 0;
-        var total_risk: i32 = 0;
-        var high_count: i32 = 0;
-        while (stmt.step() catch |e| stepLog(e)) {
-            if (row_count >= 100) break;
-            const file_path = stmt.column_text(0);
-            const code = stmt.column_text(1);
-            const severity = stmt.column_int(2);
-            const message = stmt.column_text(3);
-            const tool_type = stmt.column_text(4);
-
-            const cvss_score: i32 = switch (severity) {
-                10 => 10,
-                9 => 9,
-                8 => 8,
-                7 => 7,
-                6 => 6,
-                5 => 5,
-                4 => 4,
-                3 => 3,
-                2 => 2,
-                else => 1,
-            };
-            total_risk += cvss_score;
-            if (cvss_score >= 7) high_count += 1;
-
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-            try w.writeAll("{\"file\":");
-            try writeJsonStr(w, file_path);
-            try w.writeAll(",\"code\":");
-            try writeJsonStr(w, code);
-            try w.print(",\"severity\":{d},\"cvss_score\":{d},\"message\":", .{ severity, cvss_score });
-            try writeJsonStr(w, message);
-            try w.writeAll(",\"tool\":");
-            try writeJsonStr(w, tool_type);
-            try w.writeByte('}');
-        }
-        try w.print("],\"summary\":{{\"total_risk\":{d},\"high_count\":{d},\"note\":\"top 100 findings\"}}}}", .{ total_risk, high_count });
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolMigrationChainAnalyzer(self: *Server, id: ?std.json.Value, _: ?std.json.ObjectMap) !?[]u8 {
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-
-        // Per-migration-file hazards: scan refs for hazard call names inside
-        // db/migrate/*.rb. Detects change_column / remove_column / execute as
-        // potentially non-reversible operations.
-        const stmt = self.db.prepare(
-            \\SELECT f.path,
-            \\       MAX(CASE WHEN r.name = 'change_column' THEN 1 ELSE 0 END) AS h_change,
-            \\       MAX(CASE WHEN r.name = 'remove_column' THEN 1 ELSE 0 END) AS h_remove,
-            \\       MAX(CASE WHEN r.name = 'execute'       THEN 1 ELSE 0 END) AS h_execute,
-            \\       (SELECT s.name FROM symbols s WHERE s.file_id = f.id AND s.kind = 'classdef' LIMIT 1) AS class_name
-            \\FROM files f
-            \\LEFT JOIN refs r ON r.file_id = f.id
-            \\WHERE f.path LIKE '%db/migrate/%.rb'
-            \\GROUP BY f.id
-            \\ORDER BY f.path
-            \\LIMIT 500
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-
-        try w.writeAll("{\"migrations\":[");
-        var row_count: usize = 0;
-        var hazard_count: usize = 0;
-
-        while (stmt.step() catch |e| stepLog(e)) {
-            const file_path = stmt.column_text(0);
-            const h_change = stmt.column_int(1) != 0;
-            const h_remove = stmt.column_int(2) != 0;
-            const h_execute = stmt.column_int(3) != 0;
-            const class_name = stmt.column_text(4);
-
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-
-            try w.writeAll("{\"file\":");
-            try writeJsonStr(w, file_path);
-            try w.writeAll(",\"class_name\":");
-            if (class_name.len > 0) try writeJsonStr(w, class_name) else try w.writeAll("null");
-
-            if (h_change) hazard_count += 1;
-            if (h_remove) hazard_count += 1;
-            if (h_execute) hazard_count += 1;
-
-            try w.print(",\"hazard_change_column\":{s},\"hazard_remove_column\":{s},\"hazard_execute\":{s}}}", .{
-                if (h_change) "true" else "false",
-                if (h_remove) "true" else "false",
-                if (h_execute) "true" else "false",
-            });
-        }
-
-        try w.print("],\"rollback_hazards\":{d},\"note\":\"flags change_column / remove_column / execute calls per migration\"}}", .{hazard_count});
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolDependencyTreeResolver(self: *Server, id: ?std.json.Value, _: ?std.json.ObjectMap) !?[]u8 {
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-
-        var gem_count: usize = 0;
-        var transitive_count: usize = 0;
-
-        const cwd = std.Io.Dir.cwd();
-        const gemfile_content = cwd.readFileAlloc(std.Options.debug_io, "Gemfile.lock", self.alloc, std.Io.Limit.limited(1_000_000)) catch {
-            try w.writeAll("{\"dependencies\":[],\"transitive_count\":0,\"note\":\"Gemfile.lock not found\"}");
-            const text = try aw.toOwnedSlice();
-            defer self.alloc.free(text);
-            return self.buildToolResult(id, text);
-        };
-        defer self.alloc.free(gemfile_content);
-
-        try w.writeAll("{\"dependencies\":[");
-
-        var lines = std.mem.splitSequence(u8, gemfile_content, "\n");
-        var in_gem_section = false;
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t\r");
-            if (std.mem.eql(u8, trimmed, "GEM")) {
-                in_gem_section = true;
-                continue;
-            }
-            if (in_gem_section and trimmed.len == 0) break;
-            if (!in_gem_section) continue;
-
-            if (std.mem.startsWith(u8, trimmed, "remote:") or std.mem.startsWith(u8, trimmed, "specs:")) continue;
-
-            if (trimmed.len > 0 and !std.mem.startsWith(u8, trimmed, " ")) {
-                const paren_pos = std.mem.indexOf(u8, trimmed, "(");
-                if (paren_pos) |pp| {
-                    const name = std.mem.trim(u8, trimmed[0..pp], " ");
-                    const version_end = std.mem.lastIndexOf(u8, trimmed, ")") orelse trimmed.len;
-                    const version = std.mem.trim(u8, trimmed[pp + 1 .. version_end], " ()");
-
-                    if (gem_count > 0) try w.writeByte(',');
-                    gem_count += 1;
-                    if (gem_count > 100) break;
-
-                    try w.writeAll("{\"name\":");
-                    try writeJsonStr(w, name);
-                    try w.writeAll(",\"version\":");
-                    try writeJsonStr(w, version);
-                    try w.writeByte('}');
-                }
-            } else if (std.mem.startsWith(u8, trimmed, "dependencies:")) {
-                transitive_count += 1;
-            }
-        }
-
-        try w.print("],\"transitive_count\":{d},\"note\":\"top 100 gems from Gemfile.lock\"}}", .{transitive_count});
-        const text = try aw.toOwnedSlice();
-        defer self.alloc.free(text);
-        return self.buildToolResult(id, text);
-    }
-
-    fn toolUnusedAssociationChain(self: *Server, id: ?std.json.Value, args: ?std.json.ObjectMap) !?[]u8 {
-        const class_name = getStrArg(args, "class_name");
-
-        const stmt = self.db.prepare(
-            \\SELECT s.name, s.line, f.path, COUNT(r.name) as ref_count
-            \\FROM symbols s
-            \\JOIN files f ON f.id = s.file_id
-            \\LEFT JOIN refs r ON r.name = s.name
-            \\WHERE s.kind IN ('association', 'has_many', 'belongs_to', 'has_one', 'has_and_belongs_to_many')
-            \\  AND f.is_gem = 0
-            \\  AND (? IS NULL OR s.parent_name = ?)
-            \\GROUP BY s.id
-            \\HAVING ref_count = 0
-            \\ORDER BY f.path, s.line
-            \\LIMIT 100
-        ) catch return self.buildToolError(id, "database error");
-        defer stmt.finalize();
-        if (class_name) |cn| {
-            stmt.bind_text(1, cn);
-            stmt.bind_text(2, cn);
-        } else {
-            stmt.bind_null(1);
-            stmt.bind_null(2);
-        }
-
-        var aw = std.Io.Writer.Allocating.init(self.alloc);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        try w.writeAll("{\"unused_associations\":[");
-
-        var row_count: usize = 0;
-        while (stmt.step() catch |e| stepLog(e)) {
-            if (row_count > 0) try w.writeByte(',');
-            row_count += 1;
-            const name = stmt.column_text(0);
-            const line = stmt.column_int(1);
-            const file_path = stmt.column_text(2);
-            const ref_count = stmt.column_int(3);
-            try w.writeAll("{\"name\":");
-            try writeJsonStr(w, name);
-            try w.print(",\"line\":{d},\"file\":", .{line});
-            try writeJsonStr(w, file_path);
-            try w.print(",\"ref_count\":{d}}}", .{ref_count});
-        }
-        try w.print("],\"note\":\"associations with 0 references in workspace\"}}", .{});
         const text = try aw.toOwnedSlice();
         defer self.alloc.free(text);
         return self.buildToolResult(id, text);

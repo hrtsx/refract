@@ -31,7 +31,7 @@ jobs:
             .zig-cache
           key: linux-zig-fuzz-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-fuzz-
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y sqlite3
       - name: Build fuzz harnesses
         run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" fuzz-bin
       - name: Run corpus replay

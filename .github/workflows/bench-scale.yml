@@ -36,7 +36,7 @@ jobs:
             .zig-cache
           key: linux-zig-scale-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-scale-
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3 ruby coreutils time
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y sqlite3 ruby coreutils time
       - name: Build refract (ReleaseSafe)
         run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" -Drelease=true
       - name: Generate synthetic corpus

@@ -362,7 +362,7 @@ syntactically broken document is opened.
 | `--doctor` health report | **yes** (color, 20+ checks) | yes (basic) | no | no | no |
 | Built-in linter codes | `refract/nil-receiver`, `wrong-arity`, … | none | optional `solargraph typecheck` | full type checker | full type checker |
 | RuboCop integration | optional (default on, `--disable-rubocop`) | external | external | n/a | n/a |
-| MCP server for AI agents | **yes** (`refract --mcp`, 41 tools) | no | no | no | no |
+| MCP server for AI agents | **yes** (`refract --mcp`, 30 tools) | no | no | no | no |
 | LSP method coverage | 28+ incl. semantic-tokens, inlay-hints, code-action, foldingRange, prepareRename, willRenameFiles | 20+ | 20+ | type-error focused | type-error focused |
 
 ## 6b. DX on real repos

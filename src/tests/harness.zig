@@ -106,10 +106,23 @@ pub const Session = struct {
 
         var timeout_done = std.atomic.Value(bool).init(false);
         const child_pid = child.id.?;
+        // Hard watchdog: kills the child only if it truly hangs. Sized well
+        // above a session's real wall-clock under heavy CI contention (macOS
+        // runs four test binaries on one runner, each spawning a fresh refract
+        // per session). 15s was too tight there: a slow-but-progressing session
+        // got KILLed mid-reply, truncating stdout so the next query response
+        // went missing (NoSymbolResponse) — a ~50% flake. A genuine deadlock
+        // still trips this and fails the test.
+        const watchdog_ms: u32 = blk: {
+            if (std.c.getenv("REFRACT_TEST_WATCHDOG_MS")) |v| {
+                if (std.fmt.parseInt(u32, std.mem.span(v), 10) catch null) |n| break :blk n;
+            }
+            break :blk 60_000;
+        };
         var thr = std.Thread.spawn(.{}, struct {
-            fn run(pid: std.process.Child.Id, done: *std.atomic.Value(bool)) void {
+            fn run(pid: std.process.Child.Id, done: *std.atomic.Value(bool), limit_ms: u32) void {
                 var elapsed: u32 = 0;
-                while (elapsed < 15_000) : (elapsed += 100) {
+                while (elapsed < limit_ms) : (elapsed += 100) {
                     if (done.load(.acquire)) return;
                     {
                         var _sleep_ts: std.c.timespec = .{ .sec = @intCast((100 * std.time.ns_per_ms) / std.time.ns_per_s), .nsec = @intCast((100 * std.time.ns_per_ms) % std.time.ns_per_s) };
@@ -120,7 +133,7 @@ pub const Session = struct {
                     std.posix.kill(pid, std.posix.SIG.KILL) catch {};
                 }
             }
-        }.run, .{ child_pid, &timeout_done }) catch null;
+        }.run, .{ child_pid, &timeout_done, watchdog_ms }) catch null;
         defer {
             timeout_done.store(true, .release);
             if (thr) |t| t.join();

@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 14;
+pub const CURRENT_SCHEMA: u32 = 15;
 
 pub const DbError = error{
     Open,
@@ -830,6 +830,11 @@ pub const Db = struct {
         // resolve to the correct binding. Old rows lack it -> the v<14 reindex repopulates.
         self.execMigration("ALTER TABLE refs ADD COLUMN ref_ns TEXT"); // migration guard: column already exists on migrated schemas
         self.exec("CREATE INDEX IF NOT EXISTS idx_refs_ns ON refs(ref_ns)") catch {}; // migration guard: ref_ns column may be absent on older schemas
+
+        // Schema v15: symbols.deprecated flags a definition carrying a YARD @deprecated
+        // tag (detected from its doc at index time). Surfaced in hover so agents/humans
+        // see the warning without re-reading the doc. 0 = not deprecated.
+        self.execMigration("ALTER TABLE symbols ADD COLUMN deprecated INTEGER DEFAULT 0"); // migration guard: column already exists on migrated schemas
 
         // Stamp the current schema version. Derived from CURRENT_SCHEMA so a bump
         // can't drift from a hardcoded literal (the v12->v13 trigger relies on it).
