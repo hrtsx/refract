@@ -2144,7 +2144,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const rn: *const prism.ConstReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, rn.base.location.start);
             const name = resolveConstant(ctx.parser, rn.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null, null) catch {
+            var ns_buf: [512]u8 = undefined;
+            const ref_ns = namespaceFromStack(ctx, &ns_buf);
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, null, null, ref_ns) catch {
                 ctx.error_count += 1;
             };
             addSemToken(ctx, lc.line, lc.col, @intCast(name.len), 5);
@@ -2228,7 +2230,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sym2: *const prism.SymbolNode = @ptrCast(@alignCast(second));
                             if (sym2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null, "alias") catch {
+                                insertRef(ctx.db, ctx.file_id, src2[0..sym2.unescaped.length], lc2.line, lc2.col, null, "alias", null) catch {
                                     ctx.error_count += 1;
                                 };
                             }
@@ -2236,7 +2238,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                             const sn2: *const prism.StringNode = @ptrCast(@alignCast(second));
                             if (sn2.unescaped.source) |src2| {
                                 const lc2 = locationLineCol(ctx.parser, second.*.location.start);
-                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null, "alias") catch {
+                                insertRef(ctx.db, ctx.file_id, src2[0..sn2.unescaped.length], lc2.line, lc2.col, null, "alias", null) catch {
                                     ctx.error_count += 1;
                                 };
                             }
@@ -2836,7 +2838,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
                 const osym: *const prism.SymbolNode = @ptrCast(@alignCast(an.old_name));
                 if (osym.unescaped.source) |src| {
                     const lc = locationLineCol(ctx.parser, an.old_name.*.location.start);
-                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null, "alias") catch {
+                    insertRef(ctx.db, ctx.file_id, src[0..osym.unescaped.length], lc.line, lc.col, null, "alias", null) catch {
                         ctx.error_count += 1;
                     };
                 }
@@ -2854,7 +2856,7 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             const lv: *const prism.LocalVarReadNode = @ptrCast(@alignCast(n));
             const lc = locationLineCol(ctx.parser, lv.base.location.start);
             const name = resolveConstant(ctx.parser, lv.name);
-            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id, null) catch {
+            insertRef(ctx.db, ctx.file_id, name, lc.line, lc.col, ctx.scope_id, null, null) catch {
                 ctx.error_count += 1;
             };
         },
@@ -2868,7 +2870,9 @@ fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {
             };
             if (ref_name.len > 0) {
                 const lc = locationLineCol(ctx.parser, pn.base.location.start);
-                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null, null) catch {
+                var ns_buf: [512]u8 = undefined;
+                const ref_ns = namespaceFromStack(ctx, &ns_buf);
+                insertRef(ctx.db, ctx.file_id, ref_name, lc.line, lc.col, null, null, ref_ns) catch {
                     ctx.error_count += 1;
                 };
             }
@@ -3916,9 +3920,9 @@ fn extractParams(ctx: *VisitCtx, symbol_id: i64, params_node: *const prism.Param
     }
 }
 
-fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, scope_id: ?i64, kind: ?[]const u8) !void {
+fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, scope_id: ?i64, kind: ?[]const u8, ref_ns: ?[]const u8) !void {
     const stmt = try db.prepare(
-        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind) VALUES (?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind, ref_ns) VALUES (?, ?, ?, ?, ?, ?, ?)
     );
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
@@ -3927,6 +3931,7 @@ fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32,
     stmt.bind_int(4, @intCast(col));
     if (scope_id) |sid| stmt.bind_int(5, sid) else stmt.bind_null(5);
     if (kind) |k| stmt.bind_text(6, k) else stmt.bind_null(6);
+    if (ref_ns) |ns| (if (ns.len > 0) stmt.bind_text(7, ns) else stmt.bind_null(7)) else stmt.bind_null(7);
     _ = try stmt.step();
 }
 
@@ -3948,7 +3953,7 @@ fn insertSymbolToProcRef(ctx: *VisitCtx, receiver: ?*const prism.Node, method_na
                 if (t.len > 0) {
                     if (stripArrayBrackets(t)) |elem| {
                         if (lookupMethodReturn(ctx.db, elem, method_name)) |_| {
-                            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call") catch {
+                            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call", null) catch {
                                 ctx.error_count += 1;
                             };
                         }
@@ -3958,7 +3963,7 @@ fn insertSymbolToProcRef(ctx: *VisitCtx, receiver: ?*const prism.Node, method_na
         } else |_| {}
     } else if (inferLiteralType(recv)) |lit_type| {
         if (lookupMethodReturn(ctx.db, lit_type, method_name)) |_| {
-            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call") catch {
+            insertRef(ctx.db, ctx.file_id, method_name, 0, 0, null, "call", null) catch {
                 ctx.error_count += 1;
             };
         }
@@ -5567,6 +5572,213 @@ fn resolveConstantSymbol(db: db_mod.Db, name: []const u8) i64 {
     return id0;
 }
 
+// Build "ns::name" (caller frees), or just "name" when ns is empty (top-level).
+fn fqnJoin(alloc: std.mem.Allocator, ns: []const u8, name: []const u8) ?[]u8 {
+    if (ns.len == 0) return alloc.dupe(u8, name) catch null;
+    return std.fmt.allocPrint(alloc, "{s}::{s}", .{ ns, name }) catch null;
+}
+
+// Drop the last "::segment" from a namespace ("A::B" -> "A", "A" -> ""). Slice into ns.
+fn parentNs(ns: []const u8) []const u8 {
+    if (std.mem.lastIndexOf(u8, ns, "::")) |i| return ns[0..i];
+    return "";
+}
+
+// Find the workspace symbol declaring constant/class/module `simple` directly under
+// namespace `ns` ("" = top-level). Matches a nested class/module by its qualified
+// name ("ns::simple"), or a constant by (name=simple, parent_name=ns). 0 when absent.
+// Workspace-only (is_gem=0), mirroring resolveConstantSymbol.
+fn lookupConstHere(db: db_mod.Db, ns: []const u8, simple: []const u8, alloc: std.mem.Allocator) i64 {
+    if (ns.len == 0) {
+        // Top-level: a class/module by bare name, or a constant with no namespace.
+        // (parent_name on a top-level class can carry its superclass — the kind clause
+        // keeps that from masking a real top-level class match.)
+        const q = db.prepare(
+            \\SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+            \\WHERE f.is_gem = 0
+            \\  AND s.kind IN ('class','classdef','module','moduledef','constant')
+            \\  AND s.name = ?
+            \\  AND (s.parent_name IS NULL OR s.kind IN ('class','classdef','module','moduledef'))
+            \\LIMIT 1
+        ) catch return 0;
+        defer q.finalize();
+        q.bind_text(1, simple);
+        if (q.step() catch false) return q.column_int(0);
+        return 0;
+    }
+    const fqn = fqnJoin(alloc, ns, simple) orelse return 0;
+    defer alloc.free(fqn);
+    const q = db.prepare(
+        \\SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+        \\WHERE f.is_gem = 0
+        \\  AND s.kind IN ('class','classdef','module','moduledef','constant')
+        \\  AND ( s.name = ?1 OR (s.name = ?2 AND s.parent_name = ?3) )
+        \\LIMIT 1
+    ) catch return 0;
+    defer q.finalize();
+    q.bind_text(1, fqn);
+    q.bind_text(2, simple);
+    q.bind_text(3, ns);
+    if (q.step() catch false) return q.column_int(0);
+    return 0;
+}
+
+// Descend a qualified remainder ("C::D") under an already-resolved base namespace,
+// segment by segment. Returns the final symbol id, or 0 if any segment is absent.
+fn descendConstPath(db: db_mod.Db, base_fqn: []const u8, rest: []const u8, alloc: std.mem.Allocator) i64 {
+    if (rest.len == 0) return 0;
+    var cur = alloc.dupe(u8, base_fqn) catch return 0;
+    defer alloc.free(cur);
+    var iter = rest;
+    while (true) {
+        const seg_end = std.mem.indexOf(u8, iter, "::");
+        const seg = if (seg_end) |e| iter[0..e] else iter;
+        const id = lookupConstHere(db, cur, seg, alloc);
+        if (id == 0) return 0;
+        if (seg_end == null) return id;
+        const next = fqnJoin(alloc, cur, seg) orelse return 0;
+        alloc.free(cur);
+        cur = next;
+        iter = iter[seg_end.? + 2 ..];
+    }
+}
+
+// Look for constant `const_name` on the ancestry of `enclosing` (its superclass chain,
+// enclosing namespace, and included/prepended/extended modules). Mirrors the method
+// ancestor walk; returns the resolving symbol id or null. Only definite in-index hits.
+fn resolveConstantInAncestors(db: db_mod.Db, enclosing: []const u8, const_name: []const u8, alloc: std.mem.Allocator) ?i64 {
+    var seen = std.StringHashMap(void).init(alloc);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| alloc.free(k.*);
+        seen.deinit();
+    }
+    var queue = std.ArrayList([]u8).empty;
+    defer {
+        for (queue.items) |item| alloc.free(item);
+        queue.deinit(alloc);
+    }
+    const first = alloc.dupe(u8, enclosing) catch return null;
+    queue.append(alloc, first) catch {
+        alloc.free(first);
+        return null;
+    };
+
+    var steps: u32 = 0;
+    const max_steps: u32 = 32;
+    while (queue.items.len > 0) {
+        if (steps >= max_steps) return null;
+        steps += 1;
+
+        const name = queue.orderedRemove(0);
+        defer alloc.free(name);
+        if (seen.contains(name)) continue;
+        const key_copy = alloc.dupe(u8, name) catch return null;
+        seen.put(key_copy, {}) catch {
+            alloc.free(key_copy);
+            return null;
+        };
+
+        // Constant/nested const defined directly under this class/module?
+        const cid = lookupConstHere(db, name, const_name, alloc);
+        if (cid != 0) return cid;
+
+        // Walk superclass + enclosing namespace + mixins of this class/module.
+        const lookup = db.prepare(
+            \\SELECT id, parent_name, superclass FROM symbols
+            \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef')
+            \\LIMIT 1
+        ) catch return null;
+        defer lookup.finalize();
+        lookup.bind_text(1, name);
+        if (!(lookup.step() catch false)) continue; // external/unknown — skip
+        const class_id = lookup.column_int(0);
+        const parent_name_slice = lookup.column_text(1);
+        const sc = lookup.column_text(2);
+        if (sc.len > 0) {
+            const dup = alloc.dupe(u8, sc) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+        if (parent_name_slice.len > 0) {
+            const dup = alloc.dupe(u8, parent_name_slice) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+        const mix_stmt = db.prepare(
+            \\SELECT module_name FROM mixins WHERE class_id = ?
+        ) catch return null;
+        defer mix_stmt.finalize();
+        mix_stmt.bind_int(1, class_id);
+        while (mix_stmt.step() catch false) {
+            const mod_name = mix_stmt.column_text(0);
+            if (mod_name.len == 0) continue;
+            const dup = alloc.dupe(u8, mod_name) catch return null;
+            queue.append(alloc, dup) catch {
+                alloc.free(dup);
+                return null;
+            };
+        }
+    }
+    return null;
+}
+
+// Resolve a constant reference using Ruby's real lookup order: the lexical nesting at
+// the ref site (innermost enclosing scope outward to top-level), then the ancestry of
+// the innermost scope, then a unique-name global fallback. `ref_ns` is the enclosing
+// nesting captured at index time (e.g. "A::B"; "" at top level). Returns 0 (leave
+// def_id NULL → name-global fallback) when unresolved or still ambiguous.
+fn resolveConstantNested(db: db_mod.Db, ref_name: []const u8, ref_ns: []const u8, alloc: std.mem.Allocator) i64 {
+    var name = ref_name;
+    var absolute = false;
+    if (std.mem.startsWith(u8, name, "::")) {
+        name = name[2..];
+        absolute = true;
+    }
+    if (name.len == 0) return 0;
+    const start_ns: []const u8 = if (absolute) "" else ref_ns;
+
+    if (std.mem.indexOf(u8, name, "::")) |head_end| {
+        // Qualified `Head::rest`: resolve Head lexically, then descend the remainder.
+        const head = name[0..head_end];
+        const rest = name[head_end + 2 ..];
+        var ns = start_ns;
+        while (true) {
+            const head_id = lookupConstHere(db, ns, head, alloc);
+            if (head_id != 0) {
+                const head_fqn = fqnJoin(alloc, ns, head) orelse return 0;
+                defer alloc.free(head_fqn);
+                const descended = descendConstPath(db, head_fqn, rest, alloc);
+                if (descended != 0) return descended;
+                break; // Head matched but remainder didn't — don't jump elsewhere.
+            }
+            if (ns.len == 0 or absolute) break;
+            ns = parentNs(ns);
+        }
+        // The path may itself be a stored qualified symbol name.
+        const direct = lookupConstHere(db, "", name, alloc);
+        if (direct != 0) return direct;
+        return resolveConstantSymbol(db, ref_name);
+    }
+
+    // Bare `Const`: lexical outward walk, then ancestry, then unique global.
+    var ns = start_ns;
+    while (true) {
+        const id = lookupConstHere(db, ns, name, alloc);
+        if (id != 0) return id;
+        if (ns.len == 0 or absolute) break;
+        ns = parentNs(ns);
+    }
+    if (!absolute and ref_ns.len > 0) {
+        if (resolveConstantInAncestors(db, ref_ns, name, alloc)) |id| return id;
+    }
+    return resolveConstantSymbol(db, ref_name);
+}
+
 // Populate refs.def_id for one file's method/constant references by resolving each
 // against the (now fully-indexed) symbol table. Reads symbols globally, so for a bulk
 // index it must run AFTER all files are committed. `memo` (key "class\x00method") is
@@ -5576,18 +5788,19 @@ fn resolveConstantSymbol(db: db_mod.Db, name: []const u8) i64 {
 fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator, memo: *std.StringHashMap(i64)) void {
     // recv: receiver type for an explicit-receiver call (so `a.foo` resolves against
     // a's type, not the enclosing class). null for self-sends/untyped receivers.
-    const Row = struct { rowid: i64, name: []u8, line: i64, is_const: bool, recv: ?[]u8 };
+    const Row = struct { rowid: i64, name: []u8, line: i64, is_const: bool, recv: ?[]u8, ns: ?[]u8 };
     var rows = std.ArrayList(Row).empty;
     defer {
         for (rows.items) |r| {
             alloc.free(r.name);
             if (r.recv) |rv| alloc.free(rv);
+            if (r.ns) |n| alloc.free(n);
         }
         rows.deinit(alloc);
     }
     {
         const sel = db.prepare(
-            \\SELECT rowid, name, line, kind, receiver_type FROM refs WHERE file_id = ? AND def_id IS NULL
+            \\SELECT rowid, name, line, kind, receiver_type, ref_ns FROM refs WHERE file_id = ? AND def_id IS NULL
         ) catch return;
         defer sel.finalize();
         sel.bind_int(1, file_id);
@@ -5596,7 +5809,8 @@ fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator, mem
             if (nm.len == 0) continue;
             const kind = sel.column_text(3);
             const is_call = std.mem.eql(u8, kind, "call") or std.mem.eql(u8, kind, "self_call");
-            const is_const = nm[0] >= 'A' and nm[0] <= 'Z';
+            const is_const = (nm[0] >= 'A' and nm[0] <= 'Z') or
+                (nm.len > 2 and nm[0] == ':' and nm[1] == ':' and nm[2] >= 'A' and nm[2] <= 'Z');
             if (!is_call and !is_const) continue;
             const dup = alloc.dupe(u8, nm) catch continue;
             // Only use a bare-constant receiver type; unions/generics ("A | B", "Array[T]")
@@ -5604,9 +5818,15 @@ fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator, mem
             var recv_dup: ?[]u8 = null;
             const rt = sel.column_text(4);
             if (rt.len > 0 and isBareConstantName(rt)) recv_dup = alloc.dupe(u8, rt) catch null;
-            rows.append(alloc, .{ .rowid = sel.column_int(0), .name = dup, .line = sel.column_int(2), .is_const = is_const, .recv = recv_dup }) catch {
+            var ns_dup: ?[]u8 = null;
+            if (is_const) {
+                const rns = sel.column_text(5);
+                if (rns.len > 0) ns_dup = alloc.dupe(u8, rns) catch null;
+            }
+            rows.append(alloc, .{ .rowid = sel.column_int(0), .name = dup, .line = sel.column_int(2), .is_const = is_const, .recv = recv_dup, .ns = ns_dup }) catch {
                 alloc.free(dup);
                 if (recv_dup) |rv| alloc.free(rv);
+                if (ns_dup) |n| alloc.free(n);
                 continue;
             };
         }
@@ -5615,7 +5835,7 @@ fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator, mem
     for (rows.items) |r| {
         var def_id: i64 = 0;
         if (r.is_const) {
-            def_id = resolveConstantSymbol(db, r.name);
+            def_id = resolveConstantNested(db, r.name, r.ns orelse "", alloc);
         } else {
             // Resolve against the receiver's type when known, else the enclosing class.
             var class_name: ?[]u8 = null;

@@ -6,7 +6,7 @@ const c = @cImport({
 extern fn refract_bind_text(stmt: *c.sqlite3_stmt, col: c_int, ptr: [*]const u8, len: c_int) c_int;
 extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyopaque, len: c_int) c_int;
 
-pub const CURRENT_SCHEMA: u32 = 13;
+pub const CURRENT_SCHEMA: u32 = 14;
 
 pub const DbError = error{
     Open,
@@ -821,6 +821,15 @@ pub const Db = struct {
         // handlers fall back to name-global matching.
         self.execMigration("ALTER TABLE refs ADD COLUMN def_id INTEGER DEFAULT NULL");
         self.exec("CREATE INDEX IF NOT EXISTS idx_refs_def ON refs(def_id)") catch {}; // migration guard: def_id column may be absent on older schemas
+
+        // Schema v14: refs.ref_ns records the enclosing lexical nesting at a constant
+        // ref site (e.g. "A::B" for a bare `CONST` read inside module A; class B).
+        // NULL at top level. Lets resolveConstantNested walk Ruby's real constant
+        // lookup (current scope -> enclosing scopes -> ancestors -> top-level) instead
+        // of name-global matching, so same-named constants in different namespaces
+        // resolve to the correct binding. Old rows lack it -> the v<14 reindex repopulates.
+        self.execMigration("ALTER TABLE refs ADD COLUMN ref_ns TEXT"); // migration guard: column already exists on migrated schemas
+        self.exec("CREATE INDEX IF NOT EXISTS idx_refs_ns ON refs(ref_ns)") catch {}; // migration guard: ref_ns column may be absent on older schemas
 
         // Stamp the current schema version. Derived from CURRENT_SCHEMA so a bump
         // can't drift from a hardcoded literal (the v12->v13 trigger relies on it).

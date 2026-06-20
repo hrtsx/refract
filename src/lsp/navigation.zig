@@ -249,6 +249,65 @@ pub fn handleDefinition(self: *Server, msg: types.RequestMessage) !?types.Respon
         }
     }
 
+    // Binding-exact precedence for constants: if the cursor token is a constant whose
+    // ref resolved to one definition at index time (refs.def_id, nesting-aware), jump
+    // straight there. Avoids the name-global path wrong-jumping to a same-named
+    // constant in another namespace. Bare names only (qualified paths store their full
+    // name in refs.name, so `word` won't match → harmless fall-through).
+    if (!found_any and word.len > 0 and word[0] >= 'A' and word[0] <= 'Z') {
+        const cursor_line_1based: i64 = @intCast(line + 1);
+        const fstmt = self.cachedStmt("SELECT id FROM files WHERE path = ?") catch null;
+        if (fstmt) |fs| {
+            defer fs.reset();
+            fs.bind_text(1, path);
+            if ((fs.step() catch false)) {
+                const fid = fs.column_int(0);
+                const dq = self.cachedStmt("SELECT def_id FROM refs WHERE file_id=? AND name=? AND line=? AND def_id IS NOT NULL LIMIT 1") catch null;
+                if (dq) |d| {
+                    defer d.reset();
+                    d.bind_int(1, fid);
+                    d.bind_text(2, word);
+                    d.bind_int(3, cursor_line_1based);
+                    if ((d.step() catch false)) {
+                        const did = d.column_int(0);
+                        const ds = self.cachedStmt(
+                            \\SELECT s.name, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.id=?
+                        ) catch null;
+                        if (ds) |dsr| {
+                            defer dsr.reset();
+                            dsr.bind_int(1, did);
+                            if ((dsr.step() catch false)) {
+                                const sym_name = dsr.column_text(0);
+                                const sym_line = dsr.column_int(1);
+                                const sym_col = dsr.column_int(2);
+                                const sym_path = dsr.column_text(3);
+                                const start_char = self.toClientColFromPath(&frc_def, sym_path, sym_line - 1, sym_col);
+                                if (found_any) try w.writeByte(',');
+                                found_any = true;
+                                if (self.client_caps_def_link) {
+                                    try w.writeAll("{\"targetUri\":\"file://");
+                                    try writePathAsUri(w, sym_path);
+                                    try w.print("\",\"targetRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                                        sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                                    });
+                                    try w.print(",\"targetSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                                        sym_line - 1, start_char, sym_line - 1, start_char + @as(u32, @intCast(sym_name.len)),
+                                    });
+                                    try w.print(",\"originSelectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{
+                                        def_origin.line, def_origin.start_char, def_origin.line, def_origin.end_char,
+                                    });
+                                    try w.writeByte('}');
+                                } else {
+                                    try writeLoc(w, sym_path, sym_line - 1, start_char, start_char + @as(u32, @intCast(sym_name.len)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (!found_any) {
         try queryAndEmitDefinitions(self, w, word, &found_any, &frc_def, def_origin, path);
     }
