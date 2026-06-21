@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.0-rc1]
+
+### Stability
+
+- macOS CI flake eliminated. Subprocess-integration test groups ran four-wide in a
+  single `zig build`, so the parallel Run steps spawned many short-lived `refract`
+  sessions at once; on a contended runner the storm starved children past the test
+  harness watchdog and truncated their stdout (surfacing as `NoSymbolResponse` or an
+  invalid-UTF-8 JSON parse). CI now runs each test group sequentially, the harness
+  child watchdog moved 15s → 60s (overridable via `REFRACT_TEST_WATCHDOG_MS`), and the
+  `$/refract/__waitForIdle` drain loop is bounded so a pathological re-queue can never
+  block the reply.
 
 ### Constant resolution
 
