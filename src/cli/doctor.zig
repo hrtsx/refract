@@ -1,4 +1,5 @@
 const std = @import("std");
+const exe_path_util = @import("../exe_path.zig");
 const db_mod = @import("../db.zig");
 const build_meta = @import("build_meta");
 const ruby_env = @import("../indexer/ruby_env.zig");
@@ -304,16 +305,14 @@ fn fileSizeAbs(io: std.Io, path: []const u8) ?u64 {
 
 fn checkPrismVendor(io: std.Io, alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
     var exe_buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
-    if (n <= 0 or n >= exe_buf.len) {
+    const exe_path = exe_path_util.selfExePath(&exe_buf) orelse {
         try checks.append(alloc, .{
             .name = try alloc.dupe(u8, "Prism vendor"),
             .status = .ok,
             .detail = try alloc.dupe(u8, "vendored at compile time"),
         });
         return;
-    }
-    const exe_path = exe_buf[0..@intCast(n)];
+    };
 
     var current = std.fs.path.dirname(exe_path) orelse exe_path;
     while (true) {
