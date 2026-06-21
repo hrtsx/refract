@@ -63,7 +63,7 @@ jobs:
         run: curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz && tar -xJf zig.tar.xz && rm zig.tar.xz
       - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
-      - run: sudo apt-get update && sudo apt-get install -y emacs-nox
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y emacs-nox
       - name: Emacs eglot smoke
         run: |
           mkdir -p /tmp/emacs-ws
@@ -161,7 +161,7 @@ jobs:
       - run: echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
       - name: Install validators
-        run: sudo apt-get update && sudo apt-get install -y jq libxml2-utils python3
+        run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y jq libxml2-utils python3
       - name: Run ${{ matrix.editor }} smoke
         env:
           REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
@@ -252,7 +252,7 @@ jobs:
           REFRACT_BIN: ${{ github.workspace }}/zig-out/bin/refract
         run: |
           sudo cp ./zig-out/bin/refract /usr/local/bin/refract
-          sudo apt-get update && sudo apt-get install -y xvfb
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y xvfb
           cd editors/vscode
           npm install
           xvfb-run -a npm test

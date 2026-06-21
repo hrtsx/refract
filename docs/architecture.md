@@ -26,15 +26,15 @@ Refract is a single static binary written in Zig that:
                                  │
                           ┌──────┴──────┐
                           │   SQLite    │
-                          │  schema v13 │
+                          │  schema v15 │
                           └─────────────┘
 ```
 
-## SQLite schema (v13)
+## SQLite schema (v15)
 
 Per-workspace database, WAL mode, mmap'd. Tables:
 
-- `files`, `symbols`, `refs`, `params`, `local_vars` — core index.
+- `files`, `symbols`, `refs`, `params`, `local_vars` — core index. `refs.ref_ns` records the lexical nesting at a constant reference (nesting-aware resolution); `refs.def_id` binds a reference to its declaration; `symbols.deprecated` flags `@deprecated` definitions.
 - `symbols_fts` — FTS5 trigram index over `symbols.name` for substring search.
 - `overlay_nodes`, `overlay_edges`, `overlay_types`, `overlay_suppress` — agent-writable overlay graph (branch-scoped, reversible).
 - `mixins`, `routes`, `i18n_keys`, `diagnostics` — Rails / RSpec / framework-specific surfaces.
@@ -51,7 +51,7 @@ Per-workspace database, WAL mode, mmap'd. Tables:
 ## Servers
 
 - **LSP** (`refract --stdio`) — main mode. Capabilities advertised include `textDocument/{hover,definition,completion,references,rename,codeAction,inlineCompletion}`, `semanticTokens/full+delta`, `callHierarchy`, `typeHierarchy`, `documentLink`, `codeLens`, `inlayHint`. Capability flags `experimental.refract.{dap,plugins,inlineCompletion}` signal optional surfaces.
-- **MCP** (`refract --mcp`) — exposes 41 tools for AI agents. Wire format: MCP 2025-06-18.
+- **MCP** (`refract --mcp`) — exposes 30 tools for AI agents. Wire format: MCP 2025-06-18.
 - **DAP** (`refract --dap`) — Debug Adapter Protocol front-end. Proxies `rdbg` after path/env resolution.
 
 ## Indexer pipeline

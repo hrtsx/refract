@@ -4033,8 +4033,8 @@ fn insertSymbolWithReturn(ctx: *VisitCtx, kind: []const u8, name: []const u8, li
 
 fn insertSymbolGetId(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i32, col: u32, doc: ?[]const u8, end_line: ?i64, visibility: []const u8, parent_name: ?[]const u8) !i64 {
     const stmt = try ctx.db.prepare(
-        \\INSERT INTO symbols (file_id, name, kind, line, col, doc, end_line, visibility, parent_name)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        \\INSERT INTO symbols (file_id, name, kind, line, col, doc, end_line, visibility, parent_name, deprecated)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         \\RETURNING id
     );
     defer stmt.finalize();
@@ -4047,6 +4047,8 @@ fn insertSymbolGetId(ctx: *VisitCtx, kind: []const u8, name: []const u8, line: i
     if (end_line) |el| stmt.bind_int(7, el) else stmt.bind_null(7);
     stmt.bind_text(8, visibility);
     if (parent_name) |pn| stmt.bind_text(9, pn) else stmt.bind_null(9);
+    const deprecated: i64 = if (doc) |d| (if (std.mem.indexOf(u8, d, "@deprecated") != null) 1 else 0) else 0;
+    stmt.bind_int(10, deprecated);
     if (try stmt.step()) return stmt.column_int(0);
     return ctx.db.last_insert_rowid();
 }
@@ -5732,7 +5734,7 @@ fn resolveConstantInAncestors(db: db_mod.Db, enclosing: []const u8, const_name: 
 // the innermost scope, then a unique-name global fallback. `ref_ns` is the enclosing
 // nesting captured at index time (e.g. "A::B"; "" at top level). Returns 0 (leave
 // def_id NULL → name-global fallback) when unresolved or still ambiguous.
-fn resolveConstantNested(db: db_mod.Db, ref_name: []const u8, ref_ns: []const u8, alloc: std.mem.Allocator) i64 {
+pub fn resolveConstantNested(db: db_mod.Db, ref_name: []const u8, ref_ns: []const u8, alloc: std.mem.Allocator) i64 {
     var name = ref_name;
     var absolute = false;
     if (std.mem.startsWith(u8, name, "::")) {

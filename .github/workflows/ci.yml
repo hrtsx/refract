@@ -77,7 +77,7 @@ jobs:
             .zig-cache
           key: linux-zig-${{ matrix.suite }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y sqlite3
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" --release=safe
       - uses: actions/cache@v5
         with:
@@ -182,7 +182,18 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" ${{ matrix.steps }}
+      # Run each test group in its own zig build, sequentially. A single
+      # `zig build <g1> <g2> ...` executes the Run steps in parallel, and each
+      # spawns many short-lived `refract` subprocess sessions at once; on a
+      # contended runner that storm starves children past the harness watchdog
+      # and truncates their stdout (NoSymbolResponse / Invalid-UTF-8 JSON
+      # SyntaxError) — a cross-group flake. Serializing the groups removes the
+      # subprocess storm. The compile cache persists across iterations, so only
+      # the first call pays build cost.
+      - run: |
+          for g in ${{ matrix.steps }}; do
+            zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "$g" || exit 1
+          done
 
   test-debug:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
@@ -221,7 +232,7 @@ jobs:
             .zig-cache
           key: linux-zig-debug-${{ matrix.name }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-debug-
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y sqlite3
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
       - uses: actions/cache@v5
         with:
@@ -233,7 +244,18 @@ jobs:
           if [ ! -s /tmp/refract_test_stdlib_template.db ]; then
             ./zig-out/bin/refract --db-path /tmp/refract_test_stdlib_template.db --warm-stdlib
           fi
-      - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)" ${{ matrix.steps }}
+      # Run each test group in its own zig build, sequentially. A single
+      # `zig build <g1> <g2> ...` executes the Run steps in parallel, and each
+      # spawns many short-lived `refract` subprocess sessions at once; on a
+      # contended runner that storm starves children past the harness watchdog
+      # and truncates their stdout (NoSymbolResponse / Invalid-UTF-8 JSON
+      # SyntaxError) — a cross-group flake. Serializing the groups removes the
+      # subprocess storm. The compile cache persists across iterations, so only
+      # the first call pays build cost.
+      - run: |
+          for g in ${{ matrix.steps }}; do
+            zig build "-Dgit_sha=$(git rev-parse --short HEAD)" "$g" || exit 1
+          done
 
   valgrind:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
@@ -258,7 +280,7 @@ jobs:
             .zig-cache
           key: linux-zig-valgrind-${{ hashFiles('build.zig.zon') }}
           restore-keys: linux-zig-valgrind-
-      - run: sudo apt-get update && sudo apt-get install -y valgrind sqlite3
+      - run: sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure* 2>/dev/null; sudo apt-get update && sudo apt-get install -y valgrind sqlite3
       - run: zig build "-Dgit_sha=$(git rev-parse --short HEAD)"
       - name: valgrind --self-test (catches C-boundary leaks at SQLite/Prism)
         run: |

@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+### Constant resolution
+
+- Nesting-aware constant resolution (schema v14): a constant reference now resolves
+  by Ruby's real lookup order — innermost lexical scope outward to top-level, then
+  the enclosing class's ancestry (superclass + included modules). Same-named
+  constants in different namespaces resolve to the correct declaration; `refs.def_id`
+  is populated for constants, so references and rename are binding-exact (renaming
+  `A::CONST` no longer touches `B::CONST`). Go-to-def jumps to the bound declaration.
+- New MCP tool `resolve_constant(name, nesting)` exposes the resolver to agents
+  (rubydex-parity).
+- `symbols.deprecated` (schema v15) flags `@deprecated` definitions; surfaced in
+  `resolve_constant` output.
+
+### MCP surface — curated to 30 tools
+
+- **`diagnostics` fixed.** It read a `diagnostics` table that nothing ever wrote, so
+  it always returned `[]`. Now computed on demand via the same engine the LSP uses
+  (Prism parse diagnostics + semantic checks), so `refract/nil-receiver`,
+  `refract/wrong-arity`, etc. actually reach agents. `explain_symbol`'s diagnostics
+  section and the `find-bugs` prompt were fixed the same way; `workspace_health`
+  dropped its always-zero diagnostic-count field.
+- **Pruned 11 dead/redundant/niche tools** (41 → 30) to keep the surface lean:
+  `diagnostic_summary` (dead table), `find_callers` (= `find_references` with
+  `ref_kind`), `batch_resolve` (loop over `resolve_type`), `unused_association_chain`
+  (= `find_unused` with `kind=association`), `coverage_gap_analyzer`, `find_similar`,
+  `security_audit_summary`, `migration_chain_analyzer`, `dependency_tree_resolver`,
+  `suggest_types`, `type_coverage`.
+- Removed `route_map` (queried a never-populated symbol kind); `list_routes` is the
+  working equivalent.
+- `workspace_symbols` ranks by kind (classes/modules, then constants/defs) with
+  capitalized names and exact matches first — the target class no longer ranks
+  below local variables and RSpec example descriptions.
+
 ## [0.1.0-rc1] - 2026-06-23
 
 Release-candidate hardening on top of beta.1. Green across the lsp/mcp/edge
