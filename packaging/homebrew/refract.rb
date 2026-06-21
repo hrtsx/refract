@@ -7,20 +7,20 @@ class Refract < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/hrtsx/refract/releases/download/v#{version}/refract-aarch64-macos"
-      sha256 "4b2e3a8d62556fe51cd7ab551f5ffeb290d7cccb90dea5162a439425ab76a3d3"
+      sha256 "d6887c95c98db43407116ca51b0aad5545f2d8b239a01b02638469a7c68a2ac4"
     else
       url "https://github.com/hrtsx/refract/releases/download/v#{version}/refract-x86_64-macos"
-      sha256 "3795e8d49f7879251161ec883649e2745c115dfcb009fc35a150f28a736a44e5"
+      sha256 "e5e2fde50a6908a68391dece84b632421ad69fe4da938780e57dedc5b61b27a2"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/hrtsx/refract/releases/download/v#{version}/refract-aarch64-linux"
-      sha256 "3e9b0a8b6443ce566dcfafd5cf4a61f7fc3777c749e0be385eaec650fa4dace9"
+      sha256 "f05c249adcb38d3ad8c20e73b938faee57b51187bcaa8ebd862c41cb341dcc74"
     else
       url "https://github.com/hrtsx/refract/releases/download/v#{version}/refract-x86_64-linux"
-      sha256 "de0d3b7d3717acb968da209f73991ed5ed754c44d6160c4e55afd5c969ef8652"
+      sha256 "e5984a295bd50dbb042948db3e4d973c27ca112420cabca5198b99e613cc11a9"
     end
   end
 
