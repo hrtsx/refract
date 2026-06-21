@@ -1,30 +1,16 @@
 # Changelog
 
-## [0.1.0-rc1]
+## [0.1.0-rc1] - 2026-06-21
 
-### Stability
+Release candidate on top of beta.1. Green across the lsp/mcp/edge suites on
+Linux, Alpine (musl), and macOS.
 
-- macOS CI flake eliminated. Subprocess-integration test groups ran four-wide in a
-  single `zig build`, so the parallel Run steps spawned many short-lived `refract`
-  sessions at once; on a contended runner the storm starved children past the test
-  harness watchdog and truncated their stdout (surfacing as `NoSymbolResponse` or an
-  invalid-UTF-8 JSON parse). CI now runs each test group sequentially, the harness
-  child watchdog moved 15s → 60s (overridable via `REFRACT_TEST_WATCHDOG_MS`), and the
-  `$/refract/__waitForIdle` drain loop is bounded so a pathological re-queue can never
-  block the reply.
+### Architecture
 
-### Constant resolution
-
-- Nesting-aware constant resolution (schema v14): a constant reference now resolves
-  by Ruby's real lookup order — innermost lexical scope outward to top-level, then
-  the enclosing class's ancestry (superclass + included modules). Same-named
-  constants in different namespaces resolve to the correct declaration; `refs.def_id`
-  is populated for constants, so references and rename are binding-exact (renaming
-  `A::CONST` no longer touches `B::CONST`). Go-to-def jumps to the bound declaration.
-- New MCP tool `resolve_constant(name, nesting)` exposes the resolver to agents
-  (rubydex-parity).
-- `symbols.deprecated` (schema v15) flags `@deprecated` definitions; surfaced in
-  `resolve_constant` output.
+- God-file teardown: the indexer, MCP server, DB layer, LSP server, and CLI
+  split into focused modules (stdlib types, RBS parser, Rails DSL, resolution,
+  semantic checks; per-domain MCP tool groups; schema DDL; server utilities).
+  Behaviour-preserving — same tests, same wire output.
 
 ### MCP surface — curated to 30 tools
 
@@ -43,31 +29,33 @@
 - Removed `route_map` (queried a never-populated symbol kind); `list_routes` is the
   working equivalent.
 - `workspace_symbols` ranks by kind (classes/modules, then constants/defs) with
-  capitalized names and exact matches first — the target class no longer ranks
-  below local variables and RSpec example descriptions.
+  capitalized names and exact matches first, backed by an FTS5 trigram index;
+  substring search drops to low-single-digit ms on 10k-file workspaces.
 
-## [0.1.0-rc1] - 2026-06-23
+### Constant resolution
 
-Release-candidate hardening on top of beta.1. Green across the lsp/mcp/edge
-suites on Linux, Alpine (musl), and macOS.
+- Nesting-aware constant resolution (schema v7): a constant reference resolves by
+  Ruby's real lookup order — innermost lexical scope outward to top-level, then the
+  enclosing class's ancestry (superclass + included modules). Same-named constants in
+  different namespaces resolve to the correct declaration; `refs.def_id` is populated
+  for constants, so references and rename are binding-exact (renaming `A::CONST` no
+  longer touches `B::CONST`). New MCP tool `resolve_constant(name, nesting)` exposes
+  the resolver to agents. `symbols.deprecated` flags `@deprecated` definitions.
+- Agent-writable overlay graph (schema v6): `overlay_annotate`, `overlay_list`,
+  `overlay_revert`, `overlay_promote` — branch-scoped, reversible, audited; derived
+  facts stay immutable.
 
-### MCP
+### Stability
 
-- Agent-writable overlay graph (schema v13): `overlay_annotate`, `overlay_list`,
-  `overlay_revert`, `overlay_promote` — branch-scoped, reversible, audited.
-  Derived facts stay immutable.
-- `workspace_symbols` backed by an FTS5 trigram index; substring search drops to
-  low-single-digit ms on 10k-file workspaces.
-- Constant resolution: `class_summary` splits constants from methods, and
-  `method_signature`/`explain_symbol` resolve `Class::CONST`.
-- Tool surface is now 41 tools (overlay graph added; two workspace_symbols aliases dropped).
-
-### Reliability
-
+- macOS CI flake eliminated. Subprocess-integration test groups ran four-wide in a
+  single `zig build`, so the parallel Run steps spawned many short-lived `refract`
+  sessions at once; on a contended runner the storm starved children past the test
+  harness watchdog and truncated their stdout. CI now runs each test group
+  sequentially, the harness child watchdog moved 15s → 60s (overridable via
+  `REFRACT_TEST_WATCHDOG_MS`), and the `$/refract/__waitForIdle` drain loop is bounded.
 - Cold-index persistence fix: routes and i18n keys front-loaded on first index.
-- Binding-exact references and rename via `refs.def_id`.
 
-## [0.1.0-beta.1] - 2026-06-15
+## [0.1.0-beta.1] - 2026-05-24
 
 Hardening on top of the alpha.1 surface. Green across the lsp/mcp/edge suites
 on Linux, Alpine (musl), macOS, and the debug build, plus the valgrind
@@ -137,7 +125,7 @@ self-test.
 - Added test-debug + valgrind matrix, a concurrency burst test, and fuzz/soak
   nightlies; soak corpus expanded to full Discourse + Mastodon.
 
-## [0.1.0-alpha.1] - 2026-05-14
+## [0.1.0-alpha.1] - 2026-04-26
 
 First public alpha. Intended for early testers + dogfooding. The plumbing
 listed below is real and tested in CI, but the daily editor experience has
@@ -330,4 +318,4 @@ filter is enforced on every spawn — there is no "unsandboxed" code path in
 
 ---
 
-*Minimum Zig: 0.16.0 · Schema: 8 · Prism 1.9.0 · Ruby 2.7 – 3.4*
+*Minimum Zig: 0.16.0 · Schema: 7 · Prism 1.9.0 · Ruby 2.7 – 3.4*

@@ -1,7 +1,7 @@
 # Benchmark: Refract vs Ruby LSP, Solargraph, Sorbet, Steep
 
 Head-to-head over JSON-RPC, identical workloads, identical seed. The LSP perf
-matrix (session / typing / micro) was re-run 2026-06-24 at refract `ec72d613`
+matrix (session / typing / micro) was re-run 2026-06-21 at refract
 (0.1.0-rc1) against **ruby-lsp 0.27.0.beta3** and solargraph 0.58.3. ruby-lsp
 0.27 moves its indexer onto a Rust backend (the `rubydex` native gem), so the
 re-run measures whether that closes the gap — it does not (§1–§2). A separate
@@ -13,7 +13,7 @@ MCP-to-MCP comparison against rubydex's own MCP server is in §3d.
 - **Corpora**: Mastodon (3,194 .rb), Discourse-lib (698 .rb), 17-file / 100-case accuracy fixture
 - **Workloads**: `session` (60% hover/15% def/10% comp/5% sym/5% refs/3% docSym/2% rename), `typing` (8 Hz didChange × 30 s), `micro` (50 random probes × 4 ops)
 - **Artifacts**: LSP perf `bench-results/realistic/20260624T140710Z-ec72d613/` · MCP `bench-results/mcp/`
-- **Scope of this re-run**: the LSP perf matrix (§1, §2), the resource/reliability rows derived from it (§4, §5), and the new MCP head-to-head (§3d). The accuracy fixtures (§3, §3a–§3c) were **not** re-collected this round — those rows carry forward from the 2026-06-15 `b6d14235` (0.1.0-beta.1) baseline and are marked where cited.
+- **Scope of this re-run**: the LSP perf matrix (§1, §2), the resource/reliability rows derived from it (§4, §5), and the new MCP head-to-head (§3d). The accuracy fixtures (§3, §3a–§3c) were **not** re-collected this round — those rows carry forward from the 2026-05-24 `b6d14235` (0.1.0-beta.1) baseline and are marked where cited.
 
 Sorbet and Steep ship LSP modes but require `sorbet/`-folder + RBI generation.
 They appear in accuracy + DX, excluded from the perf matrix on purpose.
@@ -47,9 +47,9 @@ Latency rows are Mastodon `session` p50 (ms) unless noted.
 | Ruby on PATH | **none** | required | required |
 | distribution | **static binary** | gem (+ native ext) | gem |
 
-† Accuracy rows carried from the 2026-06-15 `b6d14235` (0.1.0-beta.1) baseline —
+† Accuracy rows carried from the 2026-05-24 `b6d14235` (0.1.0-beta.1) baseline —
 not re-collected this round (see header scope note). All other rows are the
-2026-06-24 re-run vs ruby-lsp 0.27.0.beta3.
+2026-06-21 re-run vs ruby-lsp 0.27.0.beta3.
 
 ¹ On Mastodon ruby-lsp's cold init jumped to 6.8 s on 0.27.beta3 and it still
 hits the 180 s harness warmup cap, answering against a still-building index;
@@ -383,12 +383,12 @@ Peak RSS (MB):
 | discourse-lib / typing | 64.3 | 147.1 | 477.6 |
 | discourse-lib / micro | 63.8 | 94.6 | 504.5 |
 
-The table above is the 2026-06-15 `b6d14235` (0.1.0-beta.1) steady-state probe
+The table above is the 2026-05-24 `b6d14235` (0.1.0-beta.1) steady-state probe
 (ruby-lsp 0.26.9) — a leaner idle-RSS measurement, not re-collected this round.
-The 2026-06-24 realistic-harness *under-load* peak (ruby-lsp 0.27.beta3) is in the
+The 2026-06-21 realistic-harness *under-load* peak (ruby-lsp 0.27.beta3) is in the
 scoreboard ² row: refract 100–139 MB, ruby-lsp 96–162 MB, solargraph 382–1306 MB.
 
-Cold init (ms), 2026-06-24 re-run: refract 269–323 · ruby-lsp 0.27.beta3
+Cold init (ms), 2026-06-21 re-run: refract 269–323 · ruby-lsp 0.27.beta3
 500–6775 (Mastodon session cold-build spikes to 6.8 s) · solargraph 260–286.
 `ldd refract` on Linux: only libc + ld-linux. Drop into Docker or CI without Ruby.
 
@@ -396,7 +396,7 @@ Cold init (ms), 2026-06-24 re-run: refract 269–323 · ruby-lsp 0.27.beta3
 
 ## 5. Reliability (24-cell matrix)
 
-2026-06-24 re-run, ruby-lsp 0.27.0.beta3:
+2026-06-21 re-run, ruby-lsp 0.27.0.beta3:
 
 | server | clean cells | warmup-cap (180 s) hit | crashed | didChange dropped |
 |---|:-:|:-:|:-:|:-:|

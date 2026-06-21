@@ -26,7 +26,7 @@ Refract is a single static binary written in Zig that:
                                  │
                           ┌──────┴──────┐
                           │   SQLite    │
-                          │  schema v15 │
+                          │  schema v7 │
                           └─────────────┘
 ```
 
