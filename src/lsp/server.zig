@@ -2904,11 +2904,13 @@ pub const Server = struct {
             var vbuf: [256]u8 = undefined;
             const vmsg = std.fmt.bufPrint(&vbuf, "refract {s} ready", .{build_meta.version}) catch "refract ready";
             self.sendLogMessage(3, vmsg);
-            var link_buf: [4096]u8 = undefined;
-            if (std.Io.Dir.readLinkAbsolute(std.Options.debug_io, "/proc/self/exe", &link_buf) catch null) |n| {
-                const exe_link = link_buf[0..n];
-                if (std.mem.endsWith(u8, exe_link, " (deleted)")) {
-                    self.sendLogMessage(2, "refract: running binary was replaced on disk — restart the LSP to pick up the new build");
+            if (builtin.os.tag == .linux) {
+                var link_buf: [4096]u8 = undefined;
+                if (std.Io.Dir.readLinkAbsolute(std.Options.debug_io, "/proc/self/exe", &link_buf) catch null) |n| {
+                    const exe_link = link_buf[0..n];
+                    if (std.mem.endsWith(u8, exe_link, " (deleted)")) {
+                        self.sendLogMessage(2, "refract: running binary was replaced on disk — restart the LSP to pick up the new build");
+                    }
                 }
             }
         }

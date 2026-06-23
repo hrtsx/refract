@@ -1,11 +1,10 @@
 const std = @import("std");
+const exe_path_util = @import("../exe_path.zig");
 const sorbet_harness = @import("../tests/sorbet_harness.zig");
 const sandbox = @import("../lsp/sandbox.zig");
 
 fn selfExePath(buf: []u8) ?[]const u8 {
-    const n = std.c.readlink("/proc/self/exe", buf.ptr, buf.len);
-    if (n <= 0 or n >= buf.len) return null;
-    return buf[0..@intCast(n)];
+    return exe_path_util.selfExePath(buf);
 }
 
 fn selfTestProbe(io: std.Io, alloc: std.mem.Allocator, label: []const u8, exe_path: []const u8, extra_arg: ?[]const u8, db_path: []const u8, cwd_path: []const u8, request_body: []const u8, expect_substr: []const u8, lsp_framing: bool) bool {
