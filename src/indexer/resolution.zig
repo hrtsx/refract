@@ -4,6 +4,31 @@ const db_mod = @import("../db.zig");
 // Find the innermost class/module symbol that textually contains the given line.
 // Returns the symbol's id and fully qualified name, or null if the line is not inside any
 // class/module body in this file.
+// Innermost enclosing *namespace* scope (class/module) for a line — excludes
+// `classdef`, which the indexer also uses for `def self.x` singleton-method defs
+// (those are not lexical scopes and would mis-namespace a ref). Returns the
+// qualified scope name, or null at top level. Used to qualify bare receiver/
+// superclass names during ref resolution.
+fn findEnclosingScopeName(db: db_mod.Db, file_id: i64, line: i64, alloc: std.mem.Allocator) ?[]u8 {
+    const stmt = db.prepare(
+        \\SELECT name FROM symbols
+        \\WHERE file_id = ? AND kind IN ('class','module','moduledef')
+        \\  AND COALESCE(doc,'') NOT IN ('factory','trait')
+        \\  AND line <= ?
+        \\  AND (end_line IS NULL OR end_line >= ?)
+        \\ORDER BY line DESC
+        \\LIMIT 1
+    ) catch return null;
+    defer stmt.finalize();
+    stmt.bind_int(1, file_id);
+    stmt.bind_int(2, line);
+    stmt.bind_int(3, line);
+    if (!(stmt.step() catch false)) return null;
+    const name_text = stmt.column_text(0);
+    if (name_text.len == 0) return null;
+    return alloc.dupe(u8, name_text) catch null;
+}
+
 pub fn findEnclosingClass(
     db: db_mod.Db,
     file_id: i64,
@@ -198,10 +223,41 @@ pub fn resolveMethodInAncestors(
 // hit yields an id. Used to populate refs.def_id so references/rename can query a
 // single binding. Kept separate from resolveMethodInAncestors so the diagnostics
 // path's (hard-won, 0-FP) verdict logic is not perturbed.
+// True if `name` is a class/module/classdef/moduledef stored in the index.
+fn classExists(db: db_mod.Db, name: []const u8) bool {
+    const q = db.prepare(
+        \\SELECT 1 FROM symbols WHERE name = ? AND kind IN ('class','classdef','module','moduledef') LIMIT 1
+    ) catch return false;
+    defer q.finalize();
+    q.bind_text(1, name);
+    return q.step() catch false;
+}
+
+// Map a possibly-unqualified class/module name to its canonical stored (qualified)
+// name. Class symbols are stored fully-qualified (`A::B::C`) while receiver types and
+// superclasses are written bare (`C`), so an exact-name lookup would miss. Tries the
+// name as-is, then qualifies it against `ns_hint` and each enclosing namespace outward
+// (Ruby constant lookup). Returns an owned canonical name, or null when nothing in the
+// index matches — the caller treats that as an external chain and leaves def_id NULL.
+fn canonicalClassName(db: db_mod.Db, raw: []const u8, ns_hint: []const u8, alloc: std.mem.Allocator) ?[]u8 {
+    if (raw.len == 0) return null;
+    if (classExists(db, raw)) return alloc.dupe(u8, raw) catch null;
+    var ns = ns_hint;
+    while (ns.len > 0) {
+        if (fqnJoin(alloc, ns, raw)) |fq| {
+            if (classExists(db, fq)) return fq;
+            alloc.free(fq);
+        }
+        ns = parentNs(ns);
+    }
+    return null;
+}
+
 fn resolveMethodSymbolInAncestors(
     db: db_mod.Db,
     class_name: []const u8,
     method_name: []const u8,
+    ns_hint: []const u8,
     alloc: std.mem.Allocator,
 ) ?i64 {
     var seen = std.StringHashMap(void).init(alloc);
@@ -216,7 +272,10 @@ fn resolveMethodSymbolInAncestors(
         queue.deinit(alloc);
     }
 
-    const first = alloc.dupe(u8, class_name) catch return null;
+    // Canonicalize the entry class against the ref's lexical namespace so a bare
+    // receiver/enclosing name (`Service`) resolves to its qualified symbol
+    // (`AccuracyMain::Service`). Falls back to the raw name when unresolved.
+    const first = canonicalClassName(db, class_name, ns_hint, alloc) orelse (alloc.dupe(u8, class_name) catch return null);
     queue.append(alloc, first) catch {
         alloc.free(first);
         return null;
@@ -256,10 +315,12 @@ fn resolveMethodSymbolInAncestors(
         };
         defer if (superclass_dup) |s| alloc.free(s);
 
-        // Method defined directly under this class? Return its symbol id.
+        // Method defined directly under this class? Return its symbol id. `classdef`
+        // covers module singleton methods (`def self.x` on a module); `scope` covers
+        // AR scopes that read as callable members.
         const has_method = db.prepare(
             \\SELECT id FROM symbols
-            \\WHERE kind = 'def' AND parent_name = ? AND name = ?
+            \\WHERE kind IN ('def','classdef','scope') AND parent_name = ? AND name = ?
             \\LIMIT 1
         ) catch return null;
         defer has_method.finalize();
@@ -267,20 +328,13 @@ fn resolveMethodSymbolInAncestors(
         has_method.bind_text(2, method_name);
         if (has_method.step() catch false) return has_method.column_int(0);
 
+        // Unqualified superclass/mixin names resolve in the current class's namespace.
+        const cur_ns = parentNs(name);
+
         if (superclass_dup) |sc| {
-            const sc_known = sck: {
-                const q = db.prepare(
-                    \\SELECT 1 FROM symbols
-                    \\WHERE name = ? AND kind IN ('class','classdef','module','moduledef') LIMIT 1
-                ) catch break :sck false;
-                defer q.finalize();
-                q.bind_text(1, sc);
-                break :sck (q.step() catch false);
-            };
-            if (!sc_known) return null;
-            const dup = alloc.dupe(u8, sc) catch return null;
-            queue.append(alloc, dup) catch {
-                alloc.free(dup);
+            const csc = canonicalClassName(db, sc, cur_ns, alloc) orelse return null; // external superclass — cannot link
+            queue.append(alloc, csc) catch {
+                alloc.free(csc);
                 return null;
             };
         }
@@ -301,7 +355,7 @@ fn resolveMethodSymbolInAncestors(
         while (mix_stmt.step() catch false) {
             const mod_name = mix_stmt.column_text(0);
             if (mod_name.len == 0) continue;
-            const dup = alloc.dupe(u8, mod_name) catch return null;
+            const dup = canonicalClassName(db, mod_name, cur_ns, alloc) orelse (alloc.dupe(u8, mod_name) catch return null);
             queue.append(alloc, dup) catch {
                 alloc.free(dup);
                 return null;
@@ -608,23 +662,20 @@ pub fn resolveRefsForFile(db: db_mod.Db, file_id: i64, alloc: std.mem.Allocator,
         if (r.is_const) {
             def_id = resolveConstantNested(db, r.name, r.ns orelse "", alloc);
         } else {
-            // Resolve against the receiver's type when known, else the enclosing class.
-            var class_name: ?[]u8 = null;
-            var owned_enc = false;
-            if (r.recv) |rv| {
-                class_name = rv;
-            } else if (findEnclosingClass(db, file_id, r.line, alloc)) |enc| {
-                class_name = enc.name;
-                owned_enc = true;
-            }
+            // The ref's lexical namespace (qualified enclosing class/module), used to
+            // canonicalize bare receiver/superclass names during ancestor resolution.
+            const enc_ns = findEnclosingScopeName(db, file_id, r.line, alloc);
+            defer if (enc_ns) |e| alloc.free(e);
+            const ns_hint: []const u8 = if (enc_ns) |e| e else "";
+            // Resolve against the receiver's type when known, else the enclosing scope.
+            const class_name: ?[]const u8 = if (r.recv) |rv| rv else if (enc_ns) |e| e else null;
             if (class_name) |cn| {
-                defer if (owned_enc) alloc.free(cn);
-                const key = std.fmt.allocPrint(alloc, "{s}\x00{s}", .{ cn, r.name }) catch continue;
+                const key = std.fmt.allocPrint(alloc, "{s}\x00{s}\x00{s}", .{ cn, r.name, ns_hint }) catch continue;
                 if (memo.get(key)) |cached| {
                     alloc.free(key);
                     def_id = cached;
                 } else {
-                    def_id = resolveMethodSymbolInAncestors(db, cn, r.name, alloc) orelse 0;
+                    def_id = resolveMethodSymbolInAncestors(db, cn, r.name, ns_hint, alloc) orelse 0;
                     memo.put(key, def_id) catch alloc.free(key);
                 }
             }

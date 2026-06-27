@@ -20,6 +20,7 @@ const selftest = @import("cli/selftest.zig");
 
 comptime {
     _ = @import("tests/type_resolver_test.zig");
+    _ = @import("tests/overlay_test.zig");
 }
 
 pub const Panic = crash.Panic;

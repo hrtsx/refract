@@ -743,6 +743,26 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                     break :blk rcv_buf[0..cname.len];
                 }
                 break :blk null;
+            } else if (rcv.*.type == prism.NODE_CONSTANT_PATH) {
+                // `Mod::Class.method` — record the fully-qualified receiver so
+                // ref resolution binds the call to the right namespace's def.
+                const q = buildQualifiedName(ctx.parser, rcv, ctx.alloc) catch break :blk null;
+                defer ctx.alloc.free(q);
+                if (q.len > 0 and q.len < rcv_buf.len) {
+                    @memcpy(rcv_buf[0..q.len], q);
+                    break :blk rcv_buf[0..q.len];
+                }
+                break :blk null;
+            } else if (rcv.*.type == prism.NODE_CALL) {
+                // Chained receiver like `Service.new.call` — infer the
+                // constructed/return type of the inner call as the receiver.
+                if (extractNewCallType(ctx.parser, rcv)) |t| {
+                    if (t.len > 0 and t.len < rcv_buf.len) {
+                        @memcpy(rcv_buf[0..t.len], t);
+                        break :blk rcv_buf[0..t.len];
+                    }
+                }
+                break :blk null;
             }
         }
         break :blk null;

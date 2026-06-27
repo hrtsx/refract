@@ -571,15 +571,15 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     defer id_map.deinit();
 
     const sel_sym = try mem_db.prepare(
-        \\SELECT id, name, kind, line, col, return_type, doc, end_line, visibility, parent_name, value_snippet
+        \\SELECT id, name, kind, line, col, return_type, doc, end_line, visibility, parent_name, value_snippet, superclass, deprecated
         \\FROM symbols WHERE file_id = ? ORDER BY id
     );
     defer sel_sym.finalize();
     sel_sym.bind_int(1, mem_file_id);
 
     const ins_sym = try real_db.prepare(
-        \\INSERT INTO symbols (file_id, name, kind, line, col, return_type, doc, end_line, visibility, parent_name, value_snippet)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+        \\INSERT INTO symbols (file_id, name, kind, line, col, return_type, doc, end_line, visibility, parent_name, value_snippet, superclass, deprecated)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
     );
     defer ins_sym.finalize();
 
@@ -601,6 +601,9 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         if (pn.len > 0) ins_sym.bind_text(10, pn) else ins_sym.bind_null(10);
         const vs = sel_sym.column_text(10);
         if (vs.len > 0) ins_sym.bind_text(11, vs) else ins_sym.bind_null(11);
+        const sc = sel_sym.column_text(11);
+        if (sc.len > 0) ins_sym.bind_text(12, sc) else ins_sym.bind_null(12);
+        ins_sym.bind_int(13, sel_sym.column_int(12));
         const got_row = try ins_sym.step();
         const real_sym_id: i64 = if (got_row) ins_sym.column_int(0) else real_db.last_insert_rowid();
         ins_sym.reset();
@@ -634,15 +637,18 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         _ = try ins_p.step();
     }
 
-    // Copy refs
+    // Copy refs — including arg_count / receiver_type / ref_ns, which the binding
+    // resolver (resolveRefsForFile) needs to link a method/constant ref to a single
+    // definition. Dropping them here left every parallel-cold-indexed ref name-global.
     const sel_r = try mem_db.prepare(
-        \\SELECT name, line, col, scope_id, kind FROM refs WHERE file_id = ?
+        \\SELECT name, line, col, scope_id, kind, arg_count, receiver_type, ref_ns FROM refs WHERE file_id = ?
     );
     defer sel_r.finalize();
     sel_r.bind_int(1, mem_file_id);
 
     const ins_r = try real_db.prepare(
-        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind) VALUES (?, ?, ?, ?, ?, ?)
+        \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind, arg_count, receiver_type, ref_ns)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     );
     defer ins_r.finalize();
 
@@ -659,6 +665,9 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         if (sel_r.column_type(4) != 5) {
             ins_r.bind_text(6, sel_r.column_text(4));
         } else ins_r.bind_null(6);
+        ins_r.bind_int(7, sel_r.column_int(5));
+        if (sel_r.column_type(6) != 5) ins_r.bind_text(8, sel_r.column_text(6)) else ins_r.bind_null(8);
+        if (sel_r.column_type(7) != 5) ins_r.bind_text(9, sel_r.column_text(7)) else ins_r.bind_null(9);
         _ = try ins_r.step();
     }
 

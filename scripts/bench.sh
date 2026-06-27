@@ -14,7 +14,15 @@ N_RUNS="${BENCH_N_RUNS:-3}"
 
 if [[ ! -x "$REFRACT_BIN" ]]; then
   echo "refract binary not executable at: $REFRACT_BIN" >&2
-  echo "build first with: zig build" >&2
+  echo "build first with: zig build --release=safe" >&2
+  exit 2
+fi
+
+# Refuse a Debug binary — it runs queries ~5-6x slower and silently fakes a
+# regression. ReleaseSafe is stripped; Debug carries debug_info / is not stripped.
+if file "$REFRACT_BIN" 2>/dev/null | grep -q 'not stripped\|with debug_info'; then
+  echo "refract binary at $REFRACT_BIN is a Debug build — benchmarks would be bogus." >&2
+  echo "rebuild release first: zig build --release=safe" >&2
   exit 2
 fi
 

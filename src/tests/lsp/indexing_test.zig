@@ -2262,7 +2262,7 @@ test "mattr_reader indexed" {
     try std.testing.expect(arr.items.len >= 1);
 }
 
-test "scope indexes exist in schema v19" {
+test "scope indexes exist in schema v5" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p23_idxcheck";
     std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};

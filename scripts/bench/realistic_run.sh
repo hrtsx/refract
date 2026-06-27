@@ -21,6 +21,14 @@ fi
 OUT_DIR="${REFRACT_REALISTIC_OUT:-$REPO_ROOT/bench-results/realistic/${TS}-${GIT_SHA}}"
 mkdir -p "$OUT_DIR"
 
+# Refuse a Debug refract — it runs queries ~5-6x slower and fakes a regression.
+# ReleaseSafe is stripped; Debug carries debug_info / is not stripped.
+if [[ -x "$REFRACT" ]] && file "$REFRACT" 2>/dev/null | grep -q 'not stripped\|with debug_info'; then
+  echo "refract at $REFRACT is a Debug build — perf numbers would be bogus." >&2
+  echo "rebuild release first: zig build --release=safe" >&2
+  exit 2
+fi
+
 CORPORA_RAW="${REALISTIC_CORPORA:-mastodon discourse-lib}"
 WORKLOADS_RAW="${REALISTIC_WORKLOADS:-session typing micro}"
 SERVERS_RAW="${REALISTIC_SERVERS:-refract solargraph ruby-lsp}"

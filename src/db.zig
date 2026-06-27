@@ -394,7 +394,7 @@ test "schema idempotent: init twice does not error" {
     try std.testing.expectEqual(@as(i64, CURRENT_SCHEMA), ver);
 }
 
-test "schema v8 tables present" {
+test "schema v5 tables present" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
@@ -416,7 +416,7 @@ test "schema v8 tables present" {
     }
 }
 
-test "schema v8 runs/sorbet round-trip" {
+test "schema v5 runs/sorbet round-trip" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
@@ -438,7 +438,7 @@ test "schema v8 runs/sorbet round-trip" {
     try std.testing.expectEqualStrings("Integer", sel.column_text(0));
 }
 
-test "schema v8 type_resolution view unifies bridge + oracle rows" {
+test "schema v5 type_resolution view unifies bridge + oracle rows" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();
@@ -467,7 +467,7 @@ test "schema v8 type_resolution view unifies bridge + oracle rows" {
     try std.testing.expectEqualStrings("rbs", stmt.column_text(0));
 }
 
-test "schema v7 plugin_state unique key per plugin" {
+test "schema v5 plugin_state unique key per plugin" {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.init_schema();

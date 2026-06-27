@@ -47,6 +47,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
+    // A flagless `zig build` leaves `optimize == .Debug`, which silently produces a
+    // ~93 MB unoptimized binary — benchmarking it fakes a ~5–6× slowdown. Default the
+    // *shipped executable* to ReleaseSafe in that case; tests/bench/fuzz keep the fast
+    // Debug default. Any explicit `-Doptimize=…` or `--release=…` still wins.
+    const exe_optimize: std.builtin.OptimizeMode =
+        if (optimize == .Debug and !b.user_input_options.contains("optimize")) .ReleaseSafe else optimize;
+
     const zon_bytes: []const u8 = @embedFile("build.zig.zon");
     const ver_prefix = ".version = \"";
     const vs = (std.mem.indexOf(u8, zon_bytes, ver_prefix) orelse
@@ -68,7 +75,7 @@ pub fn build(b: *std.Build) void {
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = exe_optimize,
     });
     addVendorDeps(b, exe_mod);
     exe_mod.addOptions("build_meta", meta);
@@ -77,7 +84,7 @@ pub fn build(b: *std.Build) void {
         .name = "refract",
         .root_module = exe_mod,
     });
-    if (optimize != .Debug) exe_mod.strip = true;
+    if (exe_optimize != .Debug) exe_mod.strip = true;
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

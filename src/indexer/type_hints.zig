@@ -16,6 +16,56 @@ const namespaceFromStack = symbol_insert.namespaceFromStack;
 const isRbsIdent = rbs_parser.isRbsIdent;
 
 threadlocal var ar_plural_buf: [128]u8 = undefined;
+threadlocal var const_path_buf: [256]u8 = undefined;
+
+/// Build the fully-qualified name (`A::B::Post`) of a constant or constant-path
+/// receiver into a thread-local buffer. Returns the borrowed result (valid until
+/// the next call on this thread — callers consume it immediately). Returns null
+/// for non-constant nodes or paths that overflow the buffer / nesting bound.
+/// Without this, `AccuracyModel::Post.new` would infer the bare tail `Post`,
+/// which can't disambiguate two same-named classes in different namespaces.
+fn qualifyConstPath(parser: *prism.Parser, recv: *const prism.Node) ?[]const u8 {
+    var segs: [16][]const u8 = undefined;
+    var n: usize = 0;
+    var cur: ?*const prism.Node = recv;
+    while (cur) |node| {
+        if (n >= segs.len) return null;
+        switch (node.*.type) {
+            prism.NODE_CONSTANT => {
+                const cn: *const prism.ConstReadNode = @ptrCast(@alignCast(node));
+                segs[n] = resolveConstant(parser, cn.name);
+                n += 1;
+                cur = null;
+            },
+            prism.NODE_CONSTANT_PATH => {
+                const cp: *const prism.ConstantPathNode = @ptrCast(@alignCast(node));
+                if (cp.name == 0) return null;
+                segs[n] = resolveConstant(parser, cp.name);
+                n += 1;
+                cur = cp.parent;
+            },
+            else => return null,
+        }
+    }
+    if (n == 0) return null;
+    if (n == 1) return segs[0];
+    var len: usize = 0;
+    var i: usize = n;
+    while (i > 0) {
+        i -= 1;
+        if (len != 0) {
+            if (len + 2 > const_path_buf.len) return null;
+            const_path_buf[len] = ':';
+            const_path_buf[len + 1] = ':';
+            len += 2;
+        }
+        const s = segs[i];
+        if (len + s.len > const_path_buf.len) return null;
+        @memcpy(const_path_buf[len..][0..s.len], s);
+        len += s.len;
+    }
+    return const_path_buf[0..len];
+}
 
 pub fn updateSymbolReturnType(db: db_mod.Db, symbol_id: i64, return_type: []const u8) !void {
     const stmt = try db.prepare("UPDATE symbols SET return_type = ? WHERE id = ?");
@@ -95,12 +145,8 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
         }
         return null;
     }
-    if (recv.*.type == prism.NODE_CONSTANT) {
-        const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(recv));
-        return resolveConstant(parser, rc.name);
-    } else if (recv.*.type == prism.NODE_CONSTANT_PATH) {
-        const cp: *const prism.ConstantPathNode = @ptrCast(@alignCast(recv));
-        if (cp.name != 0) return resolveConstant(parser, cp.name);
+    if (recv.*.type == prism.NODE_CONSTANT or recv.*.type == prism.NODE_CONSTANT_PATH) {
+        return qualifyConstPath(parser, recv);
     }
     return null;
 }

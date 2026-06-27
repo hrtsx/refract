@@ -220,20 +220,38 @@ pub fn revoke(db: db_mod.Db, alloc: std.mem.Allocator, table: []const u8, id: i6
 }
 
 /// Promote live branch-scoped rows to project-global (branch = NULL) by
-/// re-inserting a global copy. Returns the count promoted across all tables.
+/// re-inserting a global copy, skipping any whose semantic twin already exists
+/// globally (NULL-safe match on every column but `created_at`, which promote
+/// re-stamps). Idempotent across repeated promotes. Returns count promoted.
 pub fn promote(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, from_branch: []const u8, now_s: i64) u32 {
     var total: u32 = 0;
-    const specs = [_]struct { table: []const u8, cols: []const u8 }{
-        .{ .table = "overlay_nodes", .cols = "fqn,kind,label,content,source,confidence,reason" },
-        .{ .table = "overlay_edges", .cols = "from_fqn,to_fqn,kind,label,source,confidence,reason" },
-        .{ .table = "overlay_types", .cols = "fqn,method_name,param_pos,type_str,source,confidence,reason" },
-        .{ .table = "overlay_suppress", .cols = "fqn,file_path,diag_code,line,source,confidence,reason" },
+    const specs = [_]struct { table: []const u8, cols: []const []const u8 }{
+        .{ .table = "overlay_nodes", .cols = &.{ "fqn", "kind", "label", "content", "source", "confidence", "reason" } },
+        .{ .table = "overlay_edges", .cols = &.{ "from_fqn", "to_fqn", "kind", "label", "source", "confidence", "reason" } },
+        .{ .table = "overlay_types", .cols = &.{ "fqn", "method_name", "param_pos", "type_str", "source", "confidence", "reason" } },
+        .{ .table = "overlay_suppress", .cols = &.{ "fqn", "file_path", "diag_code", "line", "source", "confidence", "reason" } },
     };
     for (specs) |s| {
+        var plain = std.Io.Writer.Allocating.init(alloc);
+        defer plain.deinit();
+        var sel = std.Io.Writer.Allocating.init(alloc);
+        defer sel.deinit();
+        var match = std.Io.Writer.Allocating.init(alloc);
+        defer match.deinit();
+        for (s.cols, 0..) |c, i| {
+            if (i > 0) {
+                plain.writer.writeByte(',') catch break;
+                sel.writer.writeByte(',') catch break;
+                match.writer.writeAll(" AND ") catch break;
+            }
+            plain.writer.writeAll(c) catch break;
+            sel.writer.print("s.{s}", .{c}) catch break;
+            match.writer.print("g.{s} IS s.{s}", .{ c, c }) catch break;
+        }
         const sql = std.fmt.allocPrintSentinel(
             alloc,
-            "INSERT INTO {s}(project_id,branch,{s},created_at) SELECT project_id,NULL,{s},? FROM {s} WHERE project_id=? AND branch=? AND revoked_at IS NULL",
-            .{ s.table, s.cols, s.cols, s.table },
+            "INSERT INTO {s}(project_id,branch,{s},created_at) SELECT s.project_id,NULL,{s},? FROM {s} s WHERE s.project_id=? AND s.branch=? AND s.revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM {s} g WHERE g.project_id=s.project_id AND g.branch IS NULL AND g.revoked_at IS NULL AND {s})",
+            .{ s.table, plain.written(), sel.written(), s.table, s.table, match.written() },
             0,
         ) catch continue;
         defer alloc.free(sql);
@@ -519,8 +537,10 @@ fn getJsonInt(obj: std.json.ObjectMap, key: []const u8) ?i64 {
 
 /// Import overlay rows from a portable JSON file, merging into the local db.
 /// Trusted-file path: bypasses write gating but preserves source/confidence/
-/// branch/created_at. Existing identical live rows are de-duplicated by a
-/// natural-key check so repeated imports are idempotent. Returns rows added.
+/// branch/created_at. A live row whose every column equals an incoming row is
+/// skipped (exact-identity check, see `liveRowExists`), so re-importing the same
+/// file is a no-op and repeated imports are idempotent. Returns rows added.
+/// Refuses files whose `schema` is present and not 1.
 pub fn importJson(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, path: []const u8) !u32 {
     const body = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, std.Io.Limit.limited(64 * 1024 * 1024)) catch return 0;
     defer alloc.free(body);
@@ -530,6 +550,13 @@ pub fn importJson(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, path
         .object => |o| o,
         else => return 0,
     };
+    if (root.get("schema")) |sv| {
+        const ver = switch (sv) {
+            .integer => |i| i,
+            else => return 0,
+        };
+        if (ver != 1) return 0;
+    }
     var added: u32 = 0;
     for (EXPORT_SPECS) |spec| {
         const arr_v = root.get(spec.key) orelse continue;
@@ -548,7 +575,38 @@ pub fn importJson(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, path
     return added;
 }
 
+/// True if a live row already matches `row` on every exported column for this
+/// project. Null-safe per column (text via IFNULL '', ints via a sentinel), so
+/// a re-imported row is recognised even where label/method/line are absent.
+fn liveRowExists(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, spec: ExportSpec, row: std.json.ObjectMap) bool {
+    var clauses = std.Io.Writer.Allocating.init(alloc);
+    defer clauses.deinit();
+    for (spec.cols) |c| {
+        if (isInt(spec, c)) {
+            clauses.writer.print(" AND IFNULL({s},-999999999)=IFNULL(?,-999999999)", .{c}) catch return false;
+        } else {
+            clauses.writer.print(" AND IFNULL({s},'')=IFNULL(?,'')", .{c}) catch return false;
+        }
+    }
+    const sql = std.fmt.allocPrintSentinel(alloc, "SELECT 1 FROM {s} WHERE project_id=? AND revoked_at IS NULL{s} LIMIT 1", .{ spec.table, clauses.written() }, 0) catch return false;
+    defer alloc.free(sql);
+    const stmt = db.prepare(sql) catch return false;
+    defer stmt.finalize();
+    stmt.bind_text(1, pid);
+    var col_idx: c_int = 2;
+    for (spec.cols) |col| {
+        if (isInt(spec, col)) {
+            if (getJsonInt(row, col)) |iv| stmt.bind_int(col_idx, iv) else stmt.bind_null(col_idx);
+        } else {
+            if (getJsonStr(row, col)) |sv| stmt.bind_text(col_idx, sv) else stmt.bind_null(col_idx);
+        }
+        col_idx += 1;
+    }
+    return stmt.step() catch false;
+}
+
 fn importRow(db: db_mod.Db, alloc: std.mem.Allocator, pid: []const u8, spec: ExportSpec, row: std.json.ObjectMap) bool {
+    if (liveRowExists(db, alloc, pid, spec, row)) return false;
     var names = std.Io.Writer.Allocating.init(alloc);
     defer names.deinit();
     var holes = std.Io.Writer.Allocating.init(alloc);

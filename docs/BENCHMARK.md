@@ -13,7 +13,7 @@ MCP-to-MCP comparison against rubydex's own MCP server is in §3d.
 - **Corpora**: Mastodon (3,194 .rb), Discourse-lib (698 .rb), 17-file / 100-case accuracy fixture
 - **Workloads**: `session` (60% hover/15% def/10% comp/5% sym/5% refs/3% docSym/2% rename), `typing` (8 Hz didChange × 30 s), `micro` (50 random probes × 4 ops)
 - **Artifacts**: LSP perf `bench-results/realistic/20260624T140710Z-ec72d613/` · MCP `bench-results/mcp/`
-- **Scope of this re-run**: the LSP perf matrix (§1, §2), the resource/reliability rows derived from it (§4, §5), and the new MCP head-to-head (§3d). The accuracy fixtures (§3, §3a–§3c) were **not** re-collected this round — those rows carry forward from the 2026-05-24 `b6d14235` (0.1.0-beta.1) baseline and are marked where cited.
+- **Scope of this re-run**: the LSP perf matrix (§1, §2), the resource/reliability rows derived from it (§4, §5), and the new MCP head-to-head (§3d). refract's **go-to-def (§3) and multi-op (§3a) accuracy were re-collected on tip (0.1.0-rc1)**; the ruby-lsp/solargraph columns in those sections carry forward from the 2026-05-24 `b6d14235` (0.1.0-beta.1) baseline on the same fixtures. §3b–§3c carry forward unchanged.
 
 Sorbet and Steep ship LSP modes but require `sorbet/`-folder + RBI generation.
 They appear in accuracy + DX, excluded from the perf matrix on purpose.
@@ -37,6 +37,7 @@ Latency rows are Mastodon `session` p50 (ms) unless noted.
 | accuracy — user-code † | **76/76** | 37/76 | 46/76 |
 | accuracy — stdlib † | **23/24** | 19/24 | 17/24 |
 | hover — correct (multi-op) † | **6/6** | 4/6 | 5/6 |
+| completion — member recall (multi-op) † | **1.00** | 0.33 | 0.00 |
 | references — recall / prec † | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
 | rename — recall / prec † | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
 | semantic-diagnostic recall † | **6/6** | 1/6 | 3/6 |
@@ -47,9 +48,11 @@ Latency rows are Mastodon `session` p50 (ms) unless noted.
 | Ruby on PATH | **none** | required | required |
 | distribution | **static binary** | gem (+ native ext) | gem |
 
-† Accuracy rows carried from the 2026-05-24 `b6d14235` (0.1.0-beta.1) baseline —
-not re-collected this round (see header scope note). All other rows are the
-2026-06-21 re-run vs ruby-lsp 0.27.0.beta3.
+† Accuracy rows: refract's column is re-collected on tip (0.1.0-rc1) against the
+current fixtures; the ruby-lsp and solargraph columns are carried from the
+2026-05-24 `b6d14235` (0.1.0-beta.1) baseline on the same (unchanged) fixture set
+and were not re-run this round. All non-accuracy rows are the 2026-06-21 perf
+re-run vs ruby-lsp 0.27.0.beta3.
 
 ¹ On Mastodon ruby-lsp's cold init jumped to 6.8 s on 0.27.beta3 and it still
 hits the 180 s harness warmup cap, answering against a still-building index;
@@ -63,8 +66,8 @@ ruby-lsp 0.27's Rust (`rubydex`) backend did **not** close the latency gap:
 hover edged down (0.9 → 0.7 ms) but definition and completion got *slower*
 (0.5 → 0.8 / 0.5 → 1.2 ms), workspace-symbol (~23 ms) and references (~627 ms)
 are unchanged, and Mastodon cold-init *regressed* to 6.8 s. refract still leads —
-or ties — every latency axis; the lone non-lead is multi-op **completion**, a
-low-end three-way tie where no server leads (§3a).
+or ties — every latency axis, and on accuracy leads or ties every axis: go-to-def,
+hover, completion, references, rename, and semantic diagnostics (§3, §3a).
 
 ---
 
@@ -168,30 +171,38 @@ fixture set (`scripts/bench/fixtures/`). Driven by `scripts/bench/lsp_multiop.rb
 | operation | metric | **refract** | ruby-lsp | solargraph |
 |---|---|:-:|:-:|:-:|
 | hover | correct / total | **6 / 6** | 4 / 6 | 5 / 6 |
-| completion | mean member recall | 0.33 | 0.33 | 0.00 |
+| completion | mean member recall | **1.00** | 0.33 | 0.00 |
 | references | mean recall / precision | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
 | rename | mean recall / precision | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
 | diagnostics | semantic bugs caught / 6 | **6 / 6** | 1 / 6 | 3 / 6 |
 
+refract's rows above are re-collected on tip (0.1.0-rc1); the ruby-lsp and
+solargraph columns are carried from the beta.1 run on the same (unchanged)
+fixture set. The fixtures intentionally include namespace collisions — two
+`Post` classes, two `greet`/`title` members — to stress receiver disambiguation.
+
 - **hover** — refract resolves every probe (method calls, attr readers, class and
   cross-file singleton defs); ruby-lsp returns empty on chained/cross-file
   receivers, solargraph misses one.
-- **completion** — the immature axis for all three. Member completion is scored on
-  trailing-dot fixtures (receiver indexed). refract completes top-level and
-  inherited receivers but not yet namespaced ones (`Mod::Class.`); ruby-lsp
-  completes the namespaced constant but not the local-var/inherited cases;
-  solargraph returned no members in this harness. Nobody leads here.
+- **completion** — refract now leads (**1.00**). Member completion is scored on
+  trailing-dot fixtures (receiver indexed). A constant receiver's inferred type is
+  recorded fully-qualified (`Mod::Class.new` → `Mod::Class`, not the bare tail
+  `Class`), so local-var, inherited, and namespaced receivers all complete; ruby-lsp
+  completes the namespaced constant but not the local-var/inherited cases; solargraph
+  returned no members in this harness.
 - **references / rename** — scored as precision/recall over the known reference and
-  edit sets, `includeDeclaration=true`. refract reaches **1.00 / 1.00** on
-  references after fixing a defect where the declaration site of a method or
-  constant was dropped (the `refs` table only over-inserts at class/module name
-  nodes; method/const declarations live in `symbols` and were never emitted). It
-  also no longer mis-routes a method reference as a local when the call sits inside
-  a method body. ruby-lsp over-returns references by name (precision 0.53) and
-  produced no usable rename on these fixtures; refract and solargraph are both exact
-  (**1.00 / 1.00**). refract reaches this by scoping the method-parent lookup to
-  workspace files (`is_gem=0`), so a method rename no longer binds to a same-named
-  gem class and drops the declaration edit.
+  edit sets, `includeDeclaration=true`. refract is **1.00 / 1.00** on both: it binds
+  each method/constant reference to a single definition (`refs.def_id`) by resolving
+  the receiver's type and walking its ancestry, so a call on a module singleton
+  (`AccuracyLib::Helper.greet`), a constructed receiver (`Service.new.call`), and an
+  inherited self-send (`call` in `Manager < Service`) all bind to the right def —
+  even when an unrelated class defines a same-named member. Class symbols are stored
+  fully-qualified while receivers/superclasses are written bare, so the resolver
+  canonicalizes bare names against the ref's lexical namespace before matching. The
+  binding pass runs once per workspace cold-index, after every file lands (cross-file
+  resolution needs the full symbol table). ruby-lsp over-returns references by name
+  (precision 0.53) and produced no usable rename; refract and solargraph are both
+  exact (**1.00 / 1.00**).
 - **diagnostics** — a labeled fixture (`diag_bugs.rb`) with six real semantic bugs:
   duplicate method, nil-receiver call, wrong arity, undefined method, unused
   variable, unused parameter. refract's native engine catches **all six**. The two

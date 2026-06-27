@@ -2,7 +2,38 @@
 
 ## [0.1.0-rc1] - 2026-06-21
 
-Release candidate on top of beta.1. Green across the lsp/mcp/edge suites on
+Production-ready release candidate on top of beta.1. Green across the lsp/mcp/edge
+suites on Linux, Alpine (musl), and macOS; reindex parity verified on real corpora.
+
+### Performance
+
+- Lockless query path: reads (hover, completion, go-to-def, references, …) run on a
+  dedicated read-only WAL connection, so they no longer serialize behind the
+  background index/flush writers. p95/p99 query latency drops under active editing;
+  p50 unchanged. In-memory DBs fall back to the shared connection transparently.
+
+### Completion
+
+- Unqualified-constant member completion: `CustomerReturn.` resolves to the
+  fully-qualified `Spree::CustomerReturn` and lists its members (parity with the
+  qualified and `.new` forms).
+
+### Architecture
+
+- Indexer/LSP/MCP god files split into focused submodules (AST visitor, type
+  inference, symbol inserts, hot-index management, type hierarchy, inline
+  completion, MCP utilities). Behaviour-preserving — same tests, same wire output.
+- Second pass on the remaining dense dispatch files: the LSP server, AST visitor
+  dispatch, completion, and navigation each decomposed into focused per-concern
+  submodules (server: request dispatch, indexing workers, lifecycle, notifications,
+  document sync; completion: receiver/symbol/special; navigation: definition,
+  references, hierarchy; visitor: def/call/var/pattern handlers), leaving every
+  module under ~1000 lines. Behaviour-preserving — reindex parity and the full
+  accuracy suite unchanged.
+
+## [0.1.0-beta.1] - 2026-06-21
+
+Hardened beta on top of beta.0. Green across the lsp/mcp/edge suites on
 Linux, Alpine (musl), and macOS.
 
 ### Architecture
@@ -11,6 +42,24 @@ Linux, Alpine (musl), and macOS.
   split into focused modules (stdlib types, RBS parser, Rails DSL, resolution,
   semantic checks; per-domain MCP tool groups; schema DDL; server utilities).
   Behaviour-preserving — same tests, same wire output.
+
+### Navigation, completion, references & rename
+
+- Fully-qualified receiver-type inference: `Mod::Class.new` now infers the
+  receiver type `Mod::Class` instead of the bare tail `Class`. With two same-named
+  classes in different namespaces, go-to-def on a member (`obj.title`) lands on the
+  correct class, and member completion (`obj.`) lists that class's members rather
+  than failing the namespace lookup.
+- Binding-exact references and rename across receiver types. Method references now
+  bind to a single definition (`refs.def_id`) for module singletons
+  (`Mod.method`), constructed receivers (`Class.new.method`), and inherited
+  self-sends — the resolver canonicalizes bare receiver/superclass names against the
+  reference's lexical namespace before walking the ancestry. Two latent bugs in the
+  parallel cold-index were fixed: the merge dropped `receiver_type` / `arg_count` /
+  `ref_ns` on references and `superclass` / `deprecated` on symbols, and no
+  cross-file `def_id` binding pass ran after a workspace cold-index — so references
+  and rename now reach precision/recall 1.00 on the collision fixtures instead of
+  over- and under-collecting same-named members.
 
 ### MCP surface — curated to 30 tools
 
@@ -55,7 +104,7 @@ Linux, Alpine (musl), and macOS.
   `REFRACT_TEST_WATCHDOG_MS`), and the `$/refract/__waitForIdle` drain loop is bounded.
 - Cold-index persistence fix: routes and i18n keys front-loaded on first index.
 
-## [0.1.0-beta.1] - 2026-05-24
+## [0.1.0-beta.0] - 2026-05-24
 
 Hardening on top of the alpha.1 surface. Green across the lsp/mcp/edge suites
 on Linux, Alpine (musl), macOS, and the debug build, plus the valgrind
