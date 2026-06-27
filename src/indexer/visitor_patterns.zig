@@ -109,7 +109,9 @@ pub fn handleRescue(ctx: *VisitCtx, n: *const prism.Node) bool {
                 exc_type = resolveConstant(ctx.parser, cn.name);
             }
         }
-        insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, exc_type, 80, ctx.scope_id) catch {
+        // Bare `rescue => e` (or a non-constant exception list) binds StandardError,
+        // matching Ruby's implicit default, so `e.` completes its members.
+        insertLocalVar(ctx.db, ctx.file_id, lname, llc.line, llc.col, exc_type orelse "StandardError", 80, ctx.scope_id) catch {
             ctx.error_count += 1;
         };
     }

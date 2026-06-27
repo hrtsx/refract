@@ -19,13 +19,63 @@ class LspClient
 
   attr_reader :rss_peak_kb, :fd_peak, :cpu_jiffies_final
 
+  # Ruby 3.2 added Queue#pop(timeout:); older runtimes need a polling fallback.
+  QUEUE_HAS_TIMEOUT = (Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.2"))
+
   def start
     @stdin, @stdout, @stderr, @wait = Open3.popen3(*@cmd)
     @stdin.binmode
     @stdout.binmode
     @pid = @wait.pid
+    @inbox = Thread::Queue.new
     start_rss_sampler
     start_stderr_drain
+    start_reader
+  end
+
+  # A dedicated thread is the sole consumer of the server's stdout, parsing whole
+  # LSP frames into @inbox. This decouples reading from writing: during a bulk
+  # didOpen burst a rival can keep emitting (logs, diagnostics) without filling its
+  # stdout pipe and deadlocking against our blocked write — the classic hang that
+  # forced the big Rails repos to run refract-only.
+  def start_reader
+    @reader_thread = Thread.new do
+      begin
+        loop do
+          frame = read_frame
+          break if frame.nil?
+          @inbox << frame
+        end
+      rescue EOFError, IOError, StandardError
+      ensure
+        @dead = true
+        @inbox << :eof rescue nil
+      end
+    end
+  end
+
+  # Blocking read of one complete LSP frame from @stdout. Returns nil on EOF.
+  def read_frame
+    headers = +""
+    until headers.end_with?("\r\n\r\n")
+      ch = @stdout.read(1)
+      return nil if ch.nil?
+      headers << ch
+    end
+    m = headers.match(/Content-Length: (\d+)/i)
+    return read_frame unless m # tolerate stray bytes between frames
+    len = m[1].to_i
+    body = +""
+    while body.bytesize < len
+      chunk = @stdout.read(len - body.bytesize)
+      return nil if chunk.nil?
+      body << chunk
+    end
+    JSON.parse(body)
+  rescue JSON::ParserError
+    read_frame
+  rescue StandardError
+    nil
   end
 
   def start_stderr_drain
@@ -60,6 +110,7 @@ class LspClient
   def stop
     @stop_rss = true
     @rss_thread&.join(1)
+    @reader_thread&.kill rescue nil
     begin
       send_notify("exit", nil)
     rescue StandardError
@@ -260,42 +311,64 @@ class LspClient
 
   private
 
+  # Bounded write: if the server stops draining its stdin (busy indexing a large
+  # workspace), a blind flush blocks until the external timeout kills the driver.
+  # Use write_nonblock gated on IO.select so a wedged server is marked dead instead
+  # of hanging the whole run. Budget is generous — a healthy server drains fast.
   def write(obj)
     return false if @dead
     body = JSON.dump(obj)
-    @stdin.write("Content-Length: #{body.bytesize}\r\n\r\n#{body}")
-    @stdin.flush
+    data = "Content-Length: #{body.bytesize}\r\n\r\n#{body}".b
+    budget = (ENV["WRITE_BUDGET_S"] || "15").to_f
+    deadline = monotonic + budget
+    off = 0
+    while off < data.bytesize
+      remaining = deadline - monotonic
+      if remaining <= 0
+        @dead = true
+        return false
+      end
+      unless IO.select(nil, [@stdin], nil, remaining)
+        @dead = true
+        return false
+      end
+      begin
+        off += @stdin.write_nonblock(data.byteslice(off..))
+      rescue IO::WaitWritable
+        next
+      end
+    end
     true
   rescue Errno::EPIPE, Errno::ECONNRESET, IOError
     @dead = true
     false
   end
 
+  # Pull the next parsed frame from the reader thread's queue, blocking up to
+  # `timeout` seconds. The reader owns @stdout; every consumer (request, diagnostic
+  # collectors) funnels through here.
   def read_msg(timeout)
     return nil if timeout <= 0
-    deadline = monotonic + timeout
-    headers = +""
-    until headers.end_with?("\r\n\r\n")
-      remaining = deadline - monotonic
-      break if remaining <= 0
-      ready = IO.select([@stdout], nil, nil, remaining)
-      return nil unless ready
-      ch = @stdout.read(1)
-      return nil if ch.nil?
-      headers << ch
-    end
-    return nil if headers.empty?
-    if (m = headers.match(/Content-Length: (\d+)/i))
-      len = m[1].to_i
-      body = +""
-      while body.bytesize < len
-        chunk = @stdout.read(len - body.bytesize)
-        break if chunk.nil?
-        body << chunk
+    msg =
+      if QUEUE_HAS_TIMEOUT
+        @inbox.pop(timeout: timeout)
+      else
+        deadline = monotonic + timeout
+        out = nil
+        loop do
+          begin
+            out = @inbox.pop(true)
+            break
+          rescue ThreadError
+            break if monotonic >= deadline
+            sleep 0.005
+          end
+        end
+        out
       end
-      JSON.parse(body)
-    end
-  rescue StandardError
+    return nil if msg.nil? || msg == :eof
+    msg
+  rescue ThreadError, ClosedQueueError
     nil
   end
 

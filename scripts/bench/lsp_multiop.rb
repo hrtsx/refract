@@ -41,6 +41,11 @@ COMPLETION = [
   ["complete bare-const class object (w.)", "compl_bareconst.rb",      9,  2, %w[build lookup]],
   ["complete typed method param (acct.)",   "compl_param.rb",          9,  9, %w[balance freeze!]],
   ["complete nested cross-class inherited", "compl_nested_inherit.rb", 11, 2, %w[inherited_a inherited_b own_c]],
+  ["complete multi-level chain (a.b.c.)",   "compl_chain.rb",          17, 12, %w[own_c]],
+  ["complete array index element (a[0].)",  "compl_index.rb",           6, 10, %w[greet_name age_years]],
+  ["complete collection first (a.first.)",  "compl_index.rb",           7, 13, %w[greet_name age_years]],
+  ["complete bare-rescue var (e.)",         "compl_rescue.rb",          7,  4, %w[diag_detail]],
+  ["complete attr_reader via ivar type",    "compl_attr.rb",           12, 12, %w[credit]],
 ]
 
 # Dirty-buffer completion: the receiver's type only exists in an UNSAVED edit
@@ -147,7 +152,8 @@ client.initialize!
 fixtures = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model.rb
               accuracy_rails_assoc.rb diag_bugs.rb
               compl_local.rb compl_const.rb compl_inherit.rb
-              compl_bareconst.rb compl_param.rb compl_nested_inherit.rb compl_dirty.rb]
+              compl_bareconst.rb compl_param.rb compl_nested_inherit.rb compl_dirty.rb
+              compl_chain.rb compl_index.rb compl_rescue.rb compl_attr.rb]
 opens = {}
 fixtures.each do |f|
   abs = File.join(ROOT, f)

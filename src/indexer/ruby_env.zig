@@ -265,7 +265,10 @@ test "detect returns path_default when no markers present" {
     defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, tmp) catch {};
     var env = try detect(alloc, tmp);
     defer env.deinit(alloc);
-    if (env.source == .env_rbenv or env.source == .env_chruby) return; // running shell sets these — accept
+    // A developer machine may carry an ambient global Ruby (shell rbenv/chruby, or a
+    // mise global config); those are valid environment-derived sources, so accept
+    // them. The pristine-env assertion below still holds in CI.
+    if (env.source == .env_rbenv or env.source == .env_chruby or env.source == .mise_global) return;
     try std.testing.expectEqual(RubyEnv.Source.path_default, env.source);
     try std.testing.expect(env.version == null);
 }

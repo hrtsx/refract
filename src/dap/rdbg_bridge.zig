@@ -38,7 +38,30 @@ pub const RdbgBridge = struct {
 
     pub const Error = error{RdbgNotFound};
 
+    /// True when `bin` is an executable we can find: a path with a slash is checked
+    /// directly; a bare name is searched on PATH. Used to fail fast with a precise
+    /// RdbgNotFound, since spawning a nonexistent program can otherwise defer the
+    /// failure to the child (exit 127) rather than erroring at spawn on some hosts.
+    fn binaryAvailable(alloc: std.mem.Allocator, bin: []const u8) bool {
+        if (std.mem.indexOfScalar(u8, bin, '/') != null) {
+            const z = alloc.dupeZ(u8, bin) catch return true; // on OOM, don't block launch
+            defer alloc.free(z);
+            return std.c.access(z, std.c.X_OK) == 0;
+        }
+        const path_env = std.c.getenv("PATH") orelse return false;
+        var it = std.mem.splitScalar(u8, std.mem.span(path_env), ':');
+        while (it.next()) |dir| {
+            if (dir.len == 0) continue;
+            const cand = std.fmt.allocPrintSentinel(alloc, "{s}/{s}", .{ dir, bin }, 0) catch continue;
+            defer alloc.free(cand);
+            if (std.c.access(cand, std.c.X_OK) == 0) return true;
+        }
+        return false;
+    }
+
     pub fn launch(alloc: std.mem.Allocator, program: []const u8, program_args: []const []const u8, cwd: []const u8) !RdbgBridge {
+        const rdbg_bin: []const u8 = if (std.c.getenv("RDBG_BIN")) |v| std.mem.span(v) else "rdbg";
+        if (!binaryAvailable(alloc, rdbg_bin)) return error.RdbgNotFound;
         const argv = try buildArgv(alloc, program, program_args);
         defer freeArgv(alloc, argv);
         const cwd_z = try alloc.dupeZ(u8, cwd);

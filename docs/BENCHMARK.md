@@ -171,7 +171,7 @@ fixture set (`scripts/bench/fixtures/`). Driven by `scripts/bench/lsp_multiop.rb
 | operation | metric | **refract** | ruby-lsp | solargraph |
 |---|---|:-:|:-:|:-:|
 | hover | correct / total | **6 / 6** | 4 / 6 | 5 / 6 |
-| completion | mean member recall (7 probes) | **1.00** | 0.33 | 0.00 |
+| completion | mean member recall (12 probes) | **1.00** | 0.33 † | 0.00 † |
 | references | mean recall / precision | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
 | rename | mean recall / precision | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
 | diagnostics | semantic bugs caught / 6 | **6 / 6** | 1 / 6 | 3 / 6 |
@@ -184,16 +184,23 @@ fixture set. The fixtures intentionally include namespace collisions — two
 - **hover** — refract resolves every probe (method calls, attr readers, class and
   cross-file singleton defs); ruby-lsp returns empty on chained/cross-file
   receivers, solargraph misses one.
-- **completion** — refract leads (**1.00** over 7 probes). The fixture set now
-  spans local-var, constant, in-file inherited, **bare-constant class objects**
+- **completion** — refract leads (**1.00** over 12 probes). The fixture set spans
+  local-var, constant, in-file inherited, **bare-constant class objects**
   (`x = Foo; x.` → class methods), **typed method parameters** (`def f(acct:
   Account); acct.`), **nested cross-class inheritance** (namespaced
-  `Mod::Child < Mod::Base`, which exercises the real-superclass walk, not the
-  lexical parent), and a **dirty-buffer** probe (the receiver's type exists only in
-  an unsaved `didChange` edit). A constant receiver's inferred type is recorded
-  fully-qualified (`Mod::Class.new` → `Mod::Class`); ruby-lsp completes the
-  namespaced constant but not the local-var/inherited cases; solargraph returned no
-  members in this harness.
+  `Mod::Child < Mod::Base`, the real-superclass walk, not the lexical parent), a
+  **dirty-buffer** probe (the receiver's type exists only in an unsaved `didChange`
+  edit), and five shapes added in 0.1.0-rc1: **multi-level chains** (`a.to_b.to_c.`
+  folds method return types left→right across namespaces), **collection element
+  access** (`arr[0].` / `coll.first.` complete the element type of an `Array[T]`),
+  **bare-rescue variables** (`rescue => e; e.` binds StandardError), and
+  **attr_reader return type** (`obj.reader.` resolves via the backing `@ivar`'s
+  inferred type). A constant receiver's inferred type is recorded fully-qualified
+  (`Mod::Class.new` → `Mod::Class`).
+  - † The ruby-lsp / solargraph columns are carried forward over the original
+    7-probe subset (beta.1 run); the five rc1 probes are scored on refract only.
+    ruby-lsp completes the namespaced constant but not the local-var/inherited
+    cases; solargraph returned no members in this harness.
   - **Caveat — this is a controlled-fixture score, not real-world recall.** Every
     fixture is a shape where the receiver's type is *inferable*. On real code most
     receivers are method-return values, block/`let` variables, or untyped params
@@ -230,11 +237,25 @@ diagnostics-safe:
 3. **Accessor return-type inference.** `def account; @account; end` now records the
    ivar's type as the method's return type, so chains and `x = obj.account` resolve.
    `symbols.return_type` is never read by any diagnostic, so this too is FP-safe.
+4. **Receiver-shape breadth (0.1.0-rc1).** Multi-level chains (`a.b.c.`, folding
+   return types across namespaces), collection element access (`arr[0].` /
+   `coll.first.` → the `Array[T]` element), bare-rescue variables (`rescue => e` →
+   StandardError) and attr_reader-via-`@ivar` return types now resolve. All are
+   query-time/completion-only or write only `symbols.return_type`/StandardError to an
+   un-indexed stdlib class, so they are diagnostics-FP-safe (verified: the semantic
+   pass skips unindexed receiver classes). These are validated exactly in §3a (12/12
+   probes) but, measured on mastodon, **do not move the aggregate** (`0.252 / 0.512`,
+   within noise of the pre-rc1 `0.25 / 0.51`): the shapes they add are individually
+   rare in sampled code. The honest takeaway is a *correctness/coverage* gain, not a
+   recall jump.
 
 Where a receiver resolves, members — including injected universal `Object`/`Kernel`
 methods (`nil?`, `is_a?`, `tap`, …) and `Enumerable`/`Comparable` — complete
-correctly. The residual gap is arbitrary method-return chains and untyped params
-beyond the naming heuristic, which need a full flow-typing engine.
+correctly. The residual gap, now that arg-free chains, collections and accessors are
+handled, is dominated by **argument-bearing** method-return chains
+(`posts.where(x).first.`) and untyped params beyond the naming heuristic — both need
+a full flow-typing engine. Homebrew (refract-only, 120 probes) lands `member_recall
+0.183 / resolution 0.667` on the same harness.
 - **references / rename** — scored as precision/recall over the known reference and
   edit sets, `includeDeclaration=true`. refract is **1.00 / 1.00** on both: it binds
   each method/constant reference to a single definition (`refs.def_id`) by resolving
@@ -315,9 +336,19 @@ non-Rails).
 | structural precision | 0.94 | 0.96 |
 
 refract resolves 2× more probes and is 4× more precise on references; ruby-lsp edges
-per-answer structural precision but answers half as often. The big Rails repos run
-refract-only (ruby-lsp deadlocks on bulk `didOpen` while indexing a 3k–9k-file workspace);
-the structural oracle is rival-independent, so refract's numbers still land there.
+per-answer structural precision but answers half as often.
+
+Previously the big Rails repos ran refract-only because ruby-lsp/solargraph **deadlocked**
+on bulk `didOpen`: the driver's blind `flush` blocked once a rival stopped draining its
+stdin mid-index, and the rival's own stdout backed up against nobody reading it. The
+harness driver (`lsp_driver_lib.rb`) now runs a **dedicated stdout reader thread** per
+server and a **bounded, `IO.select`-gated write**, so a busy rival can keep emitting while
+we keep writing — neither side wedges. Verified on mastodon: all three servers stayed
+alive through setup with **no server dropped** (the run previously hung and was killed with
+empty output). Full consensus scoring on the largest repos (mastodon/discourse) still needs
+a longer deadline than CI grants, because the rivals are genuinely slow to index 3k–9k
+files (and solargraph crash-loops resolving gemspecs on mastodon — its own bug); the
+structural oracle remains rival-independent, so refract's numbers land regardless.
 
 ## 3c. Diagnostic false-positive audit (real code)
 
