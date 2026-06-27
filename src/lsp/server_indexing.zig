@@ -634,6 +634,25 @@ pub const BgCtx = struct {
             self.server_ptr.sendLogMessage(3, "refract: indexing complete");
         }
 
+        // Detect a Rails/ActiveSupport project so framework-receiver completion
+        // (params/request/cookies/…) fires only where those helpers exist. Cheap,
+        // independent of the mtime-gated gem index below.
+        if (!self.server_ptr.has_rails.load(.monotonic)) {
+            if (std.fmt.allocPrint(alloc, "{s}/Gemfile.lock", .{self.root_path})) |lp| {
+                defer alloc.free(lp);
+                if (std.Io.Dir.cwd().readFileAlloc(self.io, lp, alloc, std.Io.Limit.limited(4 * 1024 * 1024))) |buf| {
+                    defer alloc.free(buf);
+                    if (std.mem.indexOf(u8, buf, "\n    rails ") != null or
+                        std.mem.indexOf(u8, buf, "actionpack ") != null or
+                        std.mem.indexOf(u8, buf, "activesupport ") != null or
+                        std.mem.indexOf(u8, buf, "railties ") != null)
+                    {
+                        self.server_ptr.has_rails.store(true, .monotonic);
+                    }
+                } else |_| {}
+            } else |_| {}
+        }
+
         // Always index bundled RBS — cheap, idempotent (keyed by <bundled>/... path).
         // Ensures fresh hover/completion coverage after binary upgrades, regardless of DB age.
         if (!self.server_ptr.bg_cancelled.load(.acquire)) {

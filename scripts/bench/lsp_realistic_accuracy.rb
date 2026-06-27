@@ -239,6 +239,15 @@ def consensus(map)
   n >= 2 ? [best, n] : [nil, n]
 end
 
+# Extract member labels from a textDocument/completion response (items[].label).
+def completion_member_labels(resp)
+  return nil if resp.nil?
+  res = resp["result"]
+  return [] if res.nil?
+  items = res.is_a?(Hash) ? (res["items"] || []) : res
+  items.map { |i| i["label"] || i["insertText"] }.compact
+end
+
 # ---- launch servers + warm ------------------------------------------------
 
 # Sampled-file count. Fewer files on huge repos = cheaper didOpen + faster warm,
@@ -390,6 +399,8 @@ def_attempted = 0; ref_attempted = 0
 struct_misses = {} # server => [{name, probe, target, target_line}] — oracle-rejected targets
 rename_detail = {} # server => [{name, probe, refs, edits, match}] — per-probe rename vs refs
 unresolved_samples = {} # server => [{name, probe, line, before}] — go-to-def returned NOTHING
+comp_attempted = Hash.new(0); comp_resolved = Hash.new(0); comp_recall_hits = Hash.new(0)
+comp_samples = {} # server => [{recv, meth, loc, got}] — completion missed the called method
 
 pr_row = lambda do |tp, fp, fn|
   prec = (tp + fp).zero? ? nil : (tp.to_f / (tp + fp)).round(3)
@@ -431,6 +442,16 @@ build_report = lambda do |partial:|
             recall: ref_r[n].empty? ? nil : (ref_r[n].sum / ref_r[n].size).round(3) }]
     end,
     rename_consistency: server_names.to_h { |n| [n, { n: rename_total[n], consistent: rename_consistent[n] }] },
+    # Structural completion accuracy: at a real `recv.method` site the called
+    # method must appear in the receiver's completion (rival-independent ground
+    # truth). member_recall = sites offering it / sites probed; resolution_rate =
+    # sites returning any member / sites probed.
+    completion: server_names.to_h do |n|
+      [n, { probes: comp_attempted[n],
+            resolution_rate: comp_attempted[n].zero? ? nil : (comp_resolved[n].to_f / comp_attempted[n]).round(3),
+            member_recall: comp_attempted[n].zero? ? nil : (comp_recall_hits[n].to_f / comp_attempted[n]).round(3) }]
+    end,
+    completion_misses: comp_samples,
     rename_detail: rename_detail,
     structural_misses: struct_misses,
     unresolved_samples: unresolved_samples,
@@ -669,6 +690,56 @@ if DIAG_AUDIT && clients.key?("refract") && !over_deadline.call
     semantic_fp_rate: !rival_validated ? nil : (sem_total.zero? ? 0.0 : (sem_only.to_f / sem_total).round(3)),
     samples: diag_samples,
   }
+end
+
+# ---- completion member-recall (structural, rival-independent) -------------
+
+unless over_deadline.call
+  comp_probes = []
+  files.each do |path|
+    opened[path][:text].each_line.with_index do |line, idx|
+      line.scan(/\b([a-z_][a-zA-Z0-9_]*)\.([a-z_][a-zA-Z0-9_]*)/) do
+        m = Regexp.last_match
+        recv = m[1]; meth = m[2]
+        pre = m.pre_match
+        # Drop non-code matches: comments (and `#{}` interpolation noise) and text
+        # inside string literals (`example.com`, `e.g`) — these aren't real receiver
+        # calls, so counting them would deflate recall with un-completable junk.
+        next if pre.include?("#")
+        next if pre.count('"').odd? || pre.count("'").odd?
+        # Keyword/constructor noise that never carries an inferable receiver type.
+        next if %w[self new class then end do begin return yield super].include?(recv)
+        dot_col = pre.length + recv.length
+        comp_probes << { path: path, line: idx, char: dot_col + 1, recv: recv, meth: meth }
+      end
+    end
+  end
+  comp_probes = comp_probes
+    .sort_by { |p| Digest::SHA1.hexdigest("#{SEED}:#{p[:path]}:#{p[:line]}:#{p[:char]}:#{p[:meth]}") }
+    .first(PROBES_LIMIT)
+
+  comp_probes.each do |p|
+    break if over_deadline.call
+    info = opened[p[:path]]
+    server_names.each do |name|
+      c = clients[name]
+      next if dropped.include?(name) || c.dead?
+      comp_attempted[name] += 1
+      r = ask.call(name, c, :completion_dot, info[:uris][name], p[:line], p[:char], timeout: 8)
+      labels = completion_member_labels(r)
+      next if labels.nil?
+      comp_resolved[name] += 1 unless labels.empty?
+      if labels.include?(p[:meth])
+        comp_recall_hits[name] += 1
+      elsif (comp_samples[name] ||= []).size < 40
+        comp_samples[name] << {
+          recv: p[:recv], meth: p[:meth],
+          loc: "#{p[:path].sub(%r{\A#{Regexp.escape(ROOT)}/?}, '')}:#{p[:line] + 1}",
+          got: labels.first(8),
+        }
+      end
+    end
+  end
 end
 
 clients.each_value(&:stop)

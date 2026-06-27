@@ -313,6 +313,9 @@ pub const Server = struct {
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_type_checker: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Set during cold-index when Gemfile.lock names rails/actionpack/activesupport;
+    // gates Rails framework-receiver completion (params/request/…) off plain Ruby.
+    has_rails: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     type_checker_severity: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
     type_checker_confidence: workspace_config.TypeCheckerConfidence = .{},
     log_path: ?[]const u8 = null,

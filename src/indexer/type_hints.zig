@@ -24,7 +24,7 @@ threadlocal var const_path_buf: [256]u8 = undefined;
 /// for non-constant nodes or paths that overflow the buffer / nesting bound.
 /// Without this, `AccuracyModel::Post.new` would infer the bare tail `Post`,
 /// which can't disambiguate two same-named classes in different namespaces.
-fn qualifyConstPath(parser: *prism.Parser, recv: *const prism.Node) ?[]const u8 {
+pub fn qualifyConstPath(parser: *prism.Parser, recv: *const prism.Node) ?[]const u8 {
     var segs: [16][]const u8 = undefined;
     var n: usize = 0;
     var cur: ?*const prism.Node = recv;

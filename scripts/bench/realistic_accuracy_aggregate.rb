@@ -44,6 +44,40 @@ end
 puts
 puts "Probes/oracle: " + acc.map { |r| "#{r['corpus']} #{r['def_probes']}p (consensus-resolvable #{r['def_oracle_resolvable']}, ambiguous #{r['def_ambiguous']})" }.join("; ")
 
+# Completion member recall — rival-independent structural oracle. The called
+# method at a real `recv.method` site MUST be a valid completion, so a hit means
+# completion offered it. The gap from the synthetic 1.00 (lsp_multiop.rb) is
+# receiver-type inference breadth: most real receivers have no inferable type.
+comp = acc.select { |r| r["completion"] && !r["completion"].empty? }
+unless comp.empty?
+  puts "\n### Completion member recall (structural: the called method must complete)\n\n"
+  puts "`member_recall` = sites offering the actually-called method / sites probed."
+  puts "`resolution` = sites returning any member / sites probed (the rest have an"
+  puts "uninferable receiver type, so completion returns nothing)."
+  puts
+  puts "| corpus | server | probes | resolution | member recall |"
+  puts "|---|---|--:|--:|--:|"
+  comp.each do |r|
+    (r["completion"] || {}).each do |srv, v|
+      puts "| #{r['corpus']} | #{srv} | #{v['probes']} | #{fmt.(v['resolution_rate'])} | #{fmt.(v['member_recall'])} |"
+    end
+  end
+  comp_miss_rows = comp.flat_map do |r|
+    (r["completion_misses"] || {}).flat_map do |srv, ms|
+      Array(ms).first(10).map { |m| [r["corpus"], srv, m] }
+    end
+  end
+  unless comp_miss_rows.empty?
+    puts "\n**Completion miss samples** (called method absent — the receiver-type-inference gap):\n\n"
+    puts "| corpus | server | call | loc | got |"
+    puts "|---|---|---|---|---|"
+    comp_miss_rows.each do |corpus, srv, m|
+      got = Array(m["got"]).first(6).join(" ").gsub("|", "\\|")[0, 50]
+      puts "| #{corpus} | #{srv} | `#{m['recv']}.#{m['meth']}` | #{m['loc']} | `#{got}` |"
+    end
+  end
+end
+
 puts "\n### Rename ↔ reference consistency (edits == own reference set)\n\n"
 puts "| corpus | server | probes | consistent |"
 puts "|---|---|--:|--:|"

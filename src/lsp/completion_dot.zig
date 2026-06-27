@@ -55,6 +55,27 @@ fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: 
     return null;
 }
 
+// Camelize a snake_case identifier into a constant candidate (`status_pin` →
+// `StatusPin`, `account` → `Account`). Returns null on empty/overflow. Used only
+// as a completion-time type guess — never persisted.
+fn camelizeIdent(name: []const u8, buf: []u8) ?[]const u8 {
+    if (name.len == 0) return null;
+    var len: usize = 0;
+    var cap_next = true;
+    for (name) |ch| {
+        if (ch == '_') {
+            cap_next = true;
+            continue;
+        }
+        if (len >= buf.len) return null;
+        buf[len] = if (cap_next) std.ascii.toUpper(ch) else ch;
+        cap_next = false;
+        len += 1;
+    }
+    if (len == 0) return null;
+    return buf[0..len];
+}
+
 pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, line: u32, character: u32, offset: usize, word: []const u8) !?types.ResponseMessage {
     _ = word;
     var recv_offset = if (offset >= 2) offset - 2 else 0;
@@ -152,7 +173,42 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     if (sc.len > 0) chain_class_buf = try self.alloc.dupe(u8, sc);
                 }
             }
-            const is_constant_recv = recv_word.len > 0 and std.ascii.isUpper(recv_word[0]);
+            // Method/keyword parameter receiver: `def f(user: User); user.` —
+            // params carry type_hint (RBS/Sorbet sigs) but never land in local_vars.
+            if (chain_class_buf == null and !th_hit and recv_word.len > 0 and
+                recv_word[0] != '@' and !std.ascii.isUpper(recv_word[0]) and
+                !std.mem.eql(u8, recv_word, "self"))
+            {
+                const def_stmt = try self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND kind='def' AND line<=? ORDER BY line DESC LIMIT 1");
+                defer def_stmt.reset();
+                def_stmt.bind_int(1, fdc_id);
+                def_stmt.bind_int(2, cursor_line_db);
+                if (try def_stmt.step()) {
+                    const def_id = def_stmt.column_int(0);
+                    const param_stmt = try self.cachedStmt("SELECT type_hint FROM params WHERE symbol_id=? AND name=? AND type_hint IS NOT NULL LIMIT 1");
+                    defer param_stmt.reset();
+                    param_stmt.bind_int(1, def_id);
+                    param_stmt.bind_text(2, recv_word);
+                    if (try param_stmt.step()) {
+                        const pt = param_stmt.column_text(0);
+                        if (pt.len > 0) chain_class_buf = try self.alloc.dupe(u8, pt);
+                    }
+                }
+            }
+
+            // Bare-constant alias marker: a local typed `Foo.class` (from `x = Foo`)
+            // holds the class object, so complete its singleton/class methods like a
+            // constant receiver. Strip the marker and route through the constant path.
+            var force_singleton = false;
+            if (th_hit) {
+                const raw_th = th_stmt.column_text(0);
+                if (std.mem.endsWith(u8, raw_th, ".class")) {
+                    force_singleton = true;
+                    if (chain_class_buf) |cc| self.alloc.free(cc);
+                    chain_class_buf = try self.alloc.dupe(u8, raw_th[0 .. raw_th.len - ".class".len]);
+                }
+            }
+            const is_constant_recv = force_singleton or (recv_word.len > 0 and std.ascii.isUpper(recv_word[0]));
             if (chain_class_buf == null and is_constant_recv) {
                 // Resolve an unqualified/relative constant (e.g. `CustomerReturn`)
                 // to its stored fully-qualified name (`Spree::CustomerReturn`):
@@ -174,8 +230,56 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 }
                 if (chain_class_buf == null) chain_class_buf = try self.alloc.dupe(u8, recv_word);
             }
+
+            // Framework receiver (Rails): params/request/cookies/session/… are
+            // gem-typed method calls absent from the index, so they resolve to no
+            // class. Emit their curated member set. A real local of the same name
+            // resolves via type_hint first (th_hit) and never reaches here, so plain
+            // Ruby is unaffected; gated on has_rails so non-Rails projects opt out.
+            if (chain_class_buf == null and !th_hit and !is_constant_recv and
+                self.has_rails.load(.monotonic) and c_common.isFrameworkReceiver(recv_word))
+            {
+                var aw_fw = std.Io.Writer.Allocating.init(self.alloc);
+                const wf = &aw_fw.writer;
+                try wf.writeAll("{\"isIncomplete\":false,\"items\":[");
+                var fw_first = true;
+                try c_common.addFrameworkCompletions(wf, recv_word, &fw_first, line, character);
+                try wf.writeAll("]}");
+                return types.ResponseMessage{
+                    .id = msg.id,
+                    .result = null,
+                    .raw_result = try aw_fw.toOwnedSlice(),
+                    .@"error" = null,
+                };
+            }
+
+            // Last-resort, COMPLETION-ONLY type guess: an untyped local/param named
+            // like a class (`account` → Account, `status_pin` → StatusPin) is, in
+            // idiomatic Ruby/Rails, usually an instance of it. ~80% of real receivers
+            // carry no inferable type; this recovers member completion on the common
+            // convention. It is never written to local_vars, so diagnostics / refs /
+            // hover are unaffected and cannot gain a false positive from a wrong guess.
+            if (chain_class_buf == null and !th_hit and !is_constant_recv and
+                recv_word.len > 0 and recv_word[0] != '@' and recv_word[0] != '$' and
+                !std.mem.eql(u8, recv_word, "self") and std.mem.indexOf(u8, recv_word, "::") == null)
+            {
+                var cbuf: [128]u8 = undefined;
+                if (camelizeIdent(recv_word, &cbuf)) |cand| {
+                    const gstmt = try self.cachedStmt(
+                        \\SELECT name FROM symbols WHERE kind IN ('class','module')
+                        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+                        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+                    );
+                    defer gstmt.reset();
+                    gstmt.bind_text(1, cand);
+                    if (try gstmt.step()) {
+                        const gn = gstmt.column_text(0);
+                        if (gn.len > 0) chain_class_buf = try self.alloc.dupe(u8, gn);
+                    }
+                }
+            }
             const is_self_recv = std.mem.eql(u8, recv_word, "self");
-            const class_name_raw: []const u8 = if (th_hit) th_stmt.column_text(0) else if (chain_class_buf) |cc| cc else "";
+            const class_name_raw: []const u8 = if (force_singleton) (chain_class_buf orelse "") else if (th_hit) th_stmt.column_text(0) else if (chain_class_buf) |cc| cc else "";
             const class_name = extractBaseClass(class_name_raw);
             if (class_name.len > 0) {
                 var mro_arena = std.heap.ArenaAllocator.init(self.alloc);
@@ -450,13 +554,37 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try wd.writeByte('}');
                         }
 
-                        const par_stmt = try self.cachedStmt("SELECT parent_name FROM symbols WHERE kind='class' AND name=? AND parent_name IS NOT NULL LIMIT 1");
+                        // Ascend the real superclass: `parent_name` carries the
+                        // namespace for nested classes (only top-level classes mirror
+                        // the superclass into it), so it would walk the lexical parent
+                        // instead of the ancestor. `superclass` is written for every
+                        // class, falling back to parent_name when absent.
+                        const par_stmt = try self.cachedStmt("SELECT COALESCE(superclass, parent_name) FROM symbols WHERE kind='class' AND name=? AND COALESCE(superclass, parent_name) IS NOT NULL LIMIT 1");
                         defer par_stmt.reset();
                         par_stmt.bind_text(1, current);
                         if (try par_stmt.step()) {
                             const pname = par_stmt.column_text(0);
                             if (pname.len == 0) break;
-                            current = try ma.dupe(u8, pname);
+                            // Superclasses are written bare (`Base`) while class
+                            // symbols/methods are stored fully qualified (`Xf::Base`),
+                            // so canonicalize an unqualified ancestor to its stored
+                            // name (shortest `%::Base` suffix) before the next step.
+                            var next_cur = try ma.dupe(u8, pname);
+                            if (std.mem.indexOf(u8, pname, "::") == null) {
+                                if (self.cachedStmt(
+                                    \\SELECT name FROM symbols WHERE kind IN ('class','module')
+                                    \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+                                    \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+                                ) catch null) |cs| {
+                                    defer cs.reset();
+                                    cs.bind_text(1, pname);
+                                    if (cs.step() catch false) {
+                                        const cn = cs.column_text(0);
+                                        if (cn.len > 0) next_cur = try ma.dupe(u8, cn);
+                                    }
+                                }
+                            }
+                            current = next_cur;
                         } else break;
                     }
                 } // end union_it loop
@@ -503,6 +631,27 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         try wd.writeAll(",\"kind\":2}");
                     }
                 }
+                // Universal Object/Kernel methods: every receiver responds to these,
+                // but they live on BasicObject/Kernel/Object which user code never
+                // re-declares, so the symbol-table walk never surfaces them. Inject
+                // for any resolved receiver (deduped against real members).
+                {
+                    const universal = [_][]const u8{
+                        "nil?",      "is_a?",                 "kind_of?",              "instance_of?", "respond_to?",
+                        "tap",       "then",                  "itself",                "freeze",       "frozen?",
+                        "dup",       "clone",                 "to_s",                  "inspect",      "hash",
+                        "object_id", "send",                  "public_send",           "method",       "methods",
+                        "equal?",    "instance_variable_get", "instance_variable_set",
+                    };
+                    for (universal) |um| {
+                        if (seen_names.contains(um)) continue;
+                        if (!first_dot) try wd.writeByte(',');
+                        first_dot = false;
+                        try wd.writeAll("{\"label\":");
+                        try writeEscapedJson(wd, um);
+                        try wd.writeAll(",\"kind\":2}");
+                    }
+                }
                 try addStdlibCompletions(wd, class_name, &first_dot, line, character);
                 try wd.writeAll("]}");
 
@@ -517,4 +666,3 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
     }
     return null;
 }
-

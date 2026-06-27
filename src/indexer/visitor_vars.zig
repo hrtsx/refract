@@ -335,17 +335,39 @@ pub fn handleLocalVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
         }
     }
 
+    // Bare constant alias: `x = Foo` / `x = Mod::Foo` binds the class OBJECT, so
+    // `x.` should complete singleton/class methods, not instance methods. Tag the
+    // hint with a `.class` marker the completion engine recognizes (and which no
+    // symbol name matches, so diagnostics ignore it).
+    if (type_hint == null) {
+        if (lv.value) |val| {
+            if (val.*.type == prism.NODE_CONSTANT or val.*.type == prism.NODE_CONSTANT_PATH) {
+                if (type_hints.qualifyConstPath(ctx.parser, val)) |q| {
+                    ar_alloc_type = std.fmt.allocPrint(ctx.alloc, "{s}.class", .{q}) catch null;
+                    if (ar_alloc_type) |at| type_hint = at;
+                }
+            }
+        }
+    }
+
     if (type_hint == null) {
         if (lv.value) |val| {
             if (val.*.type == prism.NODE_IF) {
                 const if_node: *const prism.IfNode = @ptrCast(@alignCast(val));
-                // Extract then branch: first statement in statements list
-                const then_t: ?[]const u8 = blk: {
+                // Extract then branch: first statement in statements list.
+                // extractNewCallType may return a thread-local buffer (qualifyConstPath /
+                // ar_plural_buf), so dupe it before computing else_t — the else lookup
+                // can overwrite that buffer and clobber then_t.
+                const then_raw: ?[]const u8 = blk: {
                     if (if_node.statements == null) break :blk null;
                     const stmts: *const prism.StatementsNode = @ptrCast(@alignCast(if_node.statements));
                     if (stmts.body.size == 0) break :blk null;
                     break :blk extractNewCallType(ctx.parser, stmts.body.nodes[0]);
                 };
+                var then_dup: ?[]u8 = null;
+                if (then_raw) |t| then_dup = ctx.alloc.dupe(u8, t) catch null;
+                defer if (then_dup) |t| ctx.alloc.free(t);
+                const then_t: ?[]const u8 = if (then_dup) |t| t else null;
                 // Extract else branch: subsequent is either ElseNode or IfNode
                 const else_t: ?[]const u8 = blk: {
                     if (if_node.subsequent == null) break :blk null;
@@ -359,10 +381,20 @@ pub fn handleLocalVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
                     }
                     break :blk null;
                 };
-                if (then_t != null and else_t != null and std.mem.eql(u8, then_t.?, else_t.?)) {
-                    type_hint = then_t;
-                } else if (then_t != null) {
-                    type_hint = then_t;
+                if (then_t != null and else_t != null) {
+                    if (std.mem.eql(u8, then_t.?, else_t.?)) {
+                        ar_alloc_type = ctx.alloc.dupe(u8, then_t.?) catch null;
+                    } else {
+                        // Differing branch types → union; completion splits on " | ".
+                        ar_alloc_type = std.fmt.allocPrint(ctx.alloc, "{s} | {s}", .{ then_t.?, else_t.? }) catch null;
+                    }
+                    if (ar_alloc_type) |at| type_hint = at;
+                } else if (then_t) |t| {
+                    ar_alloc_type = ctx.alloc.dupe(u8, t) catch null;
+                    if (ar_alloc_type) |at| type_hint = at;
+                } else if (else_t) |e| {
+                    ar_alloc_type = ctx.alloc.dupe(u8, e) catch null;
+                    if (ar_alloc_type) |at| type_hint = at;
                 }
             }
         }

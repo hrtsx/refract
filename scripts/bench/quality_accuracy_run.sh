@@ -129,6 +129,11 @@ for corpus in $CORPORA_RAW; do
   fi
   (( rc != 0 )) && echo "    WARN accuracy $corpus exited rc=$rc (partial data kept)" >&2
 
+  # Surface completion member-recall immediately (full table comes from the
+  # aggregator). Rival-independent, so it lands even on refract-only repos.
+  comp_line="$(ruby -rjson -e 'c=(JSON.parse(File.read(ARGV[0]))["completion"]||{})["refract"]; puts(c ? "completion(refract): recall=#{c["member_recall"]} resolution=#{c["resolution_rate"]} probes=#{c["probes"]}" : "completion: n/a")' "$acc_json" 2>/dev/null)"
+  [[ -n "$comp_line" ]] && echo "    $comp_line" >&2
+
   [[ -f "$oracle" ]] || { echo "    no oracle cache for $corpus, skipping DX" >&2; continue; }
 
   for srv in "${SERVERS[@]}"; do

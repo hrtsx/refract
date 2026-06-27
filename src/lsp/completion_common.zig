@@ -72,6 +72,62 @@ pub fn addStdlibCompletions(w: *std.Io.Writer, class_name: []const u8, first_ite
     }
 }
 
+// Rails/ActiveSupport request-cycle helpers that are method calls (not locals or
+// indexed constants) returning gem types absent from the index. `params`,
+// `request`, etc. otherwise complete nothing. Curated member sets — biased to the
+// methods real code actually calls — let completion offer them. Completion-only:
+// never persisted, so diagnostics/refs/hover are untouched.
+pub fn isFrameworkReceiver(name: []const u8) bool {
+    return frameworkMembers(name) != null;
+}
+
+fn frameworkMembers(name: []const u8) ?[]const []const u8 {
+    if (std.mem.eql(u8, name, "params"))
+        return &[_][]const u8{ "require", "permit", "permit!", "fetch", "dig", "[]", "to_h", "to_unsafe_h", "key?", "has_key?", "keys", "values", "each", "merge", "slice", "except", "expect", "delete", "extract!", "transform_keys", "transform_values", "empty?", "include?", "as_json" };
+    if (std.mem.eql(u8, name, "request"))
+        return &[_][]const u8{ "headers", "body", "params", "method", "request_method", "get?", "post?", "put?", "patch?", "delete?", "head?", "path", "fullpath", "url", "original_url", "host", "domain", "port", "protocol", "scheme", "ssl?", "xhr?", "format", "content_type", "media_type", "remote_ip", "ip", "referer", "referrer", "user_agent", "query_parameters", "request_parameters", "query_string", "cookies", "session", "env", "authorization", "raw_post", "GET", "POST" };
+    if (std.mem.eql(u8, name, "response"))
+        return &[_][]const u8{ "status", "status=", "headers", "header", "body", "body=", "content_type", "content_type=", "media_type", "location", "location=", "set_header", "get_header", "cookies", "set_cookie", "delete_cookie", "successful?", "redirect?", "cache_control", "etag=", "charset" };
+    if (std.mem.eql(u8, name, "cookies"))
+        return &[_][]const u8{ "[]", "[]=", "signed", "encrypted", "permanent", "delete", "key?", "fetch", "to_hash", "each", "clear", "update" };
+    if (std.mem.eql(u8, name, "session"))
+        return &[_][]const u8{ "[]", "[]=", "delete", "clear", "keys", "values", "fetch", "key?", "has_key?", "id", "each", "to_hash", "destroy", "merge!", "dig", "empty?" };
+    if (std.mem.eql(u8, name, "headers"))
+        return &[_][]const u8{ "[]", "[]=", "fetch", "key?", "include?", "each", "merge!", "delete", "env", "to_h", "add" };
+    if (std.mem.eql(u8, name, "flash"))
+        return &[_][]const u8{ "[]", "[]=", "now", "keep", "discard", "notice", "notice=", "alert", "alert=", "key?", "each", "clear", "to_hash", "delete" };
+    if (std.mem.eql(u8, name, "logger"))
+        return &[_][]const u8{ "debug", "info", "warn", "error", "fatal", "unknown", "level", "level=", "debug?", "info?", "warn?", "error?", "tagged", "add", "formatter", "silence" };
+    return null;
+}
+
+pub fn addFrameworkCompletions(w: *std.Io.Writer, name: []const u8, first_item: *bool, line: u32, character: u32) !void {
+    const methods = frameworkMembers(name) orelse return;
+    for (methods) |m| {
+        if (!first_item.*) try w.writeByte(',');
+        first_item.* = false;
+        try w.writeAll("{\"label\":");
+        try writeEscapedJson(w, m);
+        try w.print(",\"kind\":3,\"detail\":\"(rails)\",\"sortText\":\"1_", .{});
+        try writeEscapedJsonContent(w, m);
+        try w.writeAll("\",\"filterText\":\"");
+        try writeEscapedJsonContent(w, m);
+        try w.writeAll("\",\"textEdit\":{\"range\":{\"start\":{\"line\":");
+        try w.print("{d}", .{line});
+        try w.writeAll(",\"character\":");
+        try w.print("{d}", .{character});
+        try w.writeAll("},\"end\":{\"line\":");
+        try w.print("{d}", .{line});
+        try w.writeAll(",\"character\":");
+        try w.print("{d}", .{character});
+        try w.writeAll("}},\"newText\":\"");
+        try writeEscapedJsonContent(w, m);
+        try w.writeAll("\"},\"data\":{\"name\":");
+        try writeEscapedJson(w, m);
+        try w.writeAll("}}");
+    }
+}
+
 pub fn writeInsertTextSnippet(w: *std.Io.Writer, name: []const u8, sig: []const u8) !void {
     try w.writeAll(",\"insertTextFormat\":2,\"insertText\":\"");
     var i: usize = 0;
@@ -91,4 +147,3 @@ pub fn writeInsertTextSnippet(w: *std.Io.Writer, name: []const u8, sig: []const 
     }
     try w.writeAll(")$0\"");
 }
-
