@@ -171,7 +171,7 @@ fixture set (`scripts/bench/fixtures/`). Driven by `scripts/bench/lsp_multiop.rb
 | operation | metric | **refract** | ruby-lsp | solargraph |
 |---|---|:-:|:-:|:-:|
 | hover | correct / total | **6 / 6** | 4 / 6 | 5 / 6 |
-| completion | mean member recall | **1.00** | 0.33 | 0.00 |
+| completion | mean member recall (7 probes) | **1.00** | 0.33 | 0.00 |
 | references | mean recall / precision | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
 | rename | mean recall / precision | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
 | diagnostics | semantic bugs caught / 6 | **6 / 6** | 1 / 6 | 3 / 6 |
@@ -184,12 +184,57 @@ fixture set. The fixtures intentionally include namespace collisions — two
 - **hover** — refract resolves every probe (method calls, attr readers, class and
   cross-file singleton defs); ruby-lsp returns empty on chained/cross-file
   receivers, solargraph misses one.
-- **completion** — refract now leads (**1.00**). Member completion is scored on
-  trailing-dot fixtures (receiver indexed). A constant receiver's inferred type is
-  recorded fully-qualified (`Mod::Class.new` → `Mod::Class`, not the bare tail
-  `Class`), so local-var, inherited, and namespaced receivers all complete; ruby-lsp
-  completes the namespaced constant but not the local-var/inherited cases; solargraph
-  returned no members in this harness.
+- **completion** — refract leads (**1.00** over 7 probes). The fixture set now
+  spans local-var, constant, in-file inherited, **bare-constant class objects**
+  (`x = Foo; x.` → class methods), **typed method parameters** (`def f(acct:
+  Account); acct.`), **nested cross-class inheritance** (namespaced
+  `Mod::Child < Mod::Base`, which exercises the real-superclass walk, not the
+  lexical parent), and a **dirty-buffer** probe (the receiver's type exists only in
+  an unsaved `didChange` edit). A constant receiver's inferred type is recorded
+  fully-qualified (`Mod::Class.new` → `Mod::Class`); ruby-lsp completes the
+  namespaced constant but not the local-var/inherited cases; solargraph returned no
+  members in this harness.
+  - **Caveat — this is a controlled-fixture score, not real-world recall.** Every
+    fixture is a shape where the receiver's type is *inferable*. On real code most
+    receivers are method-return values, block/`let` variables, or untyped params
+    whose type refract cannot infer, so it returns no members. A rival-independent
+    structural pass (`lsp_realistic_accuracy.rb`, §3b) measures that honestly.
+
+## 3b. Real-repo completion member recall (structural oracle)
+
+At a real `recv.method` call site the method being called **must** be a valid
+completion at the receiver's dot — the code calls it. That gives a
+rival-independent ground truth needing no consensus: probe completion at the dot,
+score a hit when the actually-called method comes back. `member_recall` =
+hits / sites; `resolution_rate` = sites returning any member / sites.
+
+On **mastodon** (40 sampled files, 250 `recv.method` sites, comment/string
+matches filtered): refract `resolution_rate ≈ 0.51`, `member_recall ≈ 0.25` —
+up from `0.19 / 0.09` before this work (≈2.8× recall).
+
+The bottleneck is receiver-type inference *breadth*, not the member-listing
+engine (§3a shows the latter is exact). Three levers, in order of impact, all
+diagnostics-safe:
+
+1. **Completion-only naming heuristic.** An untyped local/param named like a class
+   (`account` → `Account`, `status_pin` → `StatusPin`) is, in idiomatic Ruby/Rails,
+   usually an instance of it, so completion guesses that type when nothing else
+   resolves. It is **never persisted** (never touches `local_vars`), so diagnostics
+   / references / hover cannot gain a false positive from a wrong guess. This is the
+   single biggest lever (`0.09 → 0.21`).
+2. **Framework receiver tables.** `params`, `request`, `response`, `cookies`,
+   `session`, `headers`, `flash`, `logger` are gem-typed method calls absent from
+   the index; curated member tables (gated on a Rails project via `Gemfile.lock`)
+   complete them. Also completion-only. This zeroed the framework-receiver miss
+   bucket and lifted recall to `≈ 0.25`.
+3. **Accessor return-type inference.** `def account; @account; end` now records the
+   ivar's type as the method's return type, so chains and `x = obj.account` resolve.
+   `symbols.return_type` is never read by any diagnostic, so this too is FP-safe.
+
+Where a receiver resolves, members — including injected universal `Object`/`Kernel`
+methods (`nil?`, `is_a?`, `tap`, …) and `Enumerable`/`Comparable` — complete
+correctly. The residual gap is arbitrary method-return chains and untyped params
+beyond the naming heuristic, which need a full flow-typing engine.
 - **references / rename** — scored as precision/recall over the known reference and
   edit sets, `includeDeclaration=true`. refract is **1.00 / 1.00** on both: it binds
   each method/constant reference to a single definition (`refs.def_id`) by resolving

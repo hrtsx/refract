@@ -79,6 +79,31 @@ const extractParams = dispatch.extractParams;
 const insertSymbolToProcRef = dispatch.insertSymbolToProcRef;
 const indexPatternTarget = dispatch.indexPatternTarget;
 
+// Look up the recorded type of an `@ivar` read in the enclosing class, for
+// accessor return-type inference (`def account; @account; end`). Returns a copy in
+// a thread-local buffer valid until the next call — the caller (updateSymbolReturnType)
+// consumes it immediately. Null when no class scope or no recorded ivar type.
+threadlocal var ivar_rt_buf: [128]u8 = undefined;
+fn ivarReturnType(ctx: *VisitCtx, node: *const prism.Node) ?[]const u8 {
+    const class_id = ctx.current_class_id orelse return null;
+    const ivar: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(node));
+    var iname = resolveConstant(ctx.parser, ivar.name);
+    if (iname.len > 0 and iname[0] == '@') iname = iname[1..];
+    if (iname.len == 0) return null;
+    const stmt = ctx.db.prepare("SELECT type_hint FROM local_vars WHERE class_id=? AND name=? AND type_hint IS NOT NULL ORDER BY confidence DESC LIMIT 1") catch return null;
+    defer stmt.finalize();
+    stmt.bind_int(1, class_id);
+    stmt.bind_text(2, iname);
+    if (stmt.step() catch false) {
+        const t = stmt.column_text(0);
+        if (t.len > 0 and t.len <= ivar_rt_buf.len) {
+            @memcpy(ivar_rt_buf[0..t.len], t);
+            return ivar_rt_buf[0..t.len];
+        }
+    }
+    return null;
+}
+
 pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
     const cn: *const prism.ClassNode = @ptrCast(@alignCast(n));
     const lc = locationLineCol(ctx.parser, cn.base.location.start);
@@ -327,6 +352,14 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                             }
                         }
                     }
+                } else if (last_node.*.type == prism.NODE_INSTANCE_VAR_READ) {
+                    // Memoized accessor: `def account; @account; end` → return the
+                    // ivar's recorded type. Unlocks chains/locals through accessors.
+                    if (ivarReturnType(ctx, last_node)) |rt| {
+                        updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                            ctx.error_count += 1;
+                        };
+                    }
                 } else if (last_node.*.type == prism.NODE_RETURN) {
                     const rn: *const prism.ReturnNode = @ptrCast(@alignCast(last_node));
                     if (rn.arguments != null) {
@@ -336,6 +369,12 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                                 updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                                     ctx.error_count += 1;
                                 };
+                            } else if (rargs.nodes[0].*.type == prism.NODE_INSTANCE_VAR_READ) {
+                                if (ivarReturnType(ctx, rargs.nodes[0])) |rt| {
+                                    updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                                        ctx.error_count += 1;
+                                    };
+                                }
                             }
                         }
                     }
@@ -362,6 +401,12 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                             };
                         }
                     }
+                }
+            } else if (body.*.type == prism.NODE_INSTANCE_VAR_READ) {
+                if (ivarReturnType(ctx, body)) |rt| {
+                    updateSymbolReturnType(ctx.db, sym_id, rt) catch {
+                        ctx.error_count += 1;
+                    };
                 }
             }
         }
