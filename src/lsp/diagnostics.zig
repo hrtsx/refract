@@ -52,9 +52,9 @@ pub fn writeDiagItems(
     var ov_branch: ?[]u8 = null;
     defer if (ov_pid) |p| self.alloc.free(p);
     defer if (ov_branch) |b| self.alloc.free(b);
-    if (overlayAnySuppress(self.db)) {
-        ov_pid = metaDup(self.db, self.alloc, "project_id");
-        ov_branch = metaDup(self.db, self.alloc, "git_branch");
+    if (overlayAnySuppress(self.queryDb())) {
+        ov_pid = metaDup(self.queryDb(), self.alloc, "project_id");
+        ov_branch = metaDup(self.queryDb(), self.alloc, "git_branch");
     }
     const tc_disabled = self.disable_type_checker.load(.monotonic);
     const tc_sev = self.type_checker_severity.load(.monotonic);
@@ -83,7 +83,7 @@ pub fn writeDiagItems(
         }
         if (ov_pid) |pid| {
             const dl: i64 = if (d.line > 0) d.line else 0;
-            if (overlay.isSuppressed(self.db, pid, ov_branch, d.code, path, dl, null)) continue;
+            if (overlay.isSuppressed(self.queryDb(), pid, ov_branch, d.code, path, dl, null)) continue;
         }
         if (!first_ptr.*) w.writeByte(',') catch return;
         first_ptr.* = false;
@@ -158,13 +158,13 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
 
     if (run_rubocop) {
         var is_gem_file = false;
-        self.db_mutex.lockUncancelable(std.Options.debug_io);
-        if (self.db.prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
+        const rtx = self.beginRead();
+        if (self.queryDb().prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
             defer gs.finalize();
             gs.bind_text(1, path);
             if (gs.step() catch false) is_gem_file = gs.column_int(0) != 0;
         } else |_| {}
-        self.db_mutex.unlock(std.Options.debug_io);
+        rtx.end();
         if (!is_gem_file) enqueueRubocopPath(self, path);
     }
 
@@ -180,12 +180,12 @@ pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_
     sem_blk: {
         self.db_mutex.lockUncancelable(std.Options.debug_io);
         defer self.db_mutex.unlock(std.Options.debug_io);
-        const fid_stmt = self.db.prepare("SELECT id FROM files WHERE path = ?") catch break :sem_blk;
+        const fid_stmt = self.queryDb().prepare("SELECT id FROM files WHERE path = ?") catch break :sem_blk;
         defer fid_stmt.finalize();
         fid_stmt.bind_text(1, path);
         if (!(fid_stmt.step() catch false)) break :sem_blk;
         const fid = fid_stmt.column_int(0);
-        var sem_diags = indexer.runSemanticChecks(self.db, fid, self.alloc) catch break :sem_blk;
+        var sem_diags = indexer.runSemanticChecks(self.queryDb(), fid, self.alloc) catch break :sem_blk;
         defer {
             for (sem_diags.items) |d| self.alloc.free(d.message);
             sem_diags.deinit(self.alloc);
@@ -472,13 +472,13 @@ pub fn handlePullDiagnostic(self: *Server, msg: types.RequestMessage) !?types.Re
 
     {
         var is_gem_file = false;
-        self.db_mutex.lockUncancelable(std.Options.debug_io);
-        if (self.db.prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
+        const rtx = self.beginRead();
+        if (self.queryDb().prepare("SELECT is_gem FROM files WHERE path = ?")) |gs| {
             defer gs.finalize();
             gs.bind_text(1, path);
             if (gs.step() catch false) is_gem_file = gs.column_int(0) != 0;
         } else |_| {}
-        self.db_mutex.unlock(std.Options.debug_io);
+        rtx.end();
         if (!is_gem_file) enqueueRubocopPath(self, path);
     }
 

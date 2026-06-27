@@ -16,8 +16,8 @@ const isRubyIdent = S.isRubyIdent;
 const isValidRubyIdent = S.isValidRubyIdent;
 
 pub fn handlePrepareRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -148,7 +148,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     const path_for_conflict = uriToPath(self.alloc, uri) catch null;
     defer if (path_for_conflict) |p| self.alloc.free(p);
     if (path_for_conflict) |pfc| {
-        if (self.db.prepare("SELECT 1 FROM symbols WHERE name=? AND file_id=(SELECT id FROM files WHERE path=?)")) |cs| {
+        if (self.queryDb().prepare("SELECT 1 FROM symbols WHERE name=? AND file_id=(SELECT id FROM files WHERE path=?)")) |cs| {
             defer cs.finalize();
             cs.bind_text(1, new_name);
             cs.bind_text(2, pfc);
@@ -194,7 +194,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     var rename_scope_id: ?i64 = null;
     var rename_fid: i64 = 0;
 
-    const fid_check = try self.db.prepare("SELECT id FROM files WHERE path=?");
+    const fid_check = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
     defer fid_check.finalize();
     fid_check.bind_text(1, path);
     if (try fid_check.step()) {
@@ -203,7 +203,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
             // Only scope to a local when the name is a genuine local variable;
             // resolveScopeId also matches scoped refs (method calls in a body),
             // which would wrongly route a method rename through the local path.
-            const lv_guard = try self.db.prepare("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
+            const lv_guard = try self.queryDb().prepare("SELECT 1 FROM local_vars WHERE file_id=? AND name=? LIMIT 1");
             defer lv_guard.finalize();
             lv_guard.bind_int(1, rename_fid);
             lv_guard.bind_text(2, word);
@@ -220,7 +220,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     // leave a dangling reference). On collision the def_id set scopes to the binding.
     var name_collision = false;
     if (!is_local_rename and rename_fid != 0) {
-        if (self.db.prepare("SELECT COUNT(*) FROM symbols WHERE name=? AND kind IN ('def','classdef','class','module','moduledef','constant')")) |cs| {
+        if (self.queryDb().prepare("SELECT COUNT(*) FROM symbols WHERE name=? AND kind IN ('def','classdef','class','module','moduledef','constant')")) |cs| {
             defer cs.finalize();
             cs.bind_text(1, word);
             if (cs.step() catch false) name_collision = cs.column_int(0) > 1;
@@ -233,7 +233,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     // zero/NULL def_id falls back to the class-hierarchy logic below (no regression).
     var rename_def_id: i64 = 0;
     if (!is_local_rename and rename_fid != 0 and name_collision) {
-        const dq = self.db.prepare("SELECT def_id FROM refs WHERE file_id=? AND name=? AND line=? AND col=? AND def_id IS NOT NULL LIMIT 1") catch null;
+        const dq = self.queryDb().prepare("SELECT def_id FROM refs WHERE file_id=? AND name=? AND line=? AND col=? AND def_id IS NOT NULL LIMIT 1") catch null;
         if (dq) |q| {
             defer q.finalize();
             q.bind_int(1, rename_fid);
@@ -243,7 +243,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
             if (q.step() catch false) rename_def_id = q.column_int(0);
         }
         if (rename_def_id == 0) {
-            const sq = self.db.prepare("SELECT id FROM symbols WHERE file_id=? AND name=? AND line=? AND kind IN ('def','constant','class','module','classdef') LIMIT 1") catch null;
+            const sq = self.queryDb().prepare("SELECT id FROM symbols WHERE file_id=? AND name=? AND line=? AND kind IN ('def','constant','class','module','classdef') LIMIT 1") catch null;
             if (sq) |q| {
                 defer q.finalize();
                 q.bind_int(1, rename_fid);
@@ -256,7 +256,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
 
     if (!is_local_rename and rename_def_id != 0) {
         // refs resolved to this binding
-        if (self.db.prepare(
+        if (self.queryDb().prepare(
             \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
             \\WHERE r.def_id=? AND f.is_gem=0
         )) |dr| {
@@ -280,7 +280,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
             }
         } else |_| {}
         // decl site
-        if (self.db.prepare(
+        if (self.queryDb().prepare(
             \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
             \\WHERE s.id=? AND f.is_gem=0
         )) |do_| {
@@ -306,7 +306,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     } else if (!is_local_rename) {
         var method_parent: ?[]const u8 = null;
         defer if (method_parent) |mp| self.alloc.free(mp);
-        if (self.db.prepare(
+        if (self.queryDb().prepare(
             "SELECT s.parent_name FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('def','classdef') AND s.parent_name IS NOT NULL AND f.is_gem=0 LIMIT 1",
         )) |ps| {
             defer ps.finalize();
@@ -326,7 +326,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 var new_names = std.ArrayList([]const u8).empty;
                 var it = related_classes.keyIterator();
                 while (it.next()) |kp| {
-                    if (self.db.prepare(
+                    if (self.queryDb().prepare(
                         \\SELECT DISTINCT s.name FROM symbols s
                         \\JOIN mixins m ON m.class_id = s.id
                         \\WHERE m.module_name = ? AND s.kind IN ('class','module') AND s.file_id IN (SELECT id FROM files WHERE is_gem=0)
@@ -340,7 +340,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                             }
                         }
                     } else |_| {}
-                    if (self.db.prepare(
+                    if (self.queryDb().prepare(
                         \\SELECT DISTINCT name FROM symbols
                         \\WHERE parent_name = ? AND kind IN ('class','module') AND file_id IN (SELECT id FROM files WHERE is_gem=0)
                     )) |sub_stmt| {
@@ -361,7 +361,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
             var rc_it = related_classes.keyIterator();
             while (rc_it.next()) |class_name_ptr| {
                 const cn = class_name_ptr.*;
-                const sym_stmt = self.db.prepare(
+                const sym_stmt = self.queryDb().prepare(
                     \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id
                     \\WHERE s.name=? AND f.is_gem=0 AND s.file_id IN (
                     \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
@@ -379,7 +379,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(Edit).empty;
                     try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
                 }
-                const ref_stmt = self.db.prepare(
+                const ref_stmt = self.queryDb().prepare(
                     \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
                     \\WHERE r.name=? AND f.is_gem=0 AND r.file_id IN (
                     \\  SELECT file_id FROM symbols WHERE name=? AND kind IN ('class','module','classdef','def')
@@ -399,7 +399,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 }
             }
 
-            const global_ref = self.db.prepare(
+            const global_ref = self.queryDb().prepare(
                 \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
                 \\WHERE r.name=? AND f.is_gem=0
             ) catch null;
@@ -424,7 +424,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 }
             }
         } else {
-            const sym_stmt = try self.db.prepare(
+            const sym_stmt = try self.queryDb().prepare(
                 \\SELECT s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND f.is_gem=0
             );
             defer sym_stmt.finalize();
@@ -439,7 +439,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 try gop.value_ptr.append(a, .{ .line = sym_line, .col = sym_col });
             }
 
-            const ref_stmt = try self.db.prepare(
+            const ref_stmt = try self.queryDb().prepare(
                 \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id WHERE r.name=? AND f.is_gem=0
             );
             defer ref_stmt.finalize();
@@ -456,7 +456,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
         }
     } else {
         if (rename_scope_id) |sid| {
-            const lv_stmt = try self.db.prepare(
+            const lv_stmt = try self.queryDb().prepare(
                 \\SELECT lv.line, lv.col, f.path FROM local_vars lv JOIN files f ON lv.file_id=f.id
                 \\WHERE lv.name=? AND lv.scope_id=?
             );
@@ -473,7 +473,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 try gop.value_ptr.append(a, .{ .line = lv_line, .col = lv_col });
             }
 
-            const ref_stmt = try self.db.prepare(
+            const ref_stmt = try self.queryDb().prepare(
                 \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
                 \\WHERE r.name=? AND r.scope_id=?
             );
@@ -490,12 +490,12 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                 try gop.value_ptr.append(a, .{ .line = ref_line, .col = ref_col });
             }
         } else {
-            const fid_stmt2 = try self.db.prepare("SELECT id FROM files WHERE path=?");
+            const fid_stmt2 = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
             defer fid_stmt2.finalize();
             fid_stmt2.bind_text(1, path);
             if (try fid_stmt2.step()) {
                 const fid = fid_stmt2.column_int(0);
-                const lv_stmt = try self.db.prepare(
+                const lv_stmt = try self.queryDb().prepare(
                     \\SELECT lv.line, lv.col, f.path FROM local_vars lv JOIN files f ON lv.file_id=f.id
                     \\WHERE lv.name=? AND lv.file_id=? AND lv.scope_id IS NULL
                 );
@@ -512,7 +512,7 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
                     try gop.value_ptr.append(a, .{ .line = lv_line, .col = lv_col });
                 }
 
-                const ref_stmt = try self.db.prepare(
+                const ref_stmt = try self.queryDb().prepare(
                     \\SELECT r.line, r.col, f.path FROM refs r JOIN files f ON r.file_id=f.id
                     \\WHERE r.name=? AND r.file_id=? AND r.scope_id IS NULL
                 );
@@ -677,7 +677,7 @@ pub fn handleWillRenameFiles(self: *Server, msg: types.RequestMessage) !?types.R
         if (std.mem.eql(u8, old_stem, new_stem)) continue;
 
         self.db_mutex.lockUncancelable(std.Options.debug_io);
-        const fstmt = self.db.prepare("SELECT path FROM files WHERE is_gem=0") catch {
+        const fstmt = self.queryDb().prepare("SELECT path FROM files WHERE is_gem=0") catch {
             self.db_mutex.unlock(std.Options.debug_io);
             continue;
         };

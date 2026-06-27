@@ -35,8 +35,9 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
     // Background flush worker (server.zig:flushWorkerFn) drains dirty URIs on a
     // tick. Query handlers must not flush synchronously — the indexSource call
     // under db_mutex stalls the request thread for tens of ms on large files.
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    // Lockless read on read_db when available; falls back to db_mutex otherwise.
+    const rtx = self.beginRead();
+    defer rtx.end();
     const indexing_in_progress = !self.bg_started_event.load(.acquire);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
@@ -55,7 +56,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
     if (std.mem.endsWith(u8, path, ".erb") and !erb_mapping.isErbRubyContext(source, offset))
         return emptyResult(msg);
 
-    if (resolveRequireTarget(self.alloc, self.db, source, offset, path)) |target_path| {
+    if (resolveRequireTarget(self.alloc, self.queryDb(), source, offset, path)) |target_path| {
         defer self.alloc.free(target_path);
         var rq_aw = std.Io.Writer.Allocating.init(self.alloc);
         const rq_w = &rq_aw.writer;
@@ -108,7 +109,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
     // Type-bridge resolution: Sorbet/Steep results take priority over the
     // local_vars / RBS / literal chain below. Falls through silently when
     // no high-confidence type is available.
-    if (type_resolver.resolve(self.alloc, self.db, lookup_word, null, -1)) |hit_const| {
+    if (type_resolver.resolve(self.alloc, self.queryDb(), lookup_word, null, -1)) |hit_const| {
         var hit = hit_const;
         defer hit.deinit(self.alloc);
         if (hit.confidence >= self.type_checker_confidence.surface) {
@@ -247,7 +248,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
             const recv_off2 = if (word_byte_start >= 2) word_byte_start - 2 else 0;
             const recv_w2 = extractWord(source, recv_off2);
             if (recv_w2.len > 0) {
-                if (type_resolver.resolve(self.alloc, self.db, recv_w2, null, -1)) |hit_const| {
+                if (type_resolver.resolve(self.alloc, self.queryDb(), recv_w2, null, -1)) |hit_const| {
                     var hit = hit_const;
                     defer hit.deinit(self.alloc);
                     if (hit.confidence >= self.type_checker_confidence.surface) {
@@ -264,7 +265,7 @@ pub fn handleHover(self: *Server, msg: types.RequestMessage) !?types.ResponseMes
             // Type-bridge method resolution: ask sorbet/steep for `Class#method`
             // before the legacy hot-index path. Surfaces only at high confidence;
             // otherwise the existing chain runs.
-            if (type_resolver.resolve(self.alloc, self.db, base_type, word, -1)) |hit_const| {
+            if (type_resolver.resolve(self.alloc, self.queryDb(), base_type, word, -1)) |hit_const| {
                 var hit = hit_const;
                 defer hit.deinit(self.alloc);
                 if (hit.confidence >= self.type_checker_confidence.surface) {

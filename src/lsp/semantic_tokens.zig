@@ -14,8 +14,8 @@ const getMetaInt = S.getMetaInt;
 
 pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -37,7 +37,7 @@ pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?type
     if (!self.pathInBounds(path)) return emptyResult(msg);
 
     // Look up file_id
-    const file_stmt = try self.db.prepare("SELECT id, mtime FROM files WHERE path = ?");
+    const file_stmt = try self.queryDb().prepare("SELECT id, mtime FROM files WHERE path = ?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) {
@@ -50,7 +50,7 @@ pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?type
     var mtime_buf: [32]u8 = undefined;
     const result_id = std.fmt.bufPrint(&mtime_buf, "{d}", .{file_mtime}) catch "0";
 
-    const tok_stmt = try self.db.prepare("SELECT blob FROM sem_tokens WHERE file_id = ?");
+    const tok_stmt = try self.queryDb().prepare("SELECT blob FROM sem_tokens WHERE file_id = ?");
     defer tok_stmt.finalize();
     tok_stmt.bind_int(1, file_id);
 
@@ -82,7 +82,7 @@ pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?type
         const token_count: i64 = @intCast(u32_count / 5);
         var meta_key_buf: [64]u8 = undefined;
         const meta_key = std.fmt.bufPrint(&meta_key_buf, "sem_token_count_{d}", .{file_id}) catch "sem_token_count_0";
-        setMetaInt(self.db, meta_key, token_count, self.alloc);
+        setMetaInt(self.queryDb(), meta_key, token_count, self.alloc);
     }
 
     try w.writeAll("]}");
@@ -97,8 +97,8 @@ pub fn handleSemanticTokensFull(self: *Server, msg: types.RequestMessage) !?type
 
 pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -139,7 +139,7 @@ pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?typ
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path = ?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) {
@@ -149,7 +149,7 @@ pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?typ
     }
     const file_id = file_stmt.column_int(0);
 
-    const tok_stmt = try self.db.prepare("SELECT blob FROM sem_tokens WHERE file_id = ?");
+    const tok_stmt = try self.queryDb().prepare("SELECT blob FROM sem_tokens WHERE file_id = ?");
     defer tok_stmt.finalize();
     tok_stmt.bind_int(1, file_id);
 
@@ -220,8 +220,8 @@ pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?typ
 
 pub fn handleSemanticTokensDelta(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -243,7 +243,7 @@ pub fn handleSemanticTokensDelta(self: *Server, msg: types.RequestMessage) !?typ
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path=?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) {
@@ -254,7 +254,7 @@ pub fn handleSemanticTokensDelta(self: *Server, msg: types.RequestMessage) !?typ
     const file_id = file_stmt.column_int(0);
 
     // Get current mtime from files table
-    const mtime_stmt = try self.db.prepare("SELECT mtime FROM files WHERE id=?");
+    const mtime_stmt = try self.queryDb().prepare("SELECT mtime FROM files WHERE id=?");
     defer mtime_stmt.finalize();
     mtime_stmt.bind_int(1, file_id);
     const mtime: i64 = if (try mtime_stmt.step()) mtime_stmt.column_int(0) else 0;
@@ -269,7 +269,7 @@ pub fn handleSemanticTokensDelta(self: *Server, msg: types.RequestMessage) !?typ
     }
 
     // Load current blob and prev_blob for real diff
-    const tok_stmt = try self.db.prepare("SELECT blob, prev_blob FROM sem_tokens WHERE file_id=?");
+    const tok_stmt = try self.queryDb().prepare("SELECT blob, prev_blob FROM sem_tokens WHERE file_id=?");
     defer tok_stmt.finalize();
     tok_stmt.bind_int(1, file_id);
 

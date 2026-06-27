@@ -281,10 +281,10 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
     _ = word;
     var recv_offset = if (offset >= 2) offset - 2 else 0;
     while (recv_offset > 0 and (source[recv_offset] == ' ' or source[recv_offset] == '\t')) : (recv_offset -= 1) {}
-    var recv_word = extractWord(source, recv_offset);
+    var recv_word = extractQualifiedName(source, recv_offset);
     if (recv_word.len == 0 and recv_offset > 0 and source[recv_offset] == '&') {
         recv_offset = if (recv_offset >= 1) recv_offset - 1 else 0;
-        recv_word = extractWord(source, recv_offset);
+        recv_word = extractQualifiedName(source, recv_offset);
     }
     if (recv_word.len == 0) return null;
     {
@@ -308,8 +308,12 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 if (rv_start >= 2 and source[rv_start - 1] == '.') {
                     var outer_offset = rv_start - 2;
                     if (outer_offset >= 1 and source[outer_offset] == '&') outer_offset -= 1;
-                    const outer_word = extractWord(source, outer_offset);
-                    if (outer_word.len > 0) {
+                    const outer_word = extractQualifiedName(source, outer_offset);
+                    // `Const.new` → an instance of Const (constructor inference).
+                    if (std.mem.eql(u8, recv_word, "new") and outer_word.len > 0 and std.ascii.isUpper(outer_word[0])) {
+                        chain_class_buf = try self.alloc.dupe(u8, outer_word);
+                    }
+                    if (chain_class_buf == null and outer_word.len > 0) {
                         const oth_stmt = try self.cachedStmt("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND line<=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1");
                         defer oth_stmt.reset();
                         oth_stmt.bind_int(1, fdc_id);
@@ -372,7 +376,25 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
             const is_constant_recv = recv_word.len > 0 and std.ascii.isUpper(recv_word[0]);
             if (chain_class_buf == null and is_constant_recv) {
-                chain_class_buf = try self.alloc.dupe(u8, recv_word);
+                // Resolve an unqualified/relative constant (e.g. `CustomerReturn`)
+                // to its stored fully-qualified name (`Spree::CustomerReturn`):
+                // parent_name is stored qualified, so a bare receiver otherwise
+                // matches no members. Prefer an exact name, else the shortest
+                // `%::Name` suffix match.
+                if (std.mem.indexOf(u8, recv_word, "::") == null) {
+                    const qstmt = try self.cachedStmt(
+                        \\SELECT name FROM symbols WHERE kind IN ('class','module')
+                        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+                        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+                    );
+                    defer qstmt.reset();
+                    qstmt.bind_text(1, recv_word);
+                    if (try qstmt.step()) {
+                        const qn = qstmt.column_text(0);
+                        if (qn.len > 0) chain_class_buf = try self.alloc.dupe(u8, qn);
+                    }
+                }
+                if (chain_class_buf == null) chain_class_buf = try self.alloc.dupe(u8, recv_word);
             }
             const is_self_recv = std.mem.eql(u8, recv_word, "self");
             const class_name_raw: []const u8 = if (th_hit) th_stmt.column_text(0) else if (chain_class_buf) |cc| cc else "";
@@ -1578,8 +1600,9 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
 pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
     // Background flush worker drains dirty URIs; query path stays read-only.
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    // Lockless read on read_db when available; falls back to db_mutex otherwise.
+    const rtx = self.beginRead();
+    defer rtx.end();
     const indexing_in_progress = !self.bg_started_event.load(.acquire);
     const uri = extractTextDocumentUri(msg.params) orelse return emptyResult(msg);
     const pos = extractPosition(msg.params) orelse return emptyResult(msg);
@@ -1678,8 +1701,8 @@ pub fn handleCompletion(self: *Server, msg: types.RequestMessage) !?types.Respon
 }
 
 pub fn handleCompletionItemResolve(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const item_obj = switch (params) {
         .object => |o| o,
@@ -1844,111 +1867,5 @@ pub fn writeInsertTextSnippet(w: *std.Io.Writer, name: []const u8, sig: []const 
     try w.writeAll(")$0\"");
 }
 
-/// LSP 3.18 textDocument/inlineCompletion handler.
-///
-/// Returns ghost text for the cursor position. Default off — only fires when
-/// `${workspace}/.refract/llm.toml` has `enabled = true` and a provider with
-/// auth_env_var resolving to a non-empty key. Latency budget: timeout_ms (200
-/// ms by default) per Lane A reliability gate.
-///
-/// HTTP wiring is intentionally minimal — provider-agnostic adapter design
-/// is in `lsp/llm_adapter.zig`. The actual completion fetch calls
-/// `llm_adapter.fetchCompletion` for real HTTP (gated by config, timeout-bounded,
-/// fire-and-forget on timeout). Returns empty list on network failure or disabled state.
-pub fn handleInlineCompletion(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-
-    const cfg_ptr = if (self.llm_config) |*c| c else return emptyInlineList(self, msg);
-    if (!cfg_ptr.enabled or cfg_ptr.provider == .none) return emptyInlineList(self, msg);
-
-    const api_key = llm_adapter.resolveApiKey(cfg_ptr.*);
-    if (api_key.len == 0) return emptyInlineList(self, msg);
-
-    const uri = extractTextDocumentUri(msg.params) orelse return emptyInlineList(self, msg);
-    const pos = extractPosition(msg.params) orelse return emptyInlineList(self, msg);
-
-    const path = uriToPath(self.alloc, uri) catch return emptyInlineList(self, msg);
-    defer self.alloc.free(path);
-    if (!self.pathInBounds(path)) return emptyInlineList(self, msg);
-    const source = self.readSourceForUri(uri, path) catch return emptyInlineList(self, msg);
-    defer self.alloc.free(source);
-
-    const ctx = buildInlineContext(self.alloc, source, pos.line, pos.character) catch return emptyInlineList(self, msg);
-    defer self.alloc.free(ctx);
-
-    const completion_text = requestCompletion(self.alloc, cfg_ptr.*, api_key, ctx) catch null;
-    defer if (completion_text) |t| self.alloc.free(t);
-
-    var aw = std.Io.Writer.Allocating.init(self.alloc);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-    try w.writeAll("{\"items\":[");
-    if (completion_text) |t| if (t.len > 0) {
-        try w.writeAll("{\"insertText\":");
-        try writeEscapedJson(w, t);
-        try w.writeAll("}");
-    };
-    try w.writeAll("]}");
-    const raw = try aw.toOwnedSlice();
-    return types.ResponseMessage{ .id = msg.id, .raw_result = raw, .result = null, .@"error" = null };
-}
-
-fn emptyInlineList(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
-    const raw = try self.alloc.dupe(u8, "{\"items\":[]}");
-    return types.ResponseMessage{ .id = msg.id, .raw_result = raw, .result = null, .@"error" = null };
-}
-
-/// Slice a 200-line window around `cursor_line` and append a position marker.
-/// Caller frees.
-fn buildInlineContext(alloc: std.mem.Allocator, source: []const u8, cursor_line: u32, cursor_col: u32) ![]u8 {
-    const window: u32 = 100;
-    const start_line: u32 = if (cursor_line > window) cursor_line - window else 0;
-    const end_line: u32 = cursor_line + window;
-    var current_line: u32 = 0;
-    var slice_start: usize = 0;
-    var slice_end: usize = source.len;
-    for (source, 0..) |ch, i| {
-        if (current_line == start_line and slice_start == 0) slice_start = i;
-        if (ch == '\n') {
-            current_line += 1;
-            if (current_line > end_line) {
-                slice_end = i;
-                break;
-            }
-        }
-    }
-    const window_src = source[slice_start..slice_end];
-    return std.fmt.allocPrint(alloc, "<<<refract-cursor line={d} col={d}>>>\n{s}\n<<<refract-cursor-end>>>\n", .{ cursor_line, cursor_col, window_src });
-}
-
-/// Provider-agnostic completion request. Delegates to `llm_adapter.fetchCompletion`
-/// which dispatches to Anthropic / OpenAI / Ollama based on `cfg.provider`.
-/// Network failures and disabled state both surface as `null` (handler emits
-/// an empty list either way — safe default).
-fn requestCompletion(
-    alloc: std.mem.Allocator,
-    cfg: llm_adapter.Config,
-    api_key: []const u8,
-    context: []const u8,
-) !?[]u8 {
-    return llm_adapter.fetchCompletion(alloc, cfg, api_key, context);
-}
-
-test "buildInlineContext slices around cursor and embeds marker" {
-    const alloc = std.testing.allocator;
-    const src = "line0\nline1\nline2\nline3\nline4\n";
-    const ctx = try buildInlineContext(alloc, src, 2, 3);
-    defer alloc.free(ctx);
-    try std.testing.expect(std.mem.indexOf(u8, ctx, "line=2 col=3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ctx, "line2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ctx, "<<<refract-cursor-end>>>") != null);
-}
-
-test "buildInlineContext clamps to file bounds for out-of-range cursor" {
-    const alloc = std.testing.allocator;
-    const src = "line0\nline1\nline2\n";
-    const ctx = try buildInlineContext(alloc, src, 100, 500);
-    defer alloc.free(ctx);
-    try std.testing.expect(std.mem.indexOf(u8, ctx, "line=100 col=500") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ctx, "<<<refract-cursor-end>>>") != null);
-}
+const inline_completion = @import("inline_completion.zig");
+pub const handleInlineCompletion = inline_completion.handleInlineCompletion;

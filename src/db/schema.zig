@@ -238,7 +238,7 @@ pub fn init(self: Db) DbError!void {
     // Phase 3: query-optimized composite indexes for symbol lookup and type resolution
     self.exec("CREATE INDEX IF NOT EXISTS idx_local_vars_file_line ON local_vars(file_id, line)") catch {}; // migration
     self.exec("CREATE INDEX IF NOT EXISTS idx_symbols_class_lookup ON symbols(kind, name) WHERE kind IN ('class','module','classdef')") catch {}; // migration
-    // Schema v6: trigram FTS over symbol names. workspace_symbols substring
+    // Schema v5: trigram FTS over symbol names. workspace_symbols substring
     // search ('%q%') cannot use the B-tree name index (leading wildcard) and
     // full-scans the symbols table; trigram FTS makes it index-backed. External
     // content (no name copy); AFTER INSERT/DELETE triggers mirror every symbol
@@ -255,7 +255,7 @@ pub fn init(self: Db) DbError!void {
         \\  INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', old.id, old.name);
         \\END
     ) catch {};
-    // Backfill once when migrating an existing index (stored schema < v13): the
+    // Backfill once when migrating an existing index (stored schema < v5): the
     // forced reindex would eventually repopulate via triggers, but seed now so
     // substring search works before the next index pass completes.
     if (needs_reindex) self.exec("INSERT INTO symbols_fts(rowid, name) SELECT id, name FROM symbols") catch {};
@@ -422,7 +422,7 @@ pub fn init(self: Db) DbError!void {
     );
     self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_state_unique ON plugin_state(plugin_id, key)") catch {};
 
-    // Schema v6: agent/user-writable OVERLAY layer. The only mutable graph
+    // Schema v5: agent/user-writable OVERLAY layer. The only mutable graph
     // surface — derived tables stay source-immutable. Rows reference derived
     // symbols by fqn string (stable across reindex), never by symbols.id.
     // Keyed by (project_id, branch): branch IS NULL = project-global. History
@@ -544,7 +544,7 @@ pub fn init(self: Db) DbError!void {
     self.execMigration("ALTER TABLE refs ADD COLUMN def_id INTEGER DEFAULT NULL");
     self.exec("CREATE INDEX IF NOT EXISTS idx_refs_def ON refs(def_id)") catch {}; // migration guard: def_id column may be absent on older schemas
 
-    // Schema v7: refs.ref_ns records the enclosing lexical nesting at a constant
+    // Schema v5: refs.ref_ns records the enclosing lexical nesting at a constant
     // ref site (e.g. "A::B" for a bare `CONST` read inside module A; class B).
     // NULL at top level. Lets resolveConstantNested walk Ruby's real constant
     // lookup (current scope -> enclosing scopes -> ancestors -> top-level) instead
@@ -553,7 +553,7 @@ pub fn init(self: Db) DbError!void {
     self.execMigration("ALTER TABLE refs ADD COLUMN ref_ns TEXT"); // migration guard: column already exists on migrated schemas
     self.exec("CREATE INDEX IF NOT EXISTS idx_refs_ns ON refs(ref_ns)") catch {}; // migration guard: ref_ns column may be absent on older schemas
 
-    // Schema v7: symbols.deprecated flags a definition carrying a YARD @deprecated
+    // Schema v5: symbols.deprecated flags a definition carrying a YARD @deprecated
     // tag (detected from its doc at index time). Surfaced in hover so agents/humans
     // see the warning without re-reading the doc. 0 = not deprecated.
     self.execMigration("ALTER TABLE symbols ADD COLUMN deprecated INTEGER DEFAULT 0"); // migration guard: column already exists on migrated schemas

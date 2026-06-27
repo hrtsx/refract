@@ -39,8 +39,8 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
         }
     }
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const query = blk: {
         if (msg.params) |params| {
             switch (params) {
@@ -114,7 +114,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
 
     // @-prefixed word: search local_vars for instance variable type hints
     if (query.len > 0 and query[0] == '@') {
-        const iv_stmt = try self.db.prepare(
+        const iv_stmt = try self.queryDb().prepare(
             \\SELECT DISTINCT lv.name, lv.line, lv.col, f.path
             \\FROM local_vars lv JOIN files f ON lv.file_id=f.id
             \\WHERE lv.name LIKE ? ESCAPE '\' AND lv.name LIKE '@%' AND f.is_gem = 0
@@ -147,7 +147,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
         }
     } else if (query.len > 0 and query[0] == '$') {
         // $-prefixed query → search local_vars for global variables
-        const gv_ws_stmt = try self.db.prepare(
+        const gv_ws_stmt = try self.queryDb().prepare(
             \\SELECT DISTINCT lv.name, lv.line, lv.col, f.path
             \\FROM local_vars lv JOIN files f ON lv.file_id=f.id
             \\WHERE lv.name LIKE ? ESCAPE '\' AND lv.name LIKE '$%' AND f.is_gem = 0
@@ -189,7 +189,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
                 break :blk try std.fmt.bufPrintZ(&sql_buf, "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name LIKE ? ESCAPE '\\' AND f.is_gem = 0 ORDER BY CASE WHEN lower(s.name)=lower(?) THEN 0 WHEN s.name LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END, length(s.name), s.name LIMIT 500", .{});
             }
         } else "SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.is_gem = 0 ORDER BY s.name LIMIT 100";
-        const stmt = try self.db.prepare(sql);
+        const stmt = try self.queryDb().prepare(sql);
         defer stmt.finalize();
         if (query.len > 0) {
             stmt.bind_text(1, prefix_pattern);
@@ -242,7 +242,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
             const glob_prefix = try self.alloc.dupe(u8, prefix_pattern);
             defer self.alloc.free(glob_prefix);
             std.mem.replaceScalar(u8, glob_prefix, '%', '*');
-            const infix_stmt = try self.db.prepare(
+            const infix_stmt = try self.queryDb().prepare(
                 \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
                 \\WHERE s.name GLOB ? AND s.name NOT GLOB ? AND f.is_gem = 0
@@ -290,7 +290,7 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
             const glob_exclude = try self.alloc.dupe(u8, fuzzy_exclude);
             defer self.alloc.free(glob_exclude);
             std.mem.replaceScalar(u8, glob_exclude, '%', '*');
-            const fuzzy_stmt = try self.db.prepare(
+            const fuzzy_stmt = try self.queryDb().prepare(
                 \\SELECT s.name, s.kind, s.line, s.col, f.path, s.parent_name
                 \\FROM symbols s JOIN files f ON s.file_id = f.id
                 \\WHERE s.name NOT GLOB ? AND f.is_gem = 0
@@ -344,8 +344,8 @@ pub fn handleWorkspaceSymbol(self: *Server, msg: types.RequestMessage) !?types.R
 
 pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -365,7 +365,7 @@ pub fn handleDocumentSymbol(self: *Server, msg: types.RequestMessage) !?types.Re
     defer self.alloc.free(path);
     if (!self.pathInBounds(path)) return emptyResult(msg);
 
-    const stmt = try self.db.prepare(
+    const stmt = try self.queryDb().prepare(
         \\SELECT s.name, s.kind, s.line, s.col, s.return_type, s.end_line
         \\FROM symbols s JOIN files f ON s.file_id = f.id
         \\WHERE f.path = ? ORDER BY s.line

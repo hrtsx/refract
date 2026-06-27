@@ -33,8 +33,8 @@ pub const ruby_block_keywords = S.ruby_block_keywords;
 
 pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -54,13 +54,13 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path = ?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) return emptyResult(msg);
     const file_id = file_stmt.column_int(0);
 
-    const stmt = try self.db.prepare("SELECT kind, line, end_line FROM symbols WHERE file_id=? ORDER BY line");
+    const stmt = try self.queryDb().prepare("SELECT kind, line, end_line FROM symbols WHERE file_id=? ORDER BY line");
     defer stmt.finalize();
     stmt.bind_int(1, file_id);
 
@@ -200,8 +200,8 @@ pub fn handleFoldingRange(self: *Server, msg: types.RequestMessage) !?types.Resp
 
 pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -304,7 +304,7 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
     const method_name = extractWord(source, if (co > 0) co - 1 else 0);
     if (method_name.len == 0) return emptyResult(msg);
 
-    const sym_stmt = try self.db.prepare(
+    const sym_stmt = try self.queryDb().prepare(
         \\SELECT id, return_type, doc FROM symbols WHERE name = ? AND kind = 'def' LIMIT 1
     );
     defer sym_stmt.finalize();
@@ -312,7 +312,7 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
     if (!(try sym_stmt.step())) return emptyResult(msg);
     const symbol_id = sym_stmt.column_int(0);
 
-    const param_stmt = try self.db.prepare(
+    const param_stmt = try self.queryDb().prepare(
         \\SELECT name, kind, type_hint FROM params WHERE symbol_id = ? ORDER BY position
     );
     defer param_stmt.finalize();
@@ -427,8 +427,8 @@ pub fn handleSignatureHelp(self: *Server, msg: types.RequestMessage) !?types.Res
 
 pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -473,7 +473,7 @@ pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.Respons
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path = ?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) {
@@ -487,7 +487,7 @@ pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.Respons
     const db_start = start_line + 1;
     const db_end = end_line + 1;
 
-    const stmt = try self.db.prepare(
+    const stmt = try self.queryDb().prepare(
         \\SELECT name, line, type_hint, col FROM local_vars
         \\WHERE file_id = ? AND type_hint IS NOT NULL AND line BETWEEN ? AND ?
         \\ORDER BY line
@@ -517,7 +517,7 @@ pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.Respons
     }
 
     // Return type hints for def methods
-    const def_stmt = try self.db.prepare(
+    const def_stmt = try self.queryDb().prepare(
         \\SELECT name, line, col, return_type
         \\FROM symbols
         \\WHERE file_id = ? AND kind = 'def' AND return_type IS NOT NULL
@@ -560,7 +560,7 @@ pub fn handleInlayHint(self: *Server, msg: types.RequestMessage) !?types.Respons
             const root = prism_mod.parse(&pparser);
             if (root != null) {
                 var hint_ctx = ParamHintCtx{
-                    .db = self.db,
+                    .db = self.queryDb(),
                     .alloc = self.alloc,
                     .parser = &pparser,
                     .w = w,
@@ -633,7 +633,7 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
                             const str_start_offset = i + str_start_in_line;
                             const str_end_offset = str_start_offset + req_str.len;
 
-                            if (resolveRequireTarget(self.alloc, self.db, source, str_start_offset, path)) |target_path| {
+                            if (resolveRequireTarget(self.alloc, self.queryDb(), source, str_start_offset, path)) |target_path| {
                                 defer self.alloc.free(target_path);
 
                                 if (!first) try w.writeByte(',');
@@ -670,8 +670,8 @@ pub fn handleDocumentLink(self: *Server, msg: types.RequestMessage) !?types.Resp
 
 pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -714,7 +714,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
     const word = extractWord(source, offset);
     if (word.len == 0) return emptyResult(msg);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path = ?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path = ?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) return emptyResult(msg);
@@ -739,7 +739,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
     var first = true;
 
     // Symbol definitions in this file
-    const sym_stmt = try self.db.prepare(
+    const sym_stmt = try self.queryDb().prepare(
         \\SELECT line, col FROM symbols WHERE file_id=? AND name=?
     );
     defer sym_stmt.finalize();
@@ -767,7 +767,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
     const ref_stmt = if (is_hl_local) blk: {
         const sid = hl_scope_id.?;
         if (sid != 0) {
-            const s = try self.db.prepare(
+            const s = try self.queryDb().prepare(
                 \\SELECT line, col FROM refs WHERE file_id=? AND name=? AND scope_id=?
             );
             s.bind_int(1, file_id);
@@ -775,7 +775,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
             s.bind_int(3, sid);
             break :blk s;
         } else {
-            const s = try self.db.prepare(
+            const s = try self.queryDb().prepare(
                 \\SELECT line, col FROM refs WHERE file_id=? AND name=? AND scope_id IS NULL
             );
             s.bind_int(1, file_id);
@@ -783,7 +783,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
             break :blk s;
         }
     } else blk: {
-        const s = try self.db.prepare(
+        const s = try self.queryDb().prepare(
             \\SELECT line, col FROM refs WHERE file_id=? AND name=?
         );
         s.bind_int(1, file_id);
@@ -814,11 +814,11 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
     if (is_hl_local) {
         const sid = hl_scope_id.?;
         const lv_stmt = if (sid != 0)
-            try self.db.prepare(
+            try self.queryDb().prepare(
                 \\SELECT line, col FROM local_vars WHERE file_id=? AND name=? AND scope_id=?
             )
         else
-            try self.db.prepare(
+            try self.queryDb().prepare(
                 \\SELECT line, col FROM local_vars WHERE file_id=? AND name=? AND scope_id IS NULL
             );
         defer lv_stmt.finalize();
@@ -855,7 +855,7 @@ pub fn handleDocumentHighlight(self: *Server, msg: types.RequestMessage) !?types
 
 pub fn resolveScopeId(self: *Server, file_id: i64, name: []const u8, cursor_line_1based: i64, cursor_col: i64) ?i64 {
     // Check local_vars writes at/before cursor (closest one wins)
-    const lv = self.db.prepare(
+    const lv = self.queryDb().prepare(
         \\SELECT scope_id FROM local_vars
         \\WHERE file_id=? AND name=? AND line<=?
         \\ORDER BY line DESC LIMIT 1
@@ -869,7 +869,7 @@ pub fn resolveScopeId(self: *Server, file_id: i64, name: []const u8, cursor_line
         return 0; // scope_id IS NULL means top-level local
     }
     // Check scoped refs at cursor position
-    const rf = self.db.prepare(
+    const rf = self.queryDb().prepare(
         \\SELECT scope_id FROM refs
         \\WHERE file_id=? AND name=? AND line=? AND col<=? AND scope_id IS NOT NULL
         \\LIMIT 1
@@ -887,8 +887,8 @@ pub fn resolveScopeId(self: *Server, file_id: i64, name: []const u8, cursor_line
 
 pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -924,7 +924,7 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path=?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) return emptyResult(msg);
@@ -932,7 +932,7 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
 
     const db_line: i64 = @intCast(line + 1);
     // Collect all symbols that contain the cursor, ordered from innermost (smallest span) to outermost
-    const sym_stmt = try self.db.prepare(
+    const sym_stmt = try self.queryDb().prepare(
         \\SELECT name, line, col, end_line FROM symbols WHERE file_id=? AND line<=? AND end_line>=? ORDER BY (end_line-line) ASC
     );
     defer sym_stmt.finalize();
@@ -991,8 +991,8 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
 
 pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -1029,14 +1029,14 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
     const word = extractWord(source, offset);
     if (word.len == 0) return emptyResult(msg);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path=?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) return emptyResult(msg);
     const file_id = file_stmt.column_int(0);
 
     // Find scope_id for the variable at this position
-    const scope_stmt = try self.db.prepare("SELECT scope_id FROM local_vars WHERE file_id=? AND name=? " ++
+    const scope_stmt = try self.queryDb().prepare("SELECT scope_id FROM local_vars WHERE file_id=? AND name=? " ++
         "AND line<=? ORDER BY line DESC LIMIT 1");
     defer scope_stmt.finalize();
     scope_stmt.bind_int(1, file_id);
@@ -1058,7 +1058,7 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
         "SELECT line, col FROM local_vars WHERE file_id=? AND name=? AND scope_id=? ORDER BY line"
     else
         "SELECT line, col FROM local_vars WHERE file_id=? AND name=? AND scope_id IS NULL ORDER BY line";
-    const occ_stmt = try self.db.prepare(q);
+    const occ_stmt = try self.queryDb().prepare(q);
     defer occ_stmt.finalize();
     occ_stmt.bind_int(1, file_id);
     occ_stmt.bind_text(2, word);
@@ -1080,8 +1080,8 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
 
 pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.ResponseMessage {
     if (self.isCancelled(msg.id)) return self.cancelledResponse(msg.id);
-    self.db_mutex.lockUncancelable(std.Options.debug_io);
-    defer self.db_mutex.unlock(std.Options.debug_io);
+    const rtx = self.beginRead();
+    defer rtx.end();
     const params = msg.params orelse return emptyResult(msg);
     const obj = switch (params) {
         .object => |o| o,
@@ -1100,7 +1100,7 @@ pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.Response
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const file_stmt = try self.db.prepare("SELECT id FROM files WHERE path=?");
+    const file_stmt = try self.queryDb().prepare("SELECT id FROM files WHERE path=?");
     defer file_stmt.finalize();
     file_stmt.bind_text(1, path);
     if (!(try file_stmt.step())) {
@@ -1110,7 +1110,7 @@ pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.Response
     }
     const file_id = file_stmt.column_int(0);
 
-    const sym_stmt = try self.db.prepare(
+    const sym_stmt = try self.queryDb().prepare(
         \\SELECT s.id, s.name, s.kind, s.line FROM symbols s WHERE s.file_id=?
         \\ORDER BY s.line LIMIT 5000
     );
@@ -1129,7 +1129,7 @@ pub fn handleCodeLens(self: *Server, msg: types.RequestMessage) !?types.Response
         const sym_line = sym_stmt.column_int(3);
         const lsp_line = sym_line - 1;
 
-        const ref_stmt = self.db.prepare("SELECT (file_id=?) as local, COUNT(*) FROM refs WHERE name=? GROUP BY local") catch continue;
+        const ref_stmt = self.queryDb().prepare("SELECT (file_id=?) as local, COUNT(*) FROM refs WHERE name=? GROUP BY local") catch continue;
         defer ref_stmt.finalize();
         ref_stmt.bind_int(1, file_id);
         ref_stmt.bind_text(2, sym_name);
