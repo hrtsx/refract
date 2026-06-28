@@ -653,6 +653,26 @@ pub const BgCtx = struct {
             } else |_| {}
         }
 
+        // Parameter-type backfill: type otherwise-untyped positional params from the
+        // dominant captured call-site argument type (completion-only, confidence 50 —
+        // semantic.zig reads params for arity only, never type_hint, so this is FP-safe).
+        // Runs once after the workspace cold index, before the hot rebuild.
+        if (!self.server_ptr.bg_cancelled.load(.acquire)) {
+            self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);
+            db.exec(
+                \\UPDATE params SET type_hint = (
+                \\    SELECT c.arg_type FROM call_arg_types c
+                \\    WHERE c.callee = (SELECT name FROM symbols WHERE id = params.symbol_id)
+                \\      AND c.position = params.position
+                \\    GROUP BY c.arg_type ORDER BY COUNT(*) DESC LIMIT 1
+                \\  ), confidence = 50
+                \\WHERE type_hint IS NULL
+                \\  AND kind NOT IN ('keyword','keyword_rest','rest','block')
+                \\  AND (SELECT name FROM symbols WHERE id = params.symbol_id) IN (SELECT callee FROM call_arg_types)
+            ) catch {};
+            self.server_ptr.db_mutex.unlock(std.Options.debug_io);
+        }
+
         // Always index bundled RBS — cheap, idempotent (keyed by <bundled>/... path).
         // Ensures fresh hover/completion coverage after binary upgrades, regardless of DB age.
         if (!self.server_ptr.bg_cancelled.load(.acquire)) {

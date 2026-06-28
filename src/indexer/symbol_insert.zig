@@ -3,6 +3,17 @@ const db_mod = @import("../db.zig");
 const visit_ctx = @import("visit_ctx.zig");
 const VisitCtx = visit_ctx.VisitCtx;
 
+// Record an inferred argument type at a call site, keyed by callee method name +
+// positional index. The param-backfill pass aggregates these to type untyped params.
+pub fn insertCallArgType(db: db_mod.Db, callee: []const u8, position: i64, arg_type: []const u8) !void {
+    const stmt = try db.prepare("INSERT INTO call_arg_types (callee, position, arg_type) VALUES (?, ?, ?)");
+    defer stmt.finalize();
+    stmt.bind_text(1, callee);
+    stmt.bind_int(2, position);
+    stmt.bind_text(3, arg_type);
+    _ = try stmt.step();
+}
+
 pub fn insertRef(db: db_mod.Db, file_id: i64, name: []const u8, line: i32, col: u32, scope_id: ?i64, kind: ?[]const u8, ref_ns: ?[]const u8) !void {
     const stmt = try db.prepare(
         \\INSERT OR IGNORE INTO refs (file_id, name, line, col, scope_id, kind, ref_ns)

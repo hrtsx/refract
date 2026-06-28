@@ -17,6 +17,32 @@ const isRbsIdent = rbs_parser.isRbsIdent;
 
 threadlocal var ar_plural_buf: [128]u8 = undefined;
 threadlocal var const_path_buf: [256]u8 = undefined;
+threadlocal var factory_class_buf: [128]u8 = undefined;
+
+// Camelize a snake_case factory name into a class (`admin_user` → `AdminUser`).
+fn camelizeSnake(name: []const u8, buf: []u8) ?[]const u8 {
+    if (name.len == 0) return null;
+    var len: usize = 0;
+    var cap_next = true;
+    for (name) |ch| {
+        if (ch == '_') {
+            cap_next = true;
+            continue;
+        }
+        if (len >= buf.len) return null;
+        buf[len] = if (cap_next) std.ascii.toUpper(ch) else ch;
+        cap_next = false;
+        len += 1;
+    }
+    if (len == 0) return null;
+    return buf[0..len];
+}
+
+fn isFactoryBuilder(m: []const u8) bool {
+    const names = [_][]const u8{ "create", "create!", "build", "build!", "build_stubbed", "Fabricate", "fabricate" };
+    for (names) |n| if (std.mem.eql(u8, m, n)) return true;
+    return false;
+}
 
 /// Build the fully-qualified name (`A::B::Post`) of a constant or constant-path
 /// receiver into a thread-local buffer. Returns the borrowed result (valid until
@@ -118,6 +144,19 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
     if (n.*.type != prism.NODE_CALL) return null;
     const call: *const prism.CallNode = @ptrCast(@alignCast(n));
     const mname = resolveConstant(parser, call.name);
+    // Factory builders: `create(:user)`/`build(:user)`/`Fabricate(:user)` yield an
+    // instance of the camelized factory name. Dominant in specs
+    // (`let(:user) { Fabricate(:user) }`) — the biggest untyped-receiver source.
+    if (call.receiver == null and isFactoryBuilder(mname) and call.arguments != null) {
+        const fargs = call.arguments[0].arguments;
+        if (fargs.size > 0 and fargs.nodes[0].*.type == prism.NODE_SYMBOL) {
+            const fs: *const prism.SymbolNode = @ptrCast(@alignCast(fargs.nodes[0]));
+            if (fs.unescaped.source != null) {
+                const sym = fs.unescaped.source[0..fs.unescaped.length];
+                if (camelizeSnake(sym, &factory_class_buf)) |c| return c;
+            }
+        }
+    }
     const recv = call.receiver orelse return null;
     // Stdlib return type for literal receivers (e.g. "hello".upcase → String)
     if (inferLiteralType(recv)) |lrt| {

@@ -214,17 +214,18 @@ pub fn handleInstanceVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
 
     var type_hint: ?[]const u8 = if (iv.value) |val| inferLiteralType(val) else null;
 
+    // `@x = Klass.new` / `Klass.find(..)` / `Spree::Model.find_by(..)` / factory builder:
+    // type the ivar to the constructed/queried singular instance. This is the dominant
+    // controller pattern (`@post = Post.find(params[:id])`); since all methods of a class
+    // share class_id, typing the callback/action ivar at its assignment makes it complete
+    // in every sibling method. Guard out plural/relation results (`[Klass]` from
+    // `.where`/`.all`): persisting an ivar as a bare Array shadows the completion-time
+    // naming heuristic and regresses relation-scope completion (measured). Confidence stays
+    // 0 (FP-safe — diagnostics never read ivar type_hints).
     if (type_hint == null) {
         if (iv.value) |val| {
-            if (val.*.type == prism.NODE_CALL) {
-                const call: *const prism.CallNode = @ptrCast(@alignCast(val));
-                const mname = resolveConstant(ctx.parser, call.name);
-                if (std.mem.eql(u8, mname, "new") and call.receiver != null) {
-                    if (call.receiver.?.*.type == prism.NODE_CONSTANT) {
-                        const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(call.receiver.?));
-                        type_hint = resolveConstant(ctx.parser, rc.name);
-                    }
-                }
+            if (extractNewCallType(ctx.parser, val)) |ext| {
+                if (ext.len > 0 and ext[0] != '[') type_hint = ext;
             }
         }
     }

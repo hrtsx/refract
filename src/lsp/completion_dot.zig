@@ -213,6 +213,11 @@ fn resolveChainBaseType(self: *Server, file_id: i64, word: []const u8, cursor_li
         lv.bind_int(3, cursor_line_db);
         if (try lv.step()) {
             const t = lv.column_text(0);
+            // A `Foo.class` hint (e.g. `described_class`) holds the class object: as a
+            // chain base it seeds the bare class so a following `.new` folds to an
+            // instance. The single-receiver path strips this marker separately.
+            if (std.mem.endsWith(u8, t, ".class") and t.len > ".class".len)
+                return try self.alloc.dupe(u8, t[0 .. t.len - ".class".len]);
             if (t.len > 0) return try self.alloc.dupe(u8, t);
         }
     }
@@ -230,6 +235,91 @@ fn resolveChainBaseType(self: *Server, file_id: i64, word: []const u8, cursor_li
         if (try pstmt.step()) {
             const pt = pstmt.column_text(0);
             if (pt.len > 0) return try self.alloc.dupe(u8, pt);
+        }
+    }
+    return null;
+}
+
+// Strip a leading Rails-convention qualifier so a receiver named for its role
+// resolves to its model (`source_account`→`account`, `current_user`→`user`). Returns
+// the original name when no known prefix matches.
+fn stripConventionPrefix(name: []const u8) []const u8 {
+    const prefixes = [_][]const u8{
+        "current_",  "source_",   "target_",  "default_",  "new_",     "old_",
+        "parent_",   "child_",    "original_", "existing_", "other_",   "next_",
+        "previous_", "prev_",     "selected_", "associated_", "related_", "linked_",
+        "temp_",     "tmp_",      "saved_",    "persisted_",  "given_",   "the_",
+        "from_",     "to_",       "for_",      "by_",         "with_",    "owner_",
+        "sender_",   "recipient_", "author_",  "creator_",    "updated_", "remote_",
+    };
+    for (prefixes) |p| {
+        if (name.len > p.len and std.mem.startsWith(u8, name, p)) return name[p.len..];
+    }
+    return name;
+}
+
+// Naive English singularizer for an identifier (`companies`→`company`,
+// `accounts`→`account`, `statuses`→`status`). Writes into buf; returns input when
+// already singular / on overflow.
+fn singularizeIdent(name: []const u8, buf: []u8) []const u8 {
+    if (name.len < 2 or buf.len < name.len) return name;
+    if (std.mem.endsWith(u8, name, "ies") and name.len > 3) {
+        const base = name[0 .. name.len - 3];
+        @memcpy(buf[0..base.len], base);
+        buf[base.len] = 'y';
+        return buf[0 .. base.len + 1];
+    }
+    inline for (.{ "ses", "xes", "zes", "ches", "shes" }) |suf| {
+        if (std.mem.endsWith(u8, name, suf)) {
+            const base = name[0 .. name.len - 2]; // drop "es"
+            @memcpy(buf[0..base.len], base);
+            return buf[0..base.len];
+        }
+    }
+    if (name[name.len - 1] == 's' and name[name.len - 2] != 's') return name[0 .. name.len - 1];
+    return name;
+}
+
+// Look up the class whose camelized name matches `snake`, exact-or-`%::`-suffix.
+// Owned slice or null.
+fn lookupClassByCamel(self: *Server, snake: []const u8) ?[]u8 {
+    if (snake.len == 0) return null;
+    var cbuf: [128]u8 = undefined;
+    const cand = camelizeIdent(snake, &cbuf) orelse return null;
+    const st = self.cachedStmt(
+        \\SELECT name FROM symbols WHERE kind IN ('class','module')
+        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+    ) catch return null;
+    defer st.reset();
+    st.bind_text(1, cand);
+    if (st.step() catch false) {
+        const n = st.column_text(0);
+        if (n.len > 0) return self.alloc.dupe(u8, n) catch null;
+    }
+    return null;
+}
+
+// Completion-only receiver-type guess from an identifier, idiomatic-Rails aware:
+// tries the name, its singular, and a convention-prefix-stripped form (+ its
+// singular) against the class table. Never persisted, so a wrong guess only fails
+// to add a completion — it cannot create a diagnostic/refs false positive.
+fn guessReceiverClass(self: *Server, recv_word: []const u8) ?[]u8 {
+    var sbuf: [128]u8 = undefined;
+    const stripped = stripConventionPrefix(recv_word);
+    const bases = [_][]const u8{ recv_word, stripped };
+    for (bases) |base| {
+        if (lookupClassByCamel(self, base)) |c| return c;
+        const sing = singularizeIdent(base, &sbuf);
+        if (!std.mem.eql(u8, sing, base)) {
+            if (lookupClassByCamel(self, sing)) |c| {
+                // base is plural and matched its singular class — the receiver is a
+                // collection of C (`accounts`, `emails`), so type it as Array[C].
+                // Member completion then offers Enumerable methods (first/last/map/
+                // all?/select/…) and element access instead of scalar C methods.
+                defer self.alloc.free(c);
+                return std.fmt.allocPrint(self.alloc, "Array[{s}]", .{c}) catch null;
+            }
         }
     }
     return null;
@@ -523,23 +613,16 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             // convention. It is never written to local_vars, so diagnostics / refs /
             // hover are unaffected and cannot gain a false positive from a wrong guess.
             if (chain_class_buf == null and !th_hit and !is_constant_recv and !index_element and
-                recv_word.len > 0 and recv_word[0] != '@' and recv_word[0] != '$' and
+                recv_word.len > 0 and recv_word[0] != '$' and
                 !std.mem.eql(u8, recv_word, "self") and std.mem.indexOf(u8, recv_word, "::") == null)
             {
-                var cbuf: [128]u8 = undefined;
-                if (camelizeIdent(recv_word, &cbuf)) |cand| {
-                    const gstmt = try self.cachedStmt(
-                        \\SELECT name FROM symbols WHERE kind IN ('class','module')
-                        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
-                        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-                    );
-                    defer gstmt.reset();
-                    gstmt.bind_text(1, cand);
-                    if (try gstmt.step()) {
-                        const gn = gstmt.column_text(0);
-                        if (gn.len > 0) chain_class_buf = try self.alloc.dupe(u8, gn);
-                    }
-                }
+                // Strip a leading `@`/`@@`: an instance/class var named after its type
+                // (`@order` → Order) is idiomatic Rails and usually instance-typed. Only
+                // reached when the ivar has no recorded type_hint (cross-file assignment,
+                // e.g. a parent controller's before_action), so real typing still wins.
+                var guess_word = recv_word;
+                while (guess_word.len > 0 and guess_word[0] == '@') guess_word = guess_word[1..];
+                if (guess_word.len > 0) chain_class_buf = guessReceiverClass(self, guess_word);
             }
             // A chain/return-type result is stored as a bare constant (`C`) while
             // member lookup keys on the qualified parent_name (`Chn::C`). Qualify a
@@ -585,6 +668,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 var first_dot = true;
                 var seen_names = std.StringHashMap(void).init(ma);
                 var seen_classes = std.StringHashMap(void).init(ma);
+                var is_ar_model = false; // ancestor is ApplicationRecord/ActiveRecord::Base
 
                 // Handle union types: "String | Integer" → query each component
                 var union_it = std.mem.splitSequence(u8, class_name, " | ");
@@ -592,8 +676,39 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 while (union_it.next()) |union_part| {
                     const part_trimmed = std.mem.trim(u8, union_part, " \t");
                     if (part_trimmed.len == 0) continue;
-                    const resolved_class = baseClassOf(part_trimmed);
+                    var resolved_class = baseClassOf(part_trimmed);
                     if (resolved_class.len == 0) continue;
+                    // A bare class name (e.g. a factory-typed `Order`) may be stored
+                    // fully-qualified (`Spree::Order`); resolve it so the member walk
+                    // finds the real methods instead of an empty/wrong bare class.
+                    if (std.mem.indexOf(u8, resolved_class, "::") == null and std.ascii.isUpper(resolved_class[0])) {
+                        var qualified = false;
+                        if (self.cachedStmt(
+                            \\SELECT name FROM symbols WHERE kind IN ('class','module')
+                            \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+                            \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+                        ) catch null) |qs| {
+                            defer qs.reset();
+                            qs.bind_text(1, resolved_class);
+                            if (qs.step() catch false) {
+                                const qn = qs.column_text(0);
+                                if (qn.len > 0) {
+                                    resolved_class = ma.dupe(u8, qn) catch resolved_class;
+                                    qualified = true;
+                                }
+                            }
+                        }
+                        // The bare type names no real class (e.g. a compound factory name
+                        // `OrderWithLineItems` from `create(:order_with_line_items)`). Fall
+                        // back to the receiver-name heuristic so a mis-typed factory var is
+                        // no worse than an untyped one — guarantees no regression.
+                        if (!qualified and recv_word.len > 0) {
+                            if (guessReceiverClass(self, recv_word)) |g| {
+                                resolved_class = ma.dupe(u8, g) catch resolved_class;
+                                self.alloc.free(g);
+                            }
+                        }
+                    }
                     if (!union_first) {
                         seen_classes.clearRetainingCapacity();
                     }
@@ -663,7 +778,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\)
                             \\WHERE m.class_id IN (
                             \\  SELECT id FROM symbols WHERE kind IN ('class','module') AND name=?
-                            \\) AND s2.kind='def' AND m.kind='prepend'
+                            \\) AND s2.kind IN ('def','association','scope') AND m.kind='prepend'
                         );
                         defer prep_stmt.reset();
                         prep_stmt.bind_text(1, current);
@@ -821,7 +936,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\)
                             \\WHERE m.class_id IN (
                             \\  SELECT id FROM symbols WHERE kind IN ('class','module') AND name=?
-                            \\) AND s2.kind='def' AND m.kind IN ('include','extend')
+                            \\) AND s2.kind IN ('def','association','scope') AND m.kind IN ('include','extend')
                         );
                         defer mix_stmt.reset();
                         mix_stmt.bind_text(1, current);
@@ -877,6 +992,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         if (try par_stmt.step()) {
                             const pname = par_stmt.column_text(0);
                             if (pname.len == 0) break;
+                            if (std.mem.eql(u8, pname, "ApplicationRecord") or std.mem.eql(u8, pname, "ActiveRecord::Base") or
+                                std.mem.endsWith(u8, pname, "::ApplicationRecord")) is_ar_model = true;
                             // Superclasses are written bare (`Base`) while class
                             // symbols/methods are stored fully qualified (`Xf::Base`),
                             // so canonicalize an unqualified ancestor to its stored
@@ -962,6 +1079,67 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         try wd.writeAll("{\"label\":");
                         try writeEscapedJson(wd, um);
                         try wd.writeAll(",\"kind\":2}");
+                    }
+                }
+                // Class-object methods: a constant/singleton receiver (`Foo.`,
+                // `described_class.`) IS the class, so `Class#new`/`allocate` always
+                // apply — independent of AR. The AR class-query set below is additive
+                // for models; this covers plain classes (services/workers/POROs) whose
+                // `.new` would otherwise never surface. Completion-only.
+                if (is_constant_recv) {
+                    const class_obj = [_][]const u8{ "new", "allocate" };
+                    for (class_obj) |cm| {
+                        if (seen_names.contains(cm)) continue;
+                        if (!first_dot) try wd.writeByte(',');
+                        first_dot = false;
+                        try wd.writeAll("{\"label\":");
+                        try writeEscapedJson(wd, cm);
+                        try wd.writeAll(",\"kind\":2}");
+                    }
+                }
+                // ActiveRecord base API: a model (`< ApplicationRecord`) responds to a
+                // large runtime-generated method set that exists in no source/schema —
+                // `reload`/`save`/`update`/`destroy`/`where`/… . Inject the curated set
+                // for AR models so those (very common) receivers complete. Completion-only.
+                if (is_ar_model) {
+                    const ar_inst = [_][]const u8{
+                        "save",            "save!",           "update",          "update!",
+                        "destroy",         "destroy!",        "reload",          "delete",
+                        "persisted?",      "new_record?",     "destroyed?",      "valid?",
+                        "invalid?",        "errors",          "attributes",      "attribute_names",
+                        "assign_attributes", "update_attribute", "update_column", "update_columns",
+                        "touch",           "becomes",         "increment!",      "decrement!",
+                        "toggle!",         "read_attribute",  "write_attribute", "has_attribute?",
+                        "changed?",        "changes",         "previous_changes", "saved_changes",
+                        "id",              "to_param",        "cache_key",       "lock!",
+                        "with_lock",       "transaction",     "restore_attributes", "association",
+                    };
+                    for (ar_inst) |m| {
+                        if (seen_names.contains(m)) continue;
+                        if (!first_dot) try wd.writeByte(',');
+                        first_dot = false;
+                        try wd.writeAll("{\"label\":");
+                        try writeEscapedJson(wd, m);
+                        try wd.writeAll(",\"kind\":2}");
+                    }
+                    if (is_constant_recv) {
+                        const ar_cls = [_][]const u8{
+                            "where",   "find",    "find_by", "find_by!", "all",       "first",
+                            "last",    "create",  "create!", "new",      "build",     "exists?",
+                            "count",   "sum",     "average", "minimum",  "maximum",   "pluck",
+                            "order",   "limit",   "offset",  "group",    "having",    "joins",
+                            "includes", "preload", "eager_load", "references", "distinct", "select",
+                            "none",    "unscoped", "find_each", "find_or_create_by", "find_or_initialize_by", "take",
+                            "update_all", "delete_all", "destroy_all", "where_not", "or", "merge",
+                        };
+                        for (ar_cls) |m| {
+                            if (seen_names.contains(m)) continue;
+                            if (!first_dot) try wd.writeByte(',');
+                            first_dot = false;
+                            try wd.writeAll("{\"label\":");
+                            try writeEscapedJson(wd, m);
+                            try wd.writeAll(",\"kind\":2}");
+                        }
                     }
                 }
                 try addStdlibCompletions(wd, class_name, &first_dot, line, character);

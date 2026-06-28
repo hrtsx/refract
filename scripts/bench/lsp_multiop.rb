@@ -52,6 +52,8 @@ COMPLETION = [
   ["complete described_class.new instance", "compl_rspec.rb",           9, 24, %w[add subtract]],
   ["complete RSpec let-typed receiver",     "compl_rspec.rb",          10,  9, %w[add subtract]],
   ["complete alias_attribute reader",       "compl_alias.rb",           6,  3, %w[kind_name name]],
+  ["complete call-site param backfill",      "compl_parambackfill.rb",   7,  10, %w[total submit]],
+  ["complete AR base methods (model.)",     "compl_armodel.rb",        8,  2, %w[custom_method reload save]],
 ]
 
 # Dirty-buffer completion: the receiver's type only exists in an UNSAVED edit
@@ -159,7 +161,7 @@ fixtures = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model
               accuracy_rails_assoc.rb diag_bugs.rb
               compl_local.rb compl_const.rb compl_inherit.rb
               compl_bareconst.rb compl_param.rb compl_nested_inherit.rb compl_dirty.rb
-              compl_chain.rb compl_index.rb compl_rescue.rb compl_attr.rb compl_assoc.rb compl_rspec.rb compl_alias.rb]
+              compl_chain.rb compl_index.rb compl_rescue.rb compl_attr.rb compl_assoc.rb compl_rspec.rb compl_alias.rb compl_parambackfill.rb compl_armodel.rb]
 opens = {}
 fixtures.each do |f|
   abs = File.join(ROOT, f)

@@ -701,6 +701,16 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                     insertSymbolWithReturn(ctx, "def", cname, lc_col.line, lc_col.col, ruby_type, "column", model_name, null) catch {
                         ctx.error_count += 1;
                     };
+                    // AR generates `column?` (predicate) and `column=` (writer) for every
+                    // column — emit both so `account.confirmed?`/`user.email=` complete.
+                    var pq_buf: [128]u8 = undefined;
+                    if (std.fmt.bufPrint(&pq_buf, "{s}?", .{cname})) |pq| {
+                        insertSymbolWithReturn(ctx, "def", pq, lc_col.line, lc_col.col, "TrueClass | FalseClass", "column", model_name, null) catch {};
+                    } else |_| {}
+                    var wr_buf: [128]u8 = undefined;
+                    if (std.fmt.bufPrint(&wr_buf, "{s}=", .{cname})) |wr| {
+                        insertSymbolWithReturn(ctx, "def", wr, lc_col.line, lc_col.col, ruby_type, "column", model_name, null) catch {};
+                    } else |_| {}
                     // For references/belongs_to, also insert the _id column
                     if (std.mem.eql(u8, mname, "references") or std.mem.eql(u8, mname, "belongs_to")) {
                         var id_buf: [128]u8 = undefined;
@@ -778,5 +788,16 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
     insertCallRef(ctx.db, ctx.file_id, mname, lc.line, lc.col, ctx.scope_id, call_arg_count, call_recv_type, cn.receiver == null) catch {
         ctx.error_count += 1;
     };
+    // Capture positional argument types (constructor/literal/AR-query exprs) keyed by
+    // callee, so the backfill pass can type that method's params from its call sites.
+    if (cn.arguments != null) {
+        const cargs = cn.arguments[0].arguments;
+        var ai: usize = 0;
+        while (ai < cargs.size and ai < 8) : (ai += 1) {
+            if (extractNewCallType(ctx.parser, cargs.nodes[ai])) |at| {
+                if (at.len > 0) symbol_insert.insertCallArgType(ctx.db, mname, @intCast(ai), at) catch {};
+            }
+        }
+    }
     return true;
 }

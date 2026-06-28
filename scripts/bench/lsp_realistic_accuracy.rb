@@ -400,6 +400,11 @@ struct_misses = {} # server => [{name, probe, target, target_line}] — oracle-r
 rename_detail = {} # server => [{name, probe, refs, edits, match}] — per-probe rename vs refs
 unresolved_samples = {} # server => [{name, probe, line, before}] — go-to-def returned NOTHING
 comp_attempted = Hash.new(0); comp_resolved = Hash.new(0); comp_recall_hits = Hash.new(0)
+comp_typeable_attempted = Hash.new(0); comp_typeable_hits = Hash.new(0)
+comp_setter_lhs_dropped = 0
+# Receivers with no static type: RSpec/WebMock expectation/matcher proxies and the
+# dynamic class-under-test handle. Excluded from the typeable-subset recall.
+UNDECIDABLE_RECV = %w[is_expected expect described_class allow receive expect_any_instance_of allow_any_instance_of].freeze
 comp_samples = {} # server => [{recv, meth, loc, got}] — completion missed the called method
 
 pr_row = lambda do |tp, fp, fn|
@@ -447,10 +452,18 @@ build_report = lambda do |partial:|
     # truth). member_recall = sites offering it / sites probed; resolution_rate =
     # sites returning any member / sites probed.
     completion: server_names.to_h do |n|
+      ty_att = comp_typeable_attempted[n]; ty_hit = comp_typeable_hits[n]
       [n, { probes: comp_attempted[n],
             resolution_rate: comp_attempted[n].zero? ? nil : (comp_resolved[n].to_f / comp_attempted[n]).round(3),
-            member_recall: comp_attempted[n].zero? ? nil : (comp_recall_hits[n].to_f / comp_attempted[n]).round(3) }]
+            member_recall: comp_attempted[n].zero? ? nil : (comp_recall_hits[n].to_f / comp_attempted[n]).round(3),
+            # Typeable-subset recall: excludes structurally-undecidable receivers
+            # (RSpec/WebMock matcher proxies, dynamic `described_class`) that carry no
+            # static type — shows the engine's ceiling on decidable sites without
+            # silently dropping them (the excluded count is reported).
+            typeable_excluded: comp_attempted[n] - ty_att,
+            member_recall_typeable: ty_att.zero? ? nil : (ty_hit.to_f / ty_att).round(3) }]
     end,
+    completion_setter_lhs_dropped: comp_setter_lhs_dropped,
     completion_misses: comp_samples,
     rename_detail: rename_detail,
     structural_misses: struct_misses,
@@ -698,7 +711,10 @@ unless over_deadline.call
   comp_probes = []
   files.each do |path|
     opened[path][:text].each_line.with_index do |line, idx|
-      line.scan(/\b([a-z_][a-zA-Z0-9_]*)\.([a-z_][a-zA-Z0-9_]*)/) do
+      # Method group includes a trailing ?/! so predicate/bang calls (`valid?`,
+      # `nil?`) are scored against the full name the server actually offers — without
+      # it, every predicate was a false miss (expected `valid`, offered `valid?`).
+      line.scan(/\b([a-z_][a-zA-Z0-9_]*)\.([a-z_][a-zA-Z0-9_]*[?!]?)/) do
         m = Regexp.last_match
         recv = m[1]; meth = m[2]
         pre = m.pre_match
@@ -709,6 +725,13 @@ unless over_deadline.call
         next if pre.count('"').odd? || pre.count("'").odd?
         # Keyword/constructor noise that never carries an inferable receiver type.
         next if %w[self new class then end do begin return yield super].include?(recv)
+        # Drop assignment-LHS sites (`recv.attr = x`): the call is the setter
+        # `attr=`, not the getter `attr`, so scoring against `attr` is a phantom
+        # miss. A trailing single `=` (not `==`, `=>`, `<=`) marks the write.
+        if m.post_match =~ /\A\s*=([^=~>]|\z)/
+          comp_setter_lhs_dropped += 1
+          next
+        end
         dot_col = pre.length + recv.length
         comp_probes << { path: path, line: idx, char: dot_col + 1, recv: recv, meth: meth }
       end
@@ -725,12 +748,15 @@ unless over_deadline.call
       c = clients[name]
       next if dropped.include?(name) || c.dead?
       comp_attempted[name] += 1
+      typeable = !UNDECIDABLE_RECV.include?(p[:recv])
+      comp_typeable_attempted[name] += 1 if typeable
       r = ask.call(name, c, :completion_dot, info[:uris][name], p[:line], p[:char], timeout: 8)
       labels = completion_member_labels(r)
       next if labels.nil?
       comp_resolved[name] += 1 unless labels.empty?
       if labels.include?(p[:meth])
         comp_recall_hits[name] += 1
+        comp_typeable_hits[name] += 1 if typeable
       elsif (comp_samples[name] ||= []).size < 40
         comp_samples[name] << {
           recv: p[:recv], meth: p[:meth],

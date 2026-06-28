@@ -495,9 +495,14 @@ pub fn insertDescribedClass(ctx: *VisitCtx, cn: *const prism.CallNode) void {
     if (type_hints.qualifyConstPath(ctx.parser, a0)) |cls| {
         if (cls.len > 0) {
             const lcl = locationLineCol(ctx.parser, cn.base.location.start);
-            // confidence 60 (< the 70 diagnostic gate): feeds completion only, so a
-            // class-method call on described_class can never produce a semantic FP.
-            insertLocalVar(ctx.db, ctx.file_id, "described_class", lcl.line, lcl.col, cls, 60, ctx.scope_id) catch {};
+            // described_class IS the class object, not an instance — `described_class.new`
+            // / `.create` / scopes are class-method calls. Store with the `.class`
+            // singleton marker so completion routes through the constant receiver path
+            // and offers class methods, mirroring `x = Foo` (which holds the class object).
+            // confidence 60 (< the 70 diagnostic gate): completion only, never an FP.
+            var marker_buf: [256]u8 = undefined;
+            const hint = std.fmt.bufPrint(&marker_buf, "{s}.class", .{cls}) catch cls;
+            insertLocalVar(ctx.db, ctx.file_id, "described_class", lcl.line, lcl.col, hint, 60, ctx.scope_id) catch {};
         }
     }
 }

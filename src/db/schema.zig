@@ -132,6 +132,14 @@ pub fn init(self: Db) DbError!void {
         \\  file_id    INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
         \\  blob       BLOB NOT NULL
         \\);
+        \\-- Call-site argument types: feeds method-parameter type backfill so a param
+        \\-- like `def process(order)` is typed from how `process` is actually called.
+        \\CREATE TABLE IF NOT EXISTS call_arg_types (
+        \\  callee    TEXT NOT NULL,
+        \\  position  INTEGER NOT NULL,
+        \\  arg_type  TEXT NOT NULL
+        \\);
+        \\CREATE INDEX IF NOT EXISTS idx_call_arg_callee ON call_arg_types(callee, position);
     );
     // Migration guard for databases created before return_type was added
     self.execMigration("ALTER TABLE symbols ADD COLUMN return_type TEXT");
