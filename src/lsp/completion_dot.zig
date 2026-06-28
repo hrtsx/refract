@@ -56,6 +56,87 @@ fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: 
     return null;
 }
 
+// Resolve a bare/relative class-or-module name to its stored fully-qualified form:
+// prefer an exact match, else the shortest `%::Name` suffix. Returns an `alloc`-owned
+// dup, or null when no class/module matches. Centralizes the namespaced/flat name
+// bridge otherwise open-coded across every receiver-typing path.
+fn qualifyClassName(self: *Server, alloc: std.mem.Allocator, bare: []const u8) ?[]u8 {
+    if (bare.len == 0) return null;
+    const st = self.cachedStmt(
+        \\SELECT name FROM symbols WHERE kind IN ('class','module')
+        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
+        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
+    ) catch return null;
+    defer st.reset();
+    st.bind_text(1, bare);
+    if (st.step() catch false) {
+        const n = st.column_text(0);
+        if (n.len > 0) return alloc.dupe(u8, n) catch null;
+    }
+    return null;
+}
+
+// The class/module symbol enclosing a cursor position (innermost by line). Returns
+// its id, or null when the cursor is at top level. Shared by the `@ivar`/`self`
+// receiver-typing branches.
+fn enclosingClassId(self: *Server, file_id: i64, cursor_line_db: i64) ?i64 {
+    const s = self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1") catch return null;
+    defer s.reset();
+    s.bind_int(1, file_id);
+    s.bind_int(2, cursor_line_db);
+    if (s.step() catch false) return s.column_int(0);
+    return null;
+}
+
+// Name of the class/module enclosing a cursor position. Returns an `alloc`-owned dup,
+// or null at top level.
+fn enclosingClassName(self: *Server, alloc: std.mem.Allocator, file_id: i64, cursor_line_db: i64) ?[]u8 {
+    const s = self.cachedStmt("SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1") catch return null;
+    defer s.reset();
+    s.bind_int(1, file_id);
+    s.bind_int(2, cursor_line_db);
+    if (s.step() catch false) {
+        const n = s.column_text(0);
+        if (n.len > 0) return alloc.dupe(u8, n) catch null;
+    }
+    return null;
+}
+
+// Serialize one method-member completion item (the simple form, no typed-sig detail).
+// The comma separator and `first_dot`/`seen_names` bookkeeping stay at the call site
+// since they are loop state; this writes only the item object. `detail` is the raw
+// detail string (`(def)`, `(def self)`). Shared by the prepend/classdef/mixin emit loops.
+fn writeMethodMemberItem(wd: *std.Io.Writer, name: []const u8, doc: []const u8, detail: []const u8, line: u32, character: u32) !void {
+    try wd.writeAll("{\"label\":");
+    try writeEscapedJson(wd, name);
+    try wd.writeAll(",\"kind\":3,\"detail\":\"");
+    try writeEscapedJsonContent(wd, detail);
+    try wd.writeAll("\",\"sortText\":\"0_");
+    try writeEscapedJsonContent(wd, name);
+    try wd.writeAll("\",\"filterText\":\"");
+    try writeEscapedJsonContent(wd, name);
+    try wd.writeAll("\",\"commitCharacters\":[\"(\"]");
+    if (doc.len > 0) {
+        try wd.writeAll(",\"documentation\":\"");
+        try writeEscapedJsonContent(wd, doc);
+        try wd.writeByte('"');
+    }
+    try wd.writeAll(",\"textEdit\":{\"range\":{\"start\":{\"line\":");
+    try wd.print("{d}", .{line});
+    try wd.writeAll(",\"character\":");
+    try wd.print("{d}", .{character});
+    try wd.writeAll("},\"end\":{\"line\":");
+    try wd.print("{d}", .{line});
+    try wd.writeAll(",\"character\":");
+    try wd.print("{d}", .{character});
+    try wd.writeAll("}},\"newText\":\"");
+    try writeEscapedJsonContent(wd, name);
+    try wd.writeAll("\"},\"data\":{\"name\":");
+    try writeEscapedJson(wd, name);
+    try wd.writeAll("}");
+    try wd.writeByte('}');
+}
+
 // Camelize a snake_case identifier into a constant candidate (`status_pin` →
 // `StatusPin`, `account` → `Account`). Returns null on empty/overflow. Used only
 // as a completion-time type guess — never persisted.
@@ -174,23 +255,10 @@ fn returnTypeOnClass(self: *Server, method: []const u8, class: []const u8) ?[]u8
 fn resolveChainBaseType(self: *Server, file_id: i64, word: []const u8, cursor_line_db: i64) !?[]u8 {
     if (word.len == 0) return null;
     if (std.mem.eql(u8, word, "self")) {
-        const s = try self.cachedStmt("SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-        defer s.reset();
-        s.bind_int(1, file_id);
-        s.bind_int(2, cursor_line_db);
-        if (try s.step()) {
-            const n = s.column_text(0);
-            if (n.len > 0) return try self.alloc.dupe(u8, n);
-        }
-        return null;
+        return enclosingClassName(self, self.alloc, file_id, cursor_line_db);
     }
     if (word[0] == '@') {
-        const cls = try self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-        defer cls.reset();
-        cls.bind_int(1, file_id);
-        cls.bind_int(2, cursor_line_db);
-        if (try cls.step()) {
-            const class_id = cls.column_int(0);
+        if (enclosingClassId(self, file_id, cursor_line_db)) |class_id| {
             const iv = try self.cachedStmt("SELECT type_hint FROM local_vars WHERE class_id=? AND name=? AND type_hint IS NOT NULL LIMIT 1");
             defer iv.reset();
             iv.bind_int(1, class_id);
@@ -286,18 +354,7 @@ fn lookupClassByCamel(self: *Server, snake: []const u8) ?[]u8 {
     if (snake.len == 0) return null;
     var cbuf: [128]u8 = undefined;
     const cand = camelizeIdent(snake, &cbuf) orelse return null;
-    const st = self.cachedStmt(
-        \\SELECT name FROM symbols WHERE kind IN ('class','module')
-        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
-        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-    ) catch return null;
-    defer st.reset();
-    st.bind_text(1, cand);
-    if (st.step() catch false) {
-        const n = st.column_text(0);
-        if (n.len > 0) return self.alloc.dupe(u8, n) catch null;
-    }
-    return null;
+    return qualifyClassName(self, self.alloc, cand);
 }
 
 // Completion-only receiver-type guess from an identifier, idiomatic-Rails aware:
@@ -460,12 +517,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
             if (chain_class_buf == null and recv_word.len > 0 and recv_word[0] == '@') {
                 const ivar_name = recv_word[1..];
-                const enclosing_class_stmt = try self.cachedStmt("SELECT id FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-                defer enclosing_class_stmt.reset();
-                enclosing_class_stmt.bind_int(1, fdc_id);
-                enclosing_class_stmt.bind_int(2, cursor_line_db);
-                if (try enclosing_class_stmt.step()) {
-                    const class_id = enclosing_class_stmt.column_int(0);
+                if (enclosingClassId(self, fdc_id, cursor_line_db)) |class_id| {
                     const ivar_stmt = try self.cachedStmt("SELECT type_hint FROM local_vars WHERE class_id=? AND name=? AND type_hint IS NOT NULL LIMIT 1");
                     defer ivar_stmt.reset();
                     ivar_stmt.bind_int(1, class_id);
@@ -478,14 +530,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
 
             if (chain_class_buf == null and std.mem.eql(u8, recv_word, "self")) {
-                const sc_stmt = try self.cachedStmt("SELECT name FROM symbols WHERE file_id=? AND kind IN ('class','module') AND line<=? ORDER BY line DESC LIMIT 1");
-                defer sc_stmt.reset();
-                sc_stmt.bind_int(1, fdc_id);
-                sc_stmt.bind_int(2, cursor_line_db);
-                if (try sc_stmt.step()) {
-                    const sc = sc_stmt.column_text(0);
-                    if (sc.len > 0) chain_class_buf = try self.alloc.dupe(u8, sc);
-                }
+                chain_class_buf = enclosingClassName(self, self.alloc, fdc_id, cursor_line_db);
             }
             // Method/keyword parameter receiver: `def f(user: User); user.` —
             // params carry type_hint (RBS/Sorbet sigs) but never land in local_vars.
@@ -530,17 +575,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 // matches no members. Prefer an exact name, else the shortest
                 // `%::Name` suffix match.
                 if (std.mem.indexOf(u8, recv_word, "::") == null) {
-                    const qstmt = try self.cachedStmt(
-                        \\SELECT name FROM symbols WHERE kind IN ('class','module')
-                        \\  AND (name = ?1 OR name LIKE '%::' || ?1)
-                        \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-                    );
-                    defer qstmt.reset();
-                    qstmt.bind_text(1, recv_word);
-                    if (try qstmt.step()) {
-                        const qn = qstmt.column_text(0);
-                        if (qn.len > 0) chain_class_buf = try self.alloc.dupe(u8, qn);
-                    }
+                    chain_class_buf = qualifyClassName(self, self.alloc, recv_word);
                 }
                 if (chain_class_buf == null) chain_class_buf = try self.alloc.dupe(u8, recv_word);
             }
@@ -630,20 +665,11 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             if (!force_singleton and !index_element) {
                 if (chain_class_buf) |cc| {
                     if (cc.len > 0 and std.ascii.isUpper(cc[0]) and std.mem.indexOf(u8, cc, "::") == null) {
-                        const qcstmt = try self.cachedStmt(
-                            \\SELECT name FROM symbols WHERE kind IN ('class','module')
-                            \\  AND (name=?1 OR name LIKE '%::'||?1)
-                            \\ORDER BY CASE WHEN name=?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-                        );
-                        defer qcstmt.reset();
-                        qcstmt.bind_text(1, cc);
-                        if (try qcstmt.step()) {
-                            const qn = qcstmt.column_text(0);
-                            if (qn.len > 0 and !std.mem.eql(u8, qn, cc)) {
-                                const dup = try self.alloc.dupe(u8, qn);
+                        if (qualifyClassName(self, self.alloc, cc)) |qn| {
+                            if (!std.mem.eql(u8, qn, cc)) {
                                 self.alloc.free(cc);
-                                chain_class_buf = dup;
-                            }
+                                chain_class_buf = qn;
+                            } else self.alloc.free(qn);
                         }
                     }
                 }
@@ -683,20 +709,9 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     // finds the real methods instead of an empty/wrong bare class.
                     if (std.mem.indexOf(u8, resolved_class, "::") == null and std.ascii.isUpper(resolved_class[0])) {
                         var qualified = false;
-                        if (self.cachedStmt(
-                            \\SELECT name FROM symbols WHERE kind IN ('class','module')
-                            \\  AND (name = ?1 OR name LIKE '%::' || ?1)
-                            \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-                        ) catch null) |qs| {
-                            defer qs.reset();
-                            qs.bind_text(1, resolved_class);
-                            if (qs.step() catch false) {
-                                const qn = qs.column_text(0);
-                                if (qn.len > 0) {
-                                    resolved_class = ma.dupe(u8, qn) catch resolved_class;
-                                    qualified = true;
-                                }
-                            }
+                        if (qualifyClassName(self, ma, resolved_class)) |qn| {
+                            resolved_class = qn;
+                            qualified = true;
                         }
                         // The bare type names no real class (e.g. a compound factory name
                         // `OrderWithLineItems` from `create(:order_with_line_items)`). Fall
@@ -788,33 +803,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try seen_names.put(try ma.dupe(u8, mname2), {});
                             if (!first_dot) try wd.writeByte(',');
                             first_dot = false;
-                            const mdoc = prep_stmt.column_text(1);
-                            try wd.writeAll("{\"label\":");
-                            try writeEscapedJson(wd, mname2);
-                            try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"0_");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\",\"filterText\":\"");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\",\"commitCharacters\":[\"(\"]");
-                            if (mdoc.len > 0) {
-                                try wd.writeAll(",\"documentation\":\"");
-                                try writeEscapedJsonContent(wd, mdoc);
-                                try wd.writeByte('"');
-                            }
-                            try wd.writeAll(",\"textEdit\":{\"range\":{\"start\":{\"line\":");
-                            try wd.print("{d}", .{line});
-                            try wd.writeAll(",\"character\":");
-                            try wd.print("{d}", .{character});
-                            try wd.writeAll("},\"end\":{\"line\":");
-                            try wd.print("{d}", .{line});
-                            try wd.writeAll(",\"character\":");
-                            try wd.print("{d}", .{character});
-                            try wd.writeAll("}},\"newText\":\"");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\"},\"data\":{\"name\":");
-                            try writeEscapedJson(wd, mname2);
-                            try wd.writeAll("}");
-                            try wd.writeByte('}');
+                            try writeMethodMemberItem(wd, mname2, prep_stmt.column_text(1), "(def)", line, character);
                         }
 
                         const own_stmt = own_stmt_hoisted orelse continue;
@@ -898,33 +887,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                                     try seen_names.put(try ma.dupe(u8, mname2), {});
                                     if (!first_dot) try wd.writeByte(',');
                                     first_dot = false;
-                                    const mdoc = cls_stmt.column_text(1);
-                                    try wd.writeAll("{\"label\":");
-                                    try writeEscapedJson(wd, mname2);
-                                    try wd.writeAll(",\"kind\":3,\"detail\":\"(def self)\",\"sortText\":\"0_");
-                                    try writeEscapedJsonContent(wd, mname2);
-                                    try wd.writeAll("\",\"filterText\":\"");
-                                    try writeEscapedJsonContent(wd, mname2);
-                                    try wd.writeAll("\",\"commitCharacters\":[\"(\"]");
-                                    if (mdoc.len > 0) {
-                                        try wd.writeAll(",\"documentation\":\"");
-                                        try writeEscapedJsonContent(wd, mdoc);
-                                        try wd.writeByte('"');
-                                    }
-                                    try wd.writeAll(",\"textEdit\":{\"range\":{\"start\":{\"line\":");
-                                    try wd.print("{d}", .{line});
-                                    try wd.writeAll(",\"character\":");
-                                    try wd.print("{d}", .{character});
-                                    try wd.writeAll("},\"end\":{\"line\":");
-                                    try wd.print("{d}", .{line});
-                                    try wd.writeAll(",\"character\":");
-                                    try wd.print("{d}", .{character});
-                                    try wd.writeAll("}},\"newText\":\"");
-                                    try writeEscapedJsonContent(wd, mname2);
-                                    try wd.writeAll("\"},\"data\":{\"name\":");
-                                    try writeEscapedJson(wd, mname2);
-                                    try wd.writeAll("}");
-                                    try wd.writeByte('}');
+                                    try writeMethodMemberItem(wd, mname2, cls_stmt.column_text(1), "(def self)", line, character);
                                 }
                             }
                         }
@@ -946,33 +909,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try seen_names.put(try ma.dupe(u8, mname2), {});
                             if (!first_dot) try wd.writeByte(',');
                             first_dot = false;
-                            const mdoc = mix_stmt.column_text(1);
-                            try wd.writeAll("{\"label\":");
-                            try writeEscapedJson(wd, mname2);
-                            try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"0_");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\",\"filterText\":\"");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\",\"commitCharacters\":[\"(\"]");
-                            if (mdoc.len > 0) {
-                                try wd.writeAll(",\"documentation\":\"");
-                                try writeEscapedJsonContent(wd, mdoc);
-                                try wd.writeByte('"');
-                            }
-                            try wd.writeAll(",\"textEdit\":{\"range\":{\"start\":{\"line\":");
-                            try wd.print("{d}", .{line});
-                            try wd.writeAll(",\"character\":");
-                            try wd.print("{d}", .{character});
-                            try wd.writeAll("},\"end\":{\"line\":");
-                            try wd.print("{d}", .{line});
-                            try wd.writeAll(",\"character\":");
-                            try wd.print("{d}", .{character});
-                            try wd.writeAll("}},\"newText\":\"");
-                            try writeEscapedJsonContent(wd, mname2);
-                            try wd.writeAll("\"},\"data\":{\"name\":");
-                            try writeEscapedJson(wd, mname2);
-                            try wd.writeAll("}");
-                            try wd.writeByte('}');
+                            try writeMethodMemberItem(wd, mname2, mix_stmt.column_text(1), "(def)", line, character);
                         }
 
                         // Ascend the real superclass: `parent_name` carries the
@@ -1000,18 +937,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             // name (shortest `%::Base` suffix) before the next step.
                             var next_cur = try ma.dupe(u8, pname);
                             if (std.mem.indexOf(u8, pname, "::") == null) {
-                                if (self.cachedStmt(
-                                    \\SELECT name FROM symbols WHERE kind IN ('class','module')
-                                    \\  AND (name = ?1 OR name LIKE '%::' || ?1)
-                                    \\ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END, length(name) LIMIT 1
-                                ) catch null) |cs| {
-                                    defer cs.reset();
-                                    cs.bind_text(1, pname);
-                                    if (cs.step() catch false) {
-                                        const cn = cs.column_text(0);
-                                        if (cn.len > 0) next_cur = try ma.dupe(u8, cn);
-                                    }
-                                }
+                                if (qualifyClassName(self, ma, pname)) |cn| next_cur = cn;
                             }
                             current = next_cur;
                         } else break;
