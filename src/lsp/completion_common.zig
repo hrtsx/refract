@@ -45,6 +45,12 @@ pub fn addStdlibCompletions(w: *std.Io.Writer, class_name: []const u8, first_ite
         &[_][]const u8{ "keys", "values", "each", "map", "select", "filter", "reject", "merge", "update", "delete", "fetch", "has_key?", "key?", "include?", "has_value?", "value?", "empty?", "size", "count", "any?", "all?", "none?", "invert", "compact", "except", "slice", "flat_map", "to_a", "each_with_object", "group_by", "transform_values", "transform_keys", "each_key", "each_value", "each_pair", "deep_symbolize_keys", "deep_stringify_keys", "with_indifferent_access" }
     else if (std.mem.eql(u8, class_name, "Symbol"))
         &[_][]const u8{ "to_s", "id2name", "to_sym", "inspect", "upcase", "downcase", "length", "size", "match?", "empty?", "to_proc" }
+    else if (std.mem.eql(u8, class_name, "ActiveSupport::Duration"))
+        &[_][]const u8{ "from_now", "ago", "since", "until", "before", "after", "to_i", "to_f", "seconds", "in_seconds", "in_minutes", "in_hours", "in_days", "in_weeks", "in_months", "in_years", "parts", "value", "inspect" }
+    else if (std.mem.eql(u8, class_name, "Time") or std.mem.eql(u8, class_name, "ActiveSupport::TimeWithZone") or std.mem.eql(u8, class_name, "DateTime"))
+        &[_][]const u8{ "year", "month", "day", "hour", "min", "sec", "wday", "yday", "mday", "to_date", "to_time", "to_i", "to_f", "to_s", "iso8601", "strftime", "beginning_of_day", "end_of_day", "beginning_of_month", "end_of_month", "beginning_of_week", "end_of_week", "midnight", "noon", "tomorrow", "yesterday", "next_day", "prev_day", "since", "ago", "advance", "change", "in_time_zone", "utc", "localtime", "zone", "monday?", "sunday?", "today?", "past?", "future?", "before?", "after?", "between?" }
+    else if (std.mem.eql(u8, class_name, "Date"))
+        &[_][]const u8{ "year", "month", "day", "wday", "yday", "cwday", "to_date", "to_time", "to_s", "iso8601", "strftime", "beginning_of_month", "end_of_month", "beginning_of_week", "beginning_of_year", "end_of_year", "next_day", "prev_day", "next_month", "prev_month", "tomorrow", "yesterday", "since", "ago", "advance", "change", "monday?", "sunday?", "leap?", "future?", "past?", "before?", "after?" }
     else
         return;
     for (methods) |m| {
@@ -98,6 +104,12 @@ fn frameworkMembers(name: []const u8) ?[]const []const u8 {
         return &[_][]const u8{ "[]", "[]=", "now", "keep", "discard", "notice", "notice=", "alert", "alert=", "key?", "each", "clear", "to_hash", "delete" };
     if (std.mem.eql(u8, name, "logger"))
         return &[_][]const u8{ "debug", "info", "warn", "error", "fatal", "unknown", "level", "level=", "debug?", "info?", "warn?", "error?", "tagged", "add", "formatter", "silence" };
+    // ActiveModel::Errors — `model.errors.add(:base, ...)`, `.full_messages`.
+    if (std.mem.eql(u8, name, "errors"))
+        return &[_][]const u8{ "add", "added?", "clear", "delete", "full_messages", "full_messages_for", "full_message", "messages", "messages_for", "details", "each", "empty?", "any?", "blank?", "present?", "include?", "key?", "has_key?", "of_kind?", "size", "count", "[]", "attribute_names", "where", "group_by_attribute", "to_hash", "to_a", "as_json", "import", "merge!", "objects" };
+    // ActiveSupport::Cache::Store — `Rails.cache.fetch(...)`, `cache.write`.
+    if (std.mem.eql(u8, name, "cache"))
+        return &[_][]const u8{ "read", "write", "fetch", "delete", "exist?", "read_multi", "write_multi", "fetch_multi", "delete_matched", "delete_multi", "increment", "decrement", "clear", "cleanup", "mute", "silence!", "read_entry", "write_entry" };
     return null;
 }
 

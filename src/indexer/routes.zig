@@ -528,6 +528,28 @@ fn visitBlockStatements(db: db_mod.Db, file_id: i64, parser: *prism.Parser, body
         const cn: *const prism.CallNode = @ptrCast(@alignCast(stmt));
         const mname = resolveConstant(parser, cn.name);
 
+        // `member`/`collection` take only a block, no positional args, so they must be
+        // dispatched BEFORE the args-null guard below — otherwise their custom-action
+        // helpers (`ready_api_shipment_path`) are silently dropped. The enclosing
+        // `resources` call pushed `{singular}_` onto the helper-prefix stack for NESTED
+        // resources; member/collection actions prefix the resource's OWN helper, not a
+        // nested one, so drop that one level while emitting them (else the helper
+        // doubles: `ready_api_shipment_shipment`).
+        if (std.mem.eql(u8, mname, "member") or std.mem.eql(u8, mname, "collection")) {
+            var saved_hp: ?[]const u8 = null;
+            if (ns_ctx.helper_prefix_depth > 0) {
+                saved_hp = ns_ctx.helper_prefix_stack[ns_ctx.helper_prefix_depth - 1];
+                ns_ctx.popHelperPrefix();
+            }
+            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, std.mem.eql(u8, mname, "member")) catch |e| {
+                std.debug.print("{s}", .{"refract: route member error: "});
+                std.debug.print("{s}", .{@errorName(e)});
+                std.debug.print("{s}", .{"\n"});
+            };
+            if (saved_hp) |hp| ns_ctx.pushHelperPrefix(hp) catch {};
+            continue;
+        }
+
         if (cn.arguments == null) continue;
         const args_list = cn.arguments[0].arguments;
         if (args_list.size == 0) continue;
@@ -549,18 +571,6 @@ fn visitBlockStatements(db: db_mod.Db, file_id: i64, parser: *prism.Parser, body
                     std.debug.print("{s}", .{"\n"});
                 };
             }
-        } else if (std.mem.eql(u8, mname, "member")) {
-            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, true) catch |e| {
-                std.debug.print("{s}", .{"refract: route member error: "});
-                std.debug.print("{s}", .{@errorName(e)});
-                std.debug.print("{s}", .{"\n"});
-            };
-        } else if (std.mem.eql(u8, mname, "collection")) {
-            handleMemberCollection(db, file_id, parser, cn, alloc, ns_ctx, resource_name, singular, false) catch |e| {
-                std.debug.print("{s}", .{"refract: route collection error: "});
-                std.debug.print("{s}", .{@errorName(e)});
-                std.debug.print("{s}", .{"\n"});
-            };
         } else if (std.mem.eql(u8, mname, "get") or std.mem.eql(u8, mname, "post") or
             std.mem.eql(u8, mname, "put") or std.mem.eql(u8, mname, "patch") or
             std.mem.eql(u8, mname, "delete"))

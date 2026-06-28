@@ -119,6 +119,63 @@ pub fn lookupStdlibReturn(class_name: []const u8, method_name: []const u8) ?[]co
             std.mem.eql(u8, method_name, "positive?") or
             std.mem.eql(u8, method_name, "negative?") or
             std.mem.eql(u8, method_name, "between?")) return "TrueClass";
+        // ActiveSupport numeric→duration sugar (`3.days`, `1.hour`).
+        if (std.mem.eql(u8, method_name, "day") or std.mem.eql(u8, method_name, "days") or
+            std.mem.eql(u8, method_name, "hour") or std.mem.eql(u8, method_name, "hours") or
+            std.mem.eql(u8, method_name, "minute") or std.mem.eql(u8, method_name, "minutes") or
+            std.mem.eql(u8, method_name, "second") or std.mem.eql(u8, method_name, "seconds") or
+            std.mem.eql(u8, method_name, "week") or std.mem.eql(u8, method_name, "weeks") or
+            std.mem.eql(u8, method_name, "fortnight") or std.mem.eql(u8, method_name, "fortnights") or
+            std.mem.eql(u8, method_name, "month") or std.mem.eql(u8, method_name, "months") or
+            std.mem.eql(u8, method_name, "year") or std.mem.eql(u8, method_name, "years")) return "ActiveSupport::Duration";
+    }
+    // ActiveSupport::Duration — `3.days.from_now`, `.ago`, `.in_hours`.
+    if (std.mem.eql(u8, class_name, "ActiveSupport::Duration")) {
+        if (std.mem.eql(u8, method_name, "from_now") or std.mem.eql(u8, method_name, "since") or
+            std.mem.eql(u8, method_name, "after") or std.mem.eql(u8, method_name, "ago") or
+            std.mem.eql(u8, method_name, "until") or std.mem.eql(u8, method_name, "before")) return "ActiveSupport::TimeWithZone";
+        if (std.mem.eql(u8, method_name, "to_i") or std.mem.eql(u8, method_name, "seconds") or
+            std.mem.eql(u8, method_name, "in_seconds") or std.mem.eql(u8, method_name, "in_minutes") or
+            std.mem.eql(u8, method_name, "in_hours") or std.mem.eql(u8, method_name, "in_days") or
+            std.mem.eql(u8, method_name, "in_weeks") or std.mem.eql(u8, method_name, "in_months") or
+            std.mem.eql(u8, method_name, "in_years")) return "Integer";
+    }
+    // Time / TimeWithZone / DateTime — `Time.current.beginning_of_day`, `.month`.
+    if (std.mem.eql(u8, class_name, "Time") or
+        std.mem.eql(u8, class_name, "ActiveSupport::TimeWithZone") or
+        std.mem.eql(u8, class_name, "DateTime"))
+    {
+        if (std.mem.eql(u8, method_name, "current") or std.mem.eql(u8, method_name, "now") or
+            std.mem.eql(u8, method_name, "beginning_of_day") or std.mem.eql(u8, method_name, "end_of_day") or
+            std.mem.eql(u8, method_name, "beginning_of_month") or std.mem.eql(u8, method_name, "end_of_month") or
+            std.mem.eql(u8, method_name, "beginning_of_week") or std.mem.eql(u8, method_name, "end_of_week") or
+            std.mem.eql(u8, method_name, "midnight") or std.mem.eql(u8, method_name, "noon") or
+            std.mem.eql(u8, method_name, "tomorrow") or std.mem.eql(u8, method_name, "yesterday") or
+            std.mem.eql(u8, method_name, "since") or std.mem.eql(u8, method_name, "ago") or
+            std.mem.eql(u8, method_name, "advance") or std.mem.eql(u8, method_name, "change") or
+            std.mem.eql(u8, method_name, "in_time_zone") or std.mem.eql(u8, method_name, "utc") or
+            std.mem.eql(u8, method_name, "localtime")) return "ActiveSupport::TimeWithZone";
+        if (std.mem.eql(u8, method_name, "year") or std.mem.eql(u8, method_name, "month") or
+            std.mem.eql(u8, method_name, "day") or std.mem.eql(u8, method_name, "hour") or
+            std.mem.eql(u8, method_name, "min") or std.mem.eql(u8, method_name, "sec") or
+            std.mem.eql(u8, method_name, "wday") or std.mem.eql(u8, method_name, "yday") or
+            std.mem.eql(u8, method_name, "mday") or std.mem.eql(u8, method_name, "to_i")) return "Integer";
+        if (std.mem.eql(u8, method_name, "to_date")) return "Date";
+    }
+    // Date — `Date.today.beginning_of_month`, `.year`.
+    if (std.mem.eql(u8, class_name, "Date")) {
+        if (std.mem.eql(u8, method_name, "today") or std.mem.eql(u8, method_name, "tomorrow") or
+            std.mem.eql(u8, method_name, "yesterday") or std.mem.eql(u8, method_name, "current") or
+            std.mem.eql(u8, method_name, "beginning_of_month") or std.mem.eql(u8, method_name, "end_of_month") or
+            std.mem.eql(u8, method_name, "beginning_of_week") or std.mem.eql(u8, method_name, "beginning_of_year") or
+            std.mem.eql(u8, method_name, "next_day") or std.mem.eql(u8, method_name, "prev_day") or
+            std.mem.eql(u8, method_name, "next_month") or std.mem.eql(u8, method_name, "prev_month") or
+            std.mem.eql(u8, method_name, "since") or std.mem.eql(u8, method_name, "ago") or
+            std.mem.eql(u8, method_name, "advance") or std.mem.eql(u8, method_name, "change")) return "Date";
+        if (std.mem.eql(u8, method_name, "year") or std.mem.eql(u8, method_name, "month") or
+            std.mem.eql(u8, method_name, "day") or std.mem.eql(u8, method_name, "wday") or
+            std.mem.eql(u8, method_name, "yday") or std.mem.eql(u8, method_name, "cwday")) return "Integer";
+        if (std.mem.eql(u8, method_name, "to_time")) return "Time";
     }
     if (std.mem.eql(u8, class_name, "Float")) {
         if (std.mem.eql(u8, method_name, "to_i") or
