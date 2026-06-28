@@ -123,6 +123,31 @@ fn collectPathsFromOutput(raw: []const u8, alloc: std.mem.Allocator, gem_only: b
     return all_paths.toOwnedSlice(alloc);
 }
 
+// B3 opt-in Ruby-at-index hybrid: generate RBI for the project's runtime-generated
+// methods (Rails DSL — scopes/associations/enums/state_machine/Devise — which are
+// statically invisible) by invoking tapioca in the project's bundle. The output lands in
+// `sorbet/rbi/` and is picked up by the normal `.rbi` scanner on cold-index — no consume
+// step needed. Best-effort and SILENT on failure: when there is no bundle, no tapioca, or
+// the generator errors, this no-ops, so refract keeps working with zero Ruby. Only invoked
+// when the `--rbi-gen` flag / `rbiGen` config is explicitly set (default OFF), preserving
+// the no-Ruby-on-PATH promise. Heavy (loads the Rails app) — runs once before cold-index.
+pub fn generateProjectRbi(io: std.Io, root_path: []const u8, alloc: std.mem.Allocator, timeout_ns: u64) void {
+    // Require a Gemfile.lock — there must be a bundle to run inside.
+    const lock = std.fs.path.join(alloc, &.{ root_path, "Gemfile.lock" }) catch return;
+    defer alloc.free(lock);
+    std.Io.Dir.cwd().access(std.Options.debug_io, lock, .{}) catch return;
+    // tapioca dsl emits RBI for Rails DSL methods into sorbet/rbi/dsl/. `--quiet` keeps it
+    // from polluting stdout; we ignore the output (the scanner reads the files).
+    const argv = &[_][]const u8{ "bundle", "exec", "tapioca", "dsl", "--quiet" };
+    if (runRubyCmd(io, root_path, alloc, argv, timeout_ns)) |out| {
+        alloc.free(out);
+        std.debug.print("refract: tapioca RBI generation complete\n", .{});
+    } else |_| {
+        // Silent no-op — tapioca absent / app failed to load / timed out. refract proceeds
+        // with whatever RBI already exists in the tree (possibly none).
+    }
+}
+
 pub fn findRbsStdlibPaths(io: std.Io, root_path: []const u8, alloc: std.mem.Allocator, timeout_ns: u64) ![][]u8 {
     // Try: ruby -e "require 'rbs'; puts RBS::EnvironmentLoader::DEFAULT_CORE_ROOT"
     // Also print the stdlib root (sibling of core/)

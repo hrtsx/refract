@@ -313,6 +313,7 @@ pub const Server = struct {
     disable_gem_index: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_rubocop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     disable_type_checker: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    rbi_gen: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // Set during cold-index when Gemfile.lock names rails/actionpack/activesupport;
     // gates Rails framework-receiver completion (params/request/…) off plain Ruby.
     has_rails: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -601,6 +602,12 @@ pub const Server = struct {
         if (cfg.get("disableRubocop")) |v| switch (v) {
             .bool => |b| {
                 self.disable_rubocop.store(b, .monotonic);
+            },
+            else => {},
+        };
+        if (cfg.get("rbiGen")) |v| switch (v) {
+            .bool => |b| {
+                self.rbi_gen.store(b, .monotonic);
             },
             else => {},
         };

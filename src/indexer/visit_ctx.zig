@@ -28,6 +28,13 @@ pub const VisitCtx = struct {
     namespace_stack: [64][]const u8 = undefined,
     namespace_stack_len: u8 = 0,
     module_function_mode: bool = false,
+    /// True while indexing a tapioca-generated RBI under `sorbet/rbi/`. RBI reopens app
+    /// constants that already exist in real source, so emitting their class/
+    /// module shells would create duplicate symbols that pollute receiver-type
+    /// resolution. Instead, their method defs are flattened onto the enclosing
+    /// class (parent_name = class) so the typed sigs surface as members without
+    /// a competing shell symbol.
+    is_rbi: bool = false,
     error_count: u32 = 0,
     /// Non-null while visiting inside a `create_table`/`change_table` block.
     /// Holds the camelized model name (e.g. "User" for table "users").

@@ -77,6 +77,7 @@ pub fn main(init: std.process.Init) !void {
     var server_log_path: ?[]const u8 = null;
     var server_log_level: u8 = 2;
     var server_disable_rubocop: bool = false;
+    var server_rbi_gen: bool = false;
     var server_disable_hot_index: bool = false;
     var server_disable_warmup: bool = false;
     var custom_db_path: ?[]const u8 = null;
@@ -127,6 +128,7 @@ pub fn main(init: std.process.Init) !void {
                     "  --verbose            Enable verbose logging\n" ++
                     "  --log-level 1|2|3|4  Set log verbosity (1=error … 4=debug)\n" ++
                     "  --disable-rubocop    Disable RuboCop diagnostics\n" ++
+                    "  --rbi-gen            Opt-in: run tapioca at index time to generate Rails-DSL RBI (needs a working bundle; no-op otherwise)\n" ++
                     "  --no-color           Disable colored output (or set NO_COLOR env var)\n" ++
                     "  --no-hot-index       Disable in-memory hot symbol index (A/B for benchmarks)\n" ++
                     "  --no-warmup          Disable hot index warmup on initialize (A/B for benchmarks)\n" ++
@@ -171,6 +173,8 @@ pub fn main(init: std.process.Init) !void {
             server_log_level = @max(1, @min(lvl, 4));
         } else if (std.mem.eql(u8, arg, "--disable-rubocop")) {
             server_disable_rubocop = true;
+        } else if (std.mem.eql(u8, arg, "--rbi-gen")) {
+            server_rbi_gen = true;
         } else if (std.mem.eql(u8, arg, "--no-color")) {
             flag_no_color = true;
         } else if (std.mem.eql(u8, arg, "--no-hot-index")) {
@@ -825,6 +829,7 @@ pub fn main(init: std.process.Init) !void {
                 try std.Io.File.stderr().writeStreamingAll(io, "refract: auto-index failed\n");
                 return error.IndexFailed;
             };
+            indexer.runFlowTypingPass(db);
             var out_buf: [160]u8 = undefined;
             var indexed_count: i64 = 0;
             if (db.prepare("SELECT COUNT(*) FROM files")) |s| {
@@ -857,6 +862,7 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (g_tmp_dir) |d| alloc.free(d);
     server.disable_rubocop.store(server_disable_rubocop, .monotonic);
+    server.rbi_gen.store(server_rbi_gen, .monotonic);
     server.hot_index_enabled.store(!server_disable_hot_index, .monotonic);
     server.warmup_enabled.store(!server_disable_warmup, .monotonic);
     if (flag_max_workers) |mw| {

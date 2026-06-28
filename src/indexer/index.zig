@@ -10,6 +10,7 @@ const resolve_mod = @import("resolution.zig");
 const semantic = @import("semantic.zig");
 const rails_dsl = @import("rails_dsl.zig");
 const type_inference = @import("type_inference.zig");
+pub const runFlowTypingPass = @import("flow_typing_pass.zig").runFlowTypingPass;
 const prism_util = @import("prism_util.zig");
 
 pub const LogSink = *const fn (ctx: ?*anyopaque, level: u8, msg: []const u8) void;
@@ -423,6 +424,7 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
             .alloc = alloc,
             .sem_tokens = std.ArrayList(SemToken).empty,
             .source = parse_source,
+            .is_rbi = std.mem.indexOf(u8, path, "sorbet/rbi/") != null,
         };
         defer ctx.sem_tokens.deinit(alloc);
 
@@ -552,6 +554,11 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     defer del_lv.finalize();
     del_lv.bind_int(1, real_file_id);
     _ = try del_lv.step();
+
+    const del_pr = try real_db.prepare("DELETE FROM pending_recv_returns WHERE file_id = ?");
+    defer del_pr.finalize();
+    del_pr.bind_int(1, real_file_id);
+    _ = try del_pr.step();
 
     // Domain tables (routes, i18n) are generated per-file in mem_db too; clear the
     // real_db copies for this file before re-inserting so a re-index doesn't leave
@@ -726,6 +733,38 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         _ = try ins_mx.step();
     }
 
+    // Copy pending_recv_returns (deferred `@ivar = recv.method` shapes; class_id references
+    // symbols, remapped via id_map). The post-index flow-typing pass consumes these.
+    const sel_pr = try mem_db.prepare(
+        \\SELECT class_id, ivar_name, line, col, recv_kind, recv_name, method_name
+        \\FROM pending_recv_returns WHERE file_id = ?
+    );
+    defer sel_pr.finalize();
+    sel_pr.bind_int(1, mem_file_id);
+
+    const ins_pr = try real_db.prepare(
+        \\INSERT INTO pending_recv_returns (file_id, class_id, ivar_name, line, col, recv_kind, recv_name, method_name)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    );
+    defer ins_pr.finalize();
+
+    while (try sel_pr.step()) {
+        ins_pr.reset();
+        ins_pr.bind_int(1, real_file_id);
+        if (sel_pr.column_type(0) != 5) {
+            const real_class = id_map.get(sel_pr.column_int(0)) orelse 0;
+            if (real_class != 0) ins_pr.bind_int(2, real_class) else ins_pr.bind_null(2);
+        } else ins_pr.bind_null(2);
+        ins_pr.bind_text(3, sel_pr.column_text(1));
+        ins_pr.bind_int(4, sel_pr.column_int(2));
+        ins_pr.bind_int(5, sel_pr.column_int(3));
+        ins_pr.bind_text(6, sel_pr.column_text(4));
+        const rn = sel_pr.column_text(5);
+        if (rn.len > 0) ins_pr.bind_text(7, rn) else ins_pr.bind_null(7);
+        ins_pr.bind_text(8, sel_pr.column_text(6));
+        _ = try ins_pr.step();
+    }
+
     // Copy sem_tokens
     const sel_st = try mem_db.prepare("SELECT blob, prev_blob FROM sem_tokens WHERE file_id = ?");
     defer sel_st.finalize();
@@ -866,6 +905,7 @@ pub fn indexSource(source: []const u8, path: []const u8, db: db_mod.Db, alloc: s
         .alloc = alloc,
         .sem_tokens = std.ArrayList(SemToken).empty,
         .source = src,
+        .is_rbi = std.mem.indexOf(u8, path, "sorbet/rbi/") != null,
     };
     defer ctx.sem_tokens.deinit(alloc);
 

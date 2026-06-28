@@ -132,6 +132,28 @@ pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
         ns_parent = ctx.alloc.dupe(u8, base_name[0..pos]) catch null;
     }
     const insert_name: []const u8 = fq_name orelse base_name;
+    // Merge-ingest for `.rbi`: skip the class shell (it reopens a real constant
+    // and a duplicate would pollute receiver-type resolution), but still push the
+    // class name so this file's nested-module method defs flatten onto it.
+    if (ctx.is_rbi) {
+        addSemToken(ctx, lc.line, lc.col, @intCast(short_name.len), 0);
+        const prev_class_r = ctx.current_class_id;
+        const prev_vis_r = ctx.current_visibility;
+        const prev_mf_r = ctx.module_function_mode;
+        ctx.current_visibility = "public";
+        ctx.module_function_mode = false;
+        const pushed_r = ctx.namespace_stack_len < 64;
+        if (pushed_r) {
+            ctx.namespace_stack[ctx.namespace_stack_len] = base_name;
+            ctx.namespace_stack_len += 1;
+        }
+        prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+        if (pushed_r and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
+        ctx.current_class_id = prev_class_r;
+        ctx.current_visibility = prev_vis_r;
+        ctx.module_function_mode = prev_mf_r;
+        return false;
+    }
     const doc = extractDocComment(ctx.source, cn.base.location.start, ctx.alloc);
     defer if (doc) |d| ctx.alloc.free(d);
     const class_pn: ?[]const u8 = if (ns_parent) |np| if (np.len > 0) np else null else null;
@@ -169,7 +191,12 @@ pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
     ctx.module_function_mode = false;
     const ns_pushed_class = ctx.namespace_stack_len < 64;
     if (ns_pushed_class) {
-        ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
+        // Push the full constant-path name (`Spree::Shipment`), not just the last segment
+        // (`Shipment`): a compound class name at top level otherwise parents its methods to
+        // the bare tail, so a namespaced receiver (`shipment` → `Spree::Shipment`) can't find
+        // them. `base_name` equals `short_name` for a simple `class Foo`, and carries the full
+        // path for `class A::B` — exactly what tapioca-generated `.rbi` emits.
+        ctx.namespace_stack[ctx.namespace_stack_len] = base_name;
         ctx.namespace_stack_len += 1;
     }
     prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
@@ -208,6 +235,30 @@ pub fn handleModule(ctx: *VisitCtx, n: *const prism.Node) bool {
         ns_parent = ctx.alloc.dupe(u8, base_name[0..pos]) catch null;
     }
     const insert_name: []const u8 = fq_name orelse base_name;
+    // Merge-ingest for `.rbi`: skip the module shell. A module nested in a class
+    // (tapioca's `GeneratedAttributeMethods` etc.) is flattened — its methods take
+    // the enclosing class as parent_name so they surface as members. A top-level
+    // module keeps its own name so its defs parent to it.
+    if (ctx.is_rbi) {
+        addSemToken(ctx, lc.line, lc.col, @intCast(short_name.len), 1);
+        const prev_class_r = ctx.current_class_id;
+        const prev_vis_r = ctx.current_visibility;
+        const prev_mf_r = ctx.module_function_mode;
+        ctx.current_visibility = "public";
+        ctx.module_function_mode = false;
+        const nested = ctx.namespace_stack_len > 0;
+        const push_r = !nested and ctx.namespace_stack_len < 64;
+        if (push_r) {
+            ctx.namespace_stack[ctx.namespace_stack_len] = base_name;
+            ctx.namespace_stack_len += 1;
+        }
+        prism.visit_child_nodes(n, visitor, @ptrCast(ctx));
+        if (push_r and ctx.namespace_stack_len > 0) ctx.namespace_stack_len -= 1;
+        ctx.current_class_id = prev_class_r;
+        ctx.current_visibility = prev_vis_r;
+        ctx.module_function_mode = prev_mf_r;
+        return false;
+    }
     const doc = extractDocComment(ctx.source, mn.base.location.start, ctx.alloc);
     defer if (doc) |d| ctx.alloc.free(d);
     const mod_pn: ?[]const u8 = if (ns_parent) |np| if (np.len > 0) np else null else null;
@@ -221,7 +272,8 @@ pub fn handleModule(ctx: *VisitCtx, n: *const prism.Node) bool {
     ctx.module_function_mode = false;
     const ns_pushed_mod = ctx.namespace_stack_len < 64;
     if (ns_pushed_mod) {
-        ctx.namespace_stack[ctx.namespace_stack_len] = short_name;
+        // Full constant-path name (`Spree::Config`), not the bare tail — see handleClass.
+        ctx.namespace_stack[ctx.namespace_stack_len] = base_name;
         ctx.namespace_stack_len += 1;
     }
     prism.visit_child_nodes(n, visitor, @ptrCast(ctx));

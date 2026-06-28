@@ -475,6 +475,14 @@ pub const BgCtx = struct {
 
         ensureRefractDir(self.root_path, alloc) catch {};
 
+        // B3 opt-in Ruby-at-index hybrid: when `--rbi-gen`/`rbiGen` is set, run tapioca to
+        // emit Rails-DSL RBI into the tree BEFORE the scan, so the generated `.rbi` is picked
+        // up by the normal scanner/Prism path. No-op when the flag is off or no bundle exists.
+        if (self.server_ptr.rbi_gen.load(.monotonic)) {
+            self.server_ptr.sendLogMessage(3, "refract: generating RBI (tapioca)…");
+            gems.generateProjectRbi(self.io, self.root_path, alloc, 600 * std.time.ns_per_s);
+        }
+
         const paths = scanner.scanWithNegations(self.root_path, alloc, self.extra_exclude_dirs, self.gitignore_negations) catch {
             self.server_ptr.sendLogMessage(1, "refract: workspace scan failed");
             self.server_ptr.sendProgressEnd();
@@ -670,6 +678,10 @@ pub const BgCtx = struct {
                 \\  AND kind NOT IN ('keyword','keyword_rest','rest','block')
                 \\  AND (SELECT name FROM symbols WHERE id = params.symbol_id) IN (SELECT callee FROM call_arg_types)
             ) catch {};
+            // Post-index flow-typing: resolve deferred `@ivar = recv.method` typings over the
+            // now-complete table (receiver-scoped, deterministic). Replaces the racy single-pass
+            // index-write lookup. Completion-only (confidence 50 < the 70 diagnostic gate).
+            indexer.runFlowTypingPass(db);
             self.server_ptr.db_mutex.unlock(std.Options.debug_io);
         }
 

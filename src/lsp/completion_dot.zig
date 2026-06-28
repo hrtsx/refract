@@ -76,6 +76,20 @@ fn qualifyClassName(self: *Server, alloc: std.mem.Allocator, bare: []const u8) ?
     return null;
 }
 
+// When a receiver is a homogeneous collection of an ActiveRecord model (`Array[Order]`
+// from a plural query/var), it behaves as a relation: it responds to AR query methods and
+// the model's named scopes, not just Enumerable. Returns the element model name when the
+// element is AR-shaped (has scopes/associations — excludes `Array[String]` etc.), else null.
+fn modelCollectionElement(self: *Server, alloc: std.mem.Allocator, class_name_raw: []const u8) ?[]u8 {
+    const elem = collectionElementType(class_name_raw);
+    if (elem.len == 0 or !std.ascii.isUpper(elem[0])) return null;
+    const st = self.cachedStmt("SELECT 1 FROM symbols WHERE (parent_name=?1 OR parent_name LIKE '%::'||?1) AND kind IN ('scope','association') LIMIT 1") catch return null;
+    defer st.reset();
+    st.bind_text(1, elem);
+    if (st.step() catch false) return alloc.dupe(u8, elem) catch null;
+    return null;
+}
+
 // The class/module symbol enclosing a cursor position (innermost by line). Returns
 // its id, or null when the cursor is at top level. Shared by the `@ivar`/`self`
 // receiver-typing branches.
@@ -1066,6 +1080,44 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try writeEscapedJson(wd, m);
                             try wd.writeAll(",\"kind\":2}");
                         }
+                    }
+                }
+                // Collection-of-AR-model receiver (a relation): `@orders`/`accounts`
+                // (Array[Model]) otherwise offer only Enumerable. A relation also responds to
+                // AR query methods and the element model's named scopes. Completion-only,
+                // Rails-gated. Not for index access (`arr[0].` already unwrapped to the element).
+                if (!index_element and self.has_rails.load(.monotonic)) {
+                    if (modelCollectionElement(self, ma, class_name_raw)) |elem| {
+                        const rel_methods = [_][]const u8{
+                            "where",     "where_not", "order",   "limit",     "offset",   "group",
+                            "having",    "joins",     "includes", "preload",  "eager_load", "references",
+                            "distinct",  "select",    "pluck",   "count",     "sum",      "average",
+                            "minimum",   "maximum",   "exists?", "any?",      "none?",    "many?",
+                            "find",      "find_by",   "find_each", "first",   "last",     "take",
+                            "reload",    "to_a",      "ids",     "merge",     "or",       "unscope",
+                        };
+                        for (rel_methods) |m| {
+                            if (seen_names.contains(m)) continue;
+                            if (!first_dot) try wd.writeByte(',');
+                            first_dot = false;
+                            try wd.writeAll("{\"label\":");
+                            try writeEscapedJson(wd, m);
+                            try wd.writeAll(",\"kind\":2}");
+                        }
+                        if (self.cachedStmt("SELECT DISTINCT name FROM symbols WHERE (parent_name=?1 OR parent_name LIKE '%::'||?1) AND kind='scope'")) |ss| {
+                            defer ss.reset();
+                            ss.bind_text(1, elem);
+                            while (ss.step() catch false) {
+                                const sn = ss.column_text(0);
+                                if (sn.len == 0 or seen_names.contains(sn)) continue;
+                                try seen_names.put(try ma.dupe(u8, sn), {});
+                                if (!first_dot) try wd.writeByte(',');
+                                first_dot = false;
+                                try wd.writeAll("{\"label\":");
+                                try writeEscapedJson(wd, sn);
+                                try wd.writeAll(",\"kind\":2}");
+                            }
+                        } else |_| {}
                     }
                 }
                 try addStdlibCompletions(wd, class_name, &first_dot, line, character);

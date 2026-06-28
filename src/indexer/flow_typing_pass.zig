@@ -1,0 +1,91 @@
+const std = @import("std");
+const db_mod = @import("../db.zig");
+
+// Post-index flow-typing pass. Resolves the deferred `@ivar = recv.method` typings
+// captured in pending_recv_returns over the COMPLETE symbol table — looking up the
+// method's return type SCOPED to the receiver's class. Replaces the old single-pass
+// index-write lookup that read a partially-built table (racy) and grabbed any same-named
+// def's return (imprecise). Runs once after a full cold index, under the db mutex.
+//
+// Determinism: every selection has a content-stable ORDER BY, so the result is identical
+// regardless of the nondeterministic parallel-index row order. FP-safety: writes land at
+// confidence 50 (< the 70 diagnostic gate), so diagnostics never read these types — no new
+// false positives. Idempotent: only updates rows whose type_hint is still NULL.
+pub fn runFlowTypingPass(db: db_mod.Db) void {
+    // self / implicit-self receiver: `@x = helper` / `@x = self.helper` — resolve the
+    // method's return on the enclosing class (and its `%::Name` namespaced form).
+    db.exec(
+        \\UPDATE local_vars SET type_hint = (
+        \\    SELECT s.return_type FROM symbols s, pending_recv_returns p, symbols cls
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='self' AND cls.id=p.class_id
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=cls.name OR s.parent_name LIKE '%::'||cls.name)
+        \\    ORDER BY (s.parent_name=cls.name) DESC, s.return_type LIMIT 1
+        \\  ), confidence=50
+        \\WHERE local_vars.type_hint IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_recv_returns p, symbols cls, symbols s
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='self' AND cls.id=p.class_id
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=cls.name OR s.parent_name LIKE '%::'||cls.name));
+    ) catch {};
+
+    // constant receiver: `@x = SomeService.call` — resolve the method's return on the named
+    // class (class method / scope, falling back to instance defs).
+    db.exec(
+        \\UPDATE local_vars SET type_hint = (
+        \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='const'
+        \\      AND s.name=p.method_name AND s.kind IN ('classdef','scope','def') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=p.recv_name OR s.parent_name LIKE '%::'||p.recv_name)
+        \\    ORDER BY (s.parent_name=p.recv_name) DESC, s.return_type LIMIT 1
+        \\  ), confidence=50
+        \\WHERE local_vars.type_hint IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_recv_returns p, symbols s
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='const'
+        \\      AND s.name=p.method_name AND s.kind IN ('classdef','scope','def') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=p.recv_name OR s.parent_name LIKE '%::'||p.recv_name));
+    ) catch {};
+
+    // instance-variable receiver: `@x = @y.method` — resolve @y's recorded type (same class
+    // scope), then the method's return on that class. Precise (vs the unscoped fallback) so
+    // it runs first. @y must already be typed (inline new/finder, or the self/const passes).
+    db.exec(
+        \\UPDATE local_vars SET type_hint = (
+        \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='ivar'
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1)
+        \\        OR s.parent_name LIKE '%::'||(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1))
+        \\    ORDER BY s.return_type LIMIT 1
+        \\  ), confidence=50
+        \\WHERE local_vars.type_hint IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_recv_returns p, symbols s
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='ivar'
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1)
+        \\        OR s.parent_name LIKE '%::'||(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1)));
+    ) catch {};
+
+    // Unscoped fallback (recv type unresolved — an ivar/local/chain receiver). Pick the
+    // method's return type from ANY class deterministically (content ORDER BY) — the old
+    // single-pass behavior, but now stable. Lower confidence (40) marks it imprecise. Only
+    // touches rows the scoped passes above left NULL.
+    db.exec(
+        \\UPDATE local_vars SET type_hint = (
+        \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND s.name=p.method_name AND s.kind IN ('def','classdef','scope') AND s.return_type IS NOT NULL
+        \\    ORDER BY s.return_type LIMIT 1
+        \\  ), confidence=40
+        \\WHERE local_vars.type_hint IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_recv_returns p, symbols s
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND s.name=p.method_name AND s.kind IN ('def','classdef','scope') AND s.return_type IS NOT NULL);
+    ) catch {};
+}

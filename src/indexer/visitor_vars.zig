@@ -230,37 +230,72 @@ pub fn handleInstanceVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
         }
     }
 
-    // TypeProf-lite: @ivar = some_method → look up return_type from symbols
-    var iv_inserted = false;
+    // Deferred receiver-scoped typing: `@ivar = recv.method` (non-constructor). The method's
+    // return type depends on recv's class, which may live in another not-yet-indexed file —
+    // resolving it during the single parallel pass is both racy (partial table) and imprecise
+    // (the old code grabbed ANY same-named def's return). Capture the (recv, method) shape; the
+    // post-index flow-typing pass resolves it deterministically over the complete table.
     if (type_hint == null) {
         if (iv.value) |val| {
             if (val.*.type == prism.NODE_CALL) {
                 const call: *const prism.CallNode = @ptrCast(@alignCast(val));
                 const mname = resolveConstant(ctx.parser, call.name);
-                if (!std.mem.eql(u8, mname, "new")) {
-                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name = ? AND kind = 'def' " ++
-                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                    {
-                        defer rs.finalize();
-                        rs.bind_text(1, mname);
-                        if (rs.step() catch false) {
-                            const rt = rs.column_text(0);
-                            if (rt.len > 0) {
-                                insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.current_class_id) catch {
-                                    ctx.error_count += 1;
-                                };
-                                iv_inserted = true;
-                            }
-                        }
-                    } else |_| {}
-                }
+                if (!std.mem.eql(u8, mname, "new")) capturePendingRecvReturn(ctx, call, name, lc, mname);
             }
         }
     }
-    if (!iv_inserted) insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.current_class_id) catch {
+    insertLocalVarClassId(ctx.db, ctx.file_id, name, lc.line, lc.col, type_hint, 0, ctx.current_class_id) catch {
         ctx.error_count += 1;
     };
     return true;
+}
+
+// Record an `@ivar = recv.method` assignment for deterministic post-index resolution.
+// Only receivers whose type the flow-typing pass can resolve are captured (self/implicit
+// self, a constant class, or another instance variable); other receivers are left untyped
+// (the completion-time naming heuristic still covers conventionally-named ivars).
+fn capturePendingRecvReturn(ctx: *VisitCtx, call: *const prism.CallNode, ivar_name: []const u8, lc: anytype, method_name: []const u8) void {
+    // recv_kind drives how the post-index pass resolves the method's class. `other`
+    // (unrecognized receiver: a local var, a chain, …) falls back to an unscoped — but
+    // still deterministic — return-type lookup, preserving the old coverage.
+    var recv_kind: []const u8 = "other";
+    var recv_name: []const u8 = "";
+    if (call.receiver) |rcv| {
+        switch (rcv.*.type) {
+            prism.NODE_SELF => recv_kind = "self",
+            prism.NODE_CONSTANT => {
+                const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(rcv));
+                recv_kind = "const";
+                recv_name = resolveConstant(ctx.parser, rc.name);
+            },
+            prism.NODE_CONSTANT_PATH => {
+                if (type_hints.qualifyConstPath(ctx.parser, rcv)) |q| {
+                    recv_kind = "const";
+                    recv_name = q;
+                }
+            },
+            prism.NODE_INSTANCE_VAR_READ => {
+                const ir: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(rcv));
+                recv_kind = "ivar";
+                recv_name = resolveConstant(ctx.parser, ir.name);
+            },
+            else => {},
+        }
+    } else {
+        recv_kind = "self"; // implicit self
+    }
+    if (ctx.db.prepare("INSERT INTO pending_recv_returns (file_id,class_id,ivar_name,line,col,recv_kind,recv_name,method_name) VALUES (?,?,?,?,?,?,?,?)")) |ps| {
+        defer ps.finalize();
+        ps.bind_int(1, ctx.file_id);
+        if (ctx.current_class_id) |cid| ps.bind_int(2, cid) else ps.bind_null(2);
+        ps.bind_text(3, ivar_name);
+        ps.bind_int(4, lc.line);
+        ps.bind_int(5, @intCast(lc.col));
+        ps.bind_text(6, recv_kind);
+        if (recv_name.len > 0) ps.bind_text(7, recv_name) else ps.bind_null(7);
+        ps.bind_text(8, method_name);
+        _ = ps.step() catch {};
+    } else |_| {}
 }
 
 pub fn handleInstanceVarOrAndWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
