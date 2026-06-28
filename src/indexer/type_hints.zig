@@ -130,9 +130,18 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
         }
     }
     if (!std.mem.eql(u8, mname, "new")) {
-        if (recv.*.type != prism.NODE_CONSTANT) return null;
-        const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(recv));
-        const class_name = resolveConstant(parser, rc.name);
+        // Receiver is the class: bare (`CreditCard`) or namespaced
+        // (`Spree::CreditCard`, a CONSTANT_PATH). Solidus/engine code is almost all
+        // namespaced, so handle both — otherwise `let(:x){ Spree::Model.find(..) }`
+        // types nothing and the spec receiver stays uncompletable.
+        const class_name: []const u8 = switch (recv.*.type) {
+            prism.NODE_CONSTANT => blk: {
+                const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(recv));
+                break :blk resolveConstant(parser, rc.name);
+            },
+            prism.NODE_CONSTANT_PATH => qualifyConstPath(parser, recv) orelse return null,
+            else => return null,
+        };
         const ar_singular = [_][]const u8{ "find", "first", "last", "create", "create!", "build", "find_by", "find_by!", "take" };
         for (ar_singular) |m| {
             if (std.mem.eql(u8, mname, m)) return class_name;

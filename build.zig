@@ -213,6 +213,13 @@ pub fn build(b: *std.Build) void {
 
     const test_lsp_step = b.step("test:lsp", "Run all LSP protocol tests");
 
+    // Each protocol test binary spawns refract subprocesses. Running all of them in
+    // parallel storms the host with refract children that contend on stdout pipes and
+    // DB locks — the ~50% macOS-CI flake (truncated stdout → NoSymbolResponse). Chain
+    // the aggregate `test` run steps so the binaries execute sequentially (≤1 refract
+    // child at a time). The fast per-binary named steps (test:lsp-completion, …) stay
+    // independent for targeted runs.
+    var prev_run: ?*std.Build.Step = null;
     inline for (proto_test_files) |entry| {
         const mod = b.createModule(.{
             .root_source_file = b.path(entry[0]),
@@ -224,6 +231,8 @@ pub fn build(b: *std.Build) void {
         const t = b.addTest(.{ .root_module = mod });
         t.step.dependOn(b.getInstallStep());
         const run_t = b.addRunArtifact(t);
+        if (prev_run) |p| run_t.step.dependOn(p);
+        prev_run = &run_t.step;
         test_step.dependOn(&run_t.step);
         const named_step = b.step(entry[1], "Run " ++ entry[1]);
         named_step.dependOn(&run_t.step);

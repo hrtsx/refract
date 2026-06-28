@@ -92,6 +92,9 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
             ctx.error_count += 1;
         };
     }
+    if (cn.receiver == null and std.mem.eql(u8, mname, "alias_attribute")) {
+        rails_dsl.insertAliasAttribute(ctx, cn);
+    }
     if (cn.receiver == null and std.mem.eql(u8, mname, "enum")) {
         insertEnumSymbols(ctx, cn) catch {
             ctx.error_count += 1;
@@ -136,6 +139,11 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
         insertRailsDslSymbols(ctx, cn, mname) catch {
             ctx.error_count += 1;
         };
+    }
+    // described_class typing fires for both `describe X` and `RSpec.describe X` (the
+    // latter has a receiver, so the receiverless DSL path above does not cover it).
+    if (std.mem.eql(u8, mname, "describe") or std.mem.eql(u8, mname, "context")) {
+        rails_dsl.insertDescribedClass(ctx, cn);
     }
     if (cn.receiver == null and std.mem.eql(u8, mname, "alias_method")) {
         if (cn.arguments != null) {

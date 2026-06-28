@@ -132,7 +132,7 @@ fn returnTypeOnClass(self: *Server, method: []const u8, class: []const u8) ?[]u8
     // is qualified (`Chain::B`); the `LIKE '%::'||?2` clause lets the bare class name
     // match the qualified owner so chains resolve across namespaces.
     const ret_stmt = self.cachedStmt(
-        \\SELECT return_type FROM symbols WHERE name=?1 AND kind='def' AND return_type IS NOT NULL
+        \\SELECT return_type FROM symbols WHERE name=?1 AND kind IN ('def','association','scope') AND return_type IS NOT NULL
         \\  AND (parent_name=?2 OR parent_name LIKE '%::'||?2 OR (parent_name IS NULL AND file_id IN (
         \\    SELECT file_id FROM symbols WHERE kind IN ('class','module')
         \\      AND (name=?2 OR name LIKE '%::'||?2)))) LIMIT 1
@@ -563,7 +563,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
                             \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
                             \\FROM symbols s
-                            \\WHERE s.kind='def' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\WHERE s.kind IN ('def','association') AND (s.parent_name = ?1 OR s.parent_name = ?3 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
                             \\)))
                         ) catch null
@@ -583,7 +583,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
                             \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
                             \\FROM symbols s
-                            \\WHERE s.kind='def' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\WHERE s.kind IN ('def','association') AND (s.parent_name = ?1 OR s.parent_name = ?3 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
                             \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
                         ) catch null;
@@ -591,7 +591,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     const cls_stmt_hoisted = if (is_constant_recv)
                         self.cachedStmt(
                             \\SELECT s.name, s.doc FROM symbols s
-                            \\WHERE s.kind='classdef' AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
+                            \\WHERE s.kind IN ('classdef','scope') AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
                             \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
                         ) catch null
@@ -653,6 +653,19 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         own_stmt.reset();
                         own_stmt.bind_text(1, current);
                         own_stmt.bind_text(2, current);
+                        // Schema columns of namespaced engine models (Spree::CreditCard) are
+                        // parented to the flat camelized table name (SpreeCreditCard) because
+                        // tableNameToModel cannot know the engine's table_name_prefix. Bridge by
+                        // also matching the flattened (::-stripped) form of the resolved class.
+                        var flat_buf: [256]u8 = undefined;
+                        var flat_len: usize = 0;
+                        for (current) |ch| {
+                            if (ch == ':') continue;
+                            if (flat_len >= flat_buf.len) break;
+                            flat_buf[flat_len] = ch;
+                            flat_len += 1;
+                        }
+                        own_stmt.bind_text(3, flat_buf[0..flat_len]);
                         while (try own_stmt.step()) {
                             const mname2 = own_stmt.column_text(0);
                             if (seen_names.contains(mname2)) continue;
@@ -799,7 +812,13 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         // the superclass into it), so it would walk the lexical parent
                         // instead of the ancestor. `superclass` is written for every
                         // class, falling back to parent_name when absent.
-                        const par_stmt = try self.cachedStmt("SELECT COALESCE(superclass, parent_name) FROM symbols WHERE kind='class' AND name=? AND COALESCE(superclass, parent_name) IS NOT NULL LIMIT 1");
+                        // A class reopened across files (Spree decorates models in many
+                        // files) yields several rows; reopens carry no `< Super`, so their
+                        // superclass is NULL and COALESCE falls back to the namespace
+                        // (parent_name=`Spree`), dead-ending the ancestor walk before
+                        // ApplicationRecord and silently dropping the AR base API. Prefer
+                        // the row that actually records a superclass.
+                        const par_stmt = try self.cachedStmt("SELECT COALESCE(superclass, parent_name) FROM symbols WHERE kind='class' AND name=? AND COALESCE(superclass, parent_name) IS NOT NULL ORDER BY (superclass IS NULL) LIMIT 1");
                         defer par_stmt.reset();
                         par_stmt.bind_text(1, current);
                         if (try par_stmt.step()) {

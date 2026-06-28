@@ -46,6 +46,12 @@ COMPLETION = [
   ["complete collection first (a.first.)",  "compl_index.rb",           7, 13, %w[greet_name age_years]],
   ["complete bare-rescue var (e.)",         "compl_rescue.rb",          7,  4, %w[diag_detail]],
   ["complete attr_reader via ivar type",    "compl_attr.rb",           12, 12, %w[credit]],
+  ["complete has_many/belongs_to assoc",    "compl_assoc.rb",          15,  2, %w[posts account]],
+  ["complete scope as class method",        "compl_assoc.rb",          16,  7, %w[active]],
+  ["complete assoc chain (m.posts.first.)", "compl_assoc.rb",          17, 14, %w[title]],
+  ["complete described_class.new instance", "compl_rspec.rb",           9, 24, %w[add subtract]],
+  ["complete RSpec let-typed receiver",     "compl_rspec.rb",          10,  9, %w[add subtract]],
+  ["complete alias_attribute reader",       "compl_alias.rb",           6,  3, %w[kind_name name]],
 ]
 
 # Dirty-buffer completion: the receiver's type only exists in an UNSAVED edit
@@ -153,7 +159,7 @@ fixtures = %w[accuracy_main.rb accuracy_lib.rb accuracy_helper.rb accuracy_model
               accuracy_rails_assoc.rb diag_bugs.rb
               compl_local.rb compl_const.rb compl_inherit.rb
               compl_bareconst.rb compl_param.rb compl_nested_inherit.rb compl_dirty.rb
-              compl_chain.rb compl_index.rb compl_rescue.rb compl_attr.rb]
+              compl_chain.rb compl_index.rb compl_rescue.rb compl_attr.rb compl_assoc.rb compl_rspec.rb compl_alias.rb]
 opens = {}
 fixtures.each do |f|
   abs = File.join(ROOT, f)

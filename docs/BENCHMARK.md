@@ -171,7 +171,7 @@ fixture set (`scripts/bench/fixtures/`). Driven by `scripts/bench/lsp_multiop.rb
 | operation | metric | **refract** | ruby-lsp | solargraph |
 |---|---|:-:|:-:|:-:|
 | hover | correct / total | **6 / 6** | 4 / 6 | 5 / 6 |
-| completion | mean member recall (12 probes) | **1.00** | 0.33 † | 0.00 † |
+| completion | mean member recall (17 probes) | **1.00** | 0.33 † | 0.00 † |
 | references | mean recall / precision | **1.00 / 1.00** | 0.75 / 0.53 | **1.00 / 1.00** |
 | rename | mean recall / precision | **1.00 / 1.00** | 0.00 / 0.00 | **1.00 / 1.00** |
 | diagnostics | semantic bugs caught / 6 | **6 / 6** | 1 / 6 | 3 / 6 |
@@ -184,7 +184,7 @@ fixture set. The fixtures intentionally include namespace collisions — two
 - **hover** — refract resolves every probe (method calls, attr readers, class and
   cross-file singleton defs); ruby-lsp returns empty on chained/cross-file
   receivers, solargraph misses one.
-- **completion** — refract leads (**1.00** over 12 probes). The fixture set spans
+- **completion** — refract leads (**1.00** over 17 probes). The fixture set spans
   local-var, constant, in-file inherited, **bare-constant class objects**
   (`x = Foo; x.` → class methods), **typed method parameters** (`def f(acct:
   Account); acct.`), **nested cross-class inheritance** (namespaced
@@ -249,13 +249,34 @@ diagnostics-safe:
    rare in sampled code. The honest takeaway is a *correctness/coverage* gain, not a
    recall jump.
 
-Where a receiver resolves, members — including injected universal `Object`/`Kernel`
-methods (`nil?`, `is_a?`, `tap`, …) and `Enumerable`/`Comparable` — complete
-correctly. The residual gap, now that arg-free chains, collections and accessors are
-handled, is dominated by **argument-bearing** method-return chains
-(`posts.where(x).first.`) and untyped params beyond the naming heuristic — both need
-a full flow-typing engine. Homebrew (refract-only, 120 probes) lands `member_recall
-0.183 / resolution 0.667` on the same harness.
+5. **Surface indexed DSL methods + RSpec receiver typing (post-rc1).** The biggest
+   real-repo lever found by measurement. refract already indexes Rails associations
+   (`has_many`/`belongs_to` → `kind="association"`) and scopes (`kind="scope"`) from
+   *project source* with correct `parent_name`+`return_type`, but completion's member
+   queries filtered `kind='def'`/`'classdef'` and dropped them — so `order.promotions`
+   missed despite being in the DB. Widening the member queries to include
+   `association` (instance) and `scope` (class) surfaces them (no new indexing).
+   Plus RSpec typing: `let(:x){Bar.new}`/`subject` → typed local, `describe Foo` →
+   `described_class → Foo`, and `alias_attribute :new, :old` → a completable reader/
+   writer pair. Measured, **gem-free**: solidus `0.217 → 0.292 → 0.325`,
+   mastodon `0.20 → 0.268` (≈+34–50%). RSpec locals are inserted below the
+   confidence-70 diagnostic gate, so they feed completion only — FP-safe (verified:
+   solidus `semantic_total=0` after the change).
+
+   **Disproven on the way:** enabling full gem indexing on solidus moved recall
+   `0.217 → 0.20` (noise). The dominant misses are *not* missing gem methods — they
+   are framework methods generated at runtime from the project's own DSL (AR
+   associations/attributes), which exist as no static `def` in any gem. Surfacing the
+   project's indexed DSL symbols is the lever; gem indexing is not.
+
+Where a receiver resolves, members complete correctly (incl. universal `Object`/
+`Kernel` and `Enumerable`/`Comparable`). The residual gap is now dominated by **AR
+schema-column attributes** (`credit_card.cc_type`) — which need the host app's
+`db/schema.rb` (a Rails *engine* like solidus has none, so its column methods are
+structurally absent) — plus argument-bearing method-return chains and dynamic
+(`method_missing`/`define_method`) methods, all needing flow typing or a running
+framework. Homebrew (refract-only, 120 probes) lands `member_recall 0.18 / resolution
+0.67` on the same harness.
 - **references / rename** — scored as precision/recall over the known reference and
   edit sets, `includeDeclaration=true`. refract is **1.00 / 1.00** on both: it binds
   each method/constant reference to a single definition (`refs.def_id`) by resolving

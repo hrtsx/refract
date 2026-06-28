@@ -1,6 +1,7 @@
 const std = @import("std");
 const prism = @import("../prism.zig");
 const index = @import("index.zig");
+const type_hints = @import("type_hints.zig");
 
 const VisitCtx = index.VisitCtx;
 const insertLocalVar = index.insertLocalVar;
@@ -33,6 +34,31 @@ pub fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
             try insertSymbol(ctx, "def", writer_name, lc.line, lc.col, null);
         }
     }
+}
+
+// `alias_attribute :new_name, :old_name` — AR synthesizes a reader/writer pair for
+// the new name. Emit both as completable `def` symbols on the enclosing class so
+// `obj.new_name`/`obj.new_name=` complete. (No static def exists otherwise.)
+pub fn insertAliasAttribute(ctx: *VisitCtx, cn: *const prism.CallNode) void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    if (args.size == 0) return;
+    const a0 = args.nodes[0];
+    if (a0.*.type != prism.NODE_SYMBOL) return;
+    const s0: *const prism.SymbolNode = @ptrCast(@alignCast(a0));
+    if (s0.unescaped.source == null) return;
+    const new_name = s0.unescaped.source[0..s0.unescaped.length];
+    const lc = locationLineCol(ctx.parser, a0.*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    insertSymbolWithReturn(ctx, "def", new_name, lc.line, lc.col, null, "alias_attribute", parent, null) catch {
+        ctx.error_count += 1;
+    };
+    var wbuf: [192]u8 = undefined;
+    const writer = std.fmt.bufPrint(&wbuf, "{s}=", .{new_name}) catch return;
+    insertSymbolWithReturn(ctx, "def", writer, lc.line, lc.col, null, "alias_attribute", parent, null) catch {
+        ctx.error_count += 1;
+    };
 }
 
 pub fn isRailsDsl(mname: []const u8) bool {
@@ -457,6 +483,25 @@ fn snakeToCamel(snake: []const u8, buf: []u8) ?[]u8 {
     return buf[0..out];
 }
 
+// RSpec `describe SomeClass` / `RSpec.describe SomeClass` — record `described_class`
+// as a local typed to the class under test, so `described_class.`/`described_class.new.`
+// complete. Called for both the receiverless and `RSpec.`-qualified forms.
+pub fn insertDescribedClass(ctx: *VisitCtx, cn: *const prism.CallNode) void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    if (args.size == 0) return;
+    const a0 = args.nodes[0];
+    if (a0.*.type != prism.NODE_CONSTANT and a0.*.type != prism.NODE_CONSTANT_PATH) return;
+    if (type_hints.qualifyConstPath(ctx.parser, a0)) |cls| {
+        if (cls.len > 0) {
+            const lcl = locationLineCol(ctx.parser, cn.base.location.start);
+            // confidence 60 (< the 70 diagnostic gate): feeds completion only, so a
+            // class-method call on described_class can never produce a semantic FP.
+            insertLocalVar(ctx.db, ctx.file_id, "described_class", lcl.line, lcl.col, cls, 60, ctx.scope_id) catch {};
+        }
+    }
+}
+
 pub fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
     // default_scope takes a block/lambda, not a named symbol arg — handle before arg checks
     if (std.mem.eql(u8, mname, "default_scope")) {
@@ -465,6 +510,34 @@ pub fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: [
         const parent_ds = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf_ds) else null;
         try insertSymbolWithReturn(ctx, "scope", "default_scope", lc.line, lc.col, null, mname, parent_ds, null);
         return;
+    }
+    // RSpec receiver typing (completion-only typed locals). `let(:x) { Bar.new }` /
+    // `subject { Bar.new }` record a local `x`/`subject` typed from the block's last
+    // expression; `describe SomeClass` records `described_class -> SomeClass`. These
+    // make `x.`/`subject.`/`described_class.` complete on the right receiver.
+    if (std.mem.eql(u8, mname, "let") or std.mem.eql(u8, mname, "let!") or std.mem.eql(u8, mname, "subject")) {
+        var lv_name: ?[]const u8 = if (std.mem.eql(u8, mname, "subject")) "subject" else null;
+        if (cn.arguments != null and cn.arguments[0].arguments.size > 0) {
+            const a0 = cn.arguments[0].arguments.nodes[0];
+            if (a0.*.type == prism.NODE_SYMBOL) {
+                const s: *const prism.SymbolNode = @ptrCast(@alignCast(a0));
+                if (s.unescaped.source != null) lv_name = s.unescaped.source[0..s.unescaped.length];
+            }
+        }
+        if (lv_name) |nm| {
+            if (cn.block != null and cn.block.?.*.type == prism.NODE_BLOCK) {
+                const blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block));
+                if (blk.body != null and blk.body.?.*.type == prism.NODE_STATEMENTS) {
+                    const stmts: *const prism.StatementsNode = @ptrCast(@alignCast(blk.body));
+                    if (stmts.body.size > 0) {
+                        if (type_hints.extractNewCallType(ctx.parser, stmts.body.nodes[stmts.body.size - 1])) |rt| {
+                            const lcl = locationLineCol(ctx.parser, cn.base.location.start);
+                            insertLocalVar(ctx.db, ctx.file_id, nm, lcl.line, lcl.col, rt, 60, ctx.scope_id) catch {};
+                        }
+                    }
+                }
+            }
+        }
     }
     if (cn.arguments == null) return;
     const args_list = cn.arguments[0].arguments;
