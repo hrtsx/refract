@@ -44,6 +44,22 @@ fn isFactoryBuilder(m: []const u8) bool {
     return false;
 }
 
+// FactoryBot list builders (no receiver): yield an array of the factory's model.
+fn isFactoryListBuilder(m: []const u8) bool {
+    const names = [_][]const u8{ "create_list", "build_list", "build_stubbed_list", "create_pair", "build_pair" };
+    for (names) |n| if (std.mem.eql(u8, m, n)) return true;
+    return false;
+}
+
+// Fabrication's `Fabricate.times(n, :sym)` / `Fabricate.build_times(n, :sym)` — a
+// constant-`Fabricate`-receiver call yielding an array of the factory's model.
+fn isFabricateTimes(parser: *prism.Parser, recv: *const prism.Node, m: []const u8) bool {
+    if (!std.mem.eql(u8, m, "times") and !std.mem.eql(u8, m, "build_times")) return false;
+    if (recv.*.type != prism.NODE_CONSTANT) return false;
+    const rc: *const prism.ConstReadNode = @ptrCast(@alignCast(recv));
+    return std.mem.eql(u8, resolveConstant(parser, rc.name), "Fabricate");
+}
+
 /// Build the fully-qualified name (`A::B::Post`) of a constant or constant-path
 /// receiver into a thread-local buffer. Returns the borrowed result (valid until
 /// the next call on this thread — callers consume it immediately). Returns null
@@ -154,6 +170,29 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
             if (fs.unescaped.source != null) {
                 const sym = fs.unescaped.source[0..fs.unescaped.length];
                 if (camelizeSnake(sym, &factory_class_buf)) |c| return c;
+            }
+        }
+    }
+    // Factory list/times builders → an array of the factory's model:
+    // `create_list(:user, 3)` / `build_list(:user, 3)` (FactoryBot, no receiver) and
+    // `Fabricate.times(2, :account)` (Fabrication). The factory name is the first
+    // SYMBOL argument (position varies: leading in *_list, trailing in .times).
+    if (call.arguments != null) {
+        const list_bare = call.receiver == null and isFactoryListBuilder(mname);
+        const fab_times = if (call.receiver) |r| isFabricateTimes(parser, r, mname) else false;
+        if (list_bare or fab_times) {
+            const largs = call.arguments[0].arguments;
+            var k: usize = 0;
+            while (k < largs.size) : (k += 1) {
+                if (largs.nodes[k].*.type != prism.NODE_SYMBOL) continue;
+                const ls: *const prism.SymbolNode = @ptrCast(@alignCast(largs.nodes[k]));
+                if (ls.unescaped.source != null) {
+                    const sym = ls.unescaped.source[0..ls.unescaped.length];
+                    if (camelizeSnake(sym, &factory_class_buf)) |c| {
+                        return std.fmt.bufPrint(&ar_plural_buf, "[{s}]", .{c}) catch null;
+                    }
+                }
+                break;
             }
         }
     }

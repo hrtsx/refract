@@ -560,6 +560,11 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     del_pr.bind_int(1, real_file_id);
     _ = try del_pr.step();
 
+    const del_pcr = try real_db.prepare("DELETE FROM pending_chain_returns WHERE file_id = ?");
+    defer del_pcr.finalize();
+    del_pcr.bind_int(1, real_file_id);
+    _ = try del_pcr.step();
+
     // Domain tables (routes, i18n) are generated per-file in mem_db too; clear the
     // real_db copies for this file before re-inserting so a re-index doesn't leave
     // stale rows.
@@ -763,6 +768,29 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         if (rn.len > 0) ins_pr.bind_text(7, rn) else ins_pr.bind_null(7);
         ins_pr.bind_text(8, sel_pr.column_text(6));
         _ = try ins_pr.step();
+    }
+
+    // Copy pending_chain_returns (const-rooted AR chain defs; keyed on line/col, no id
+    // remap needed). The post-index flow-typing pass confirms the root is AR-shaped.
+    const sel_pcr = try mem_db.prepare(
+        \\SELECT line, col, root_const, singular FROM pending_chain_returns WHERE file_id = ?
+    );
+    defer sel_pcr.finalize();
+    sel_pcr.bind_int(1, mem_file_id);
+
+    const ins_pcr = try real_db.prepare(
+        \\INSERT INTO pending_chain_returns (file_id, line, col, root_const, singular) VALUES (?, ?, ?, ?, ?)
+    );
+    defer ins_pcr.finalize();
+
+    while (try sel_pcr.step()) {
+        ins_pcr.reset();
+        ins_pcr.bind_int(1, real_file_id);
+        ins_pcr.bind_int(2, sel_pcr.column_int(0));
+        ins_pcr.bind_int(3, sel_pcr.column_int(1));
+        ins_pcr.bind_text(4, sel_pcr.column_text(2));
+        ins_pcr.bind_int(5, sel_pcr.column_int(3));
+        _ = try ins_pcr.step();
     }
 
     // Copy sem_tokens

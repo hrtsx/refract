@@ -284,6 +284,66 @@ pub fn handleModule(ctx: *VisitCtx, n: *const prism.Node) bool {
     return false;
 }
 
+// Terminals that collapse an AR relation to a scalar/array of non-models — NOT a
+// relation, so a chain ending here carries no `[Model]` type and is not captured.
+fn isScalarTerminal(m: []const u8) bool {
+    const set = [_][]const u8{
+        "count", "sum",     "average", "minimum", "maximum",  "pluck",  "pick",
+        "ids",   "exists?", "any?",    "many?",   "none?",    "empty?", "size",
+        "length", "calculate", "distinct_count", "to_json", "to_a?",
+    };
+    for (set) |s| if (std.mem.eql(u8, m, s)) return true;
+    return false;
+}
+
+// Terminals that return a single record (`Model`), not a relation (`[Model]`).
+fn isSingularTerminal(m: []const u8) bool {
+    const set = [_][]const u8{
+        "find",  "first", "last",  "take",  "find_by", "find_by!", "sole",
+        "second", "third", "find_sole_by", "first!", "last!", "take!",
+    };
+    for (set) |s| if (std.mem.eql(u8, m, s)) return true;
+    return false;
+}
+
+// A method whose body tail is a constant-rooted call chain (`Account.remote
+// .non_automated.where.not(...)`) returns a relation of the root model. The root's
+// AR-shape can't be trusted until the whole table is built, so stage the chain for the
+// post-index pass. Only the root const + a plural/singular terminal flag are needed —
+// every intermediate segment (builtin AR method or custom scope) preserves the relation.
+// Fires only when precise return-type inference already failed, so it never overrides it.
+fn captureChainReturn(ctx: *VisitCtx, tail: *const prism.Node, line: i32, col: u32) void {
+    if (tail.*.type != prism.NODE_CALL) return;
+    const tc: *const prism.CallNode = @ptrCast(@alignCast(tail));
+    const term = resolveConstant(ctx.parser, tc.name);
+    if (isScalarTerminal(term)) return;
+    const singular: i64 = if (isSingularTerminal(term)) 1 else 0;
+    // Walk left through the receiver chain to the root; a chain rooted at an implicit
+    // self (no receiver) has no constant to key on, so bail.
+    var r: ?*const prism.Node = tc.receiver orelse return;
+    while (r) |rn| {
+        if (rn.*.type != prism.NODE_CALL) break;
+        const rc: *const prism.CallNode = @ptrCast(@alignCast(rn));
+        r = rc.receiver orelse return;
+    }
+    const root = r orelse return;
+    const root_name: []const u8 = switch (root.*.type) {
+        prism.NODE_CONSTANT => resolveConstant(ctx.parser, @as(*const prism.ConstReadNode, @ptrCast(@alignCast(root))).name),
+        prism.NODE_CONSTANT_PATH => type_hints.qualifyConstPath(ctx.parser, root) orelse return,
+        else => return,
+    };
+    if (root_name.len == 0 or !std.ascii.isUpper(root_name[0])) return;
+    if (ctx.db.prepare("INSERT INTO pending_chain_returns (file_id,line,col,root_const,singular) VALUES (?,?,?,?,?)")) |ps| {
+        defer ps.finalize();
+        ps.bind_int(1, ctx.file_id);
+        ps.bind_int(2, line);
+        ps.bind_int(3, @intCast(col));
+        ps.bind_text(4, root_name);
+        ps.bind_int(5, singular);
+        _ = ps.step() catch {};
+    } else |_| {}
+}
+
 pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
     const dn: *const prism.DefNode = @ptrCast(@alignCast(n));
     const lc = locationLineCol(ctx.parser, dn.name_loc.start);
@@ -404,6 +464,7 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                             }
                         }
                     }
+                    captureChainReturn(ctx, last_node, lc.line, lc.col);
                 } else if (last_node.*.type == prism.NODE_INSTANCE_VAR_READ) {
                     // Memoized accessor: `def account; @account; end` → return the
                     // ivar's recorded type. Unlocks chains/locals through accessors.
@@ -445,15 +506,18 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
             } else if (body.*.type == prism.NODE_CALL) {
                 const bc: *const prism.CallNode = @ptrCast(@alignCast(body));
                 const bm = resolveConstant(ctx.parser, bc.name);
+                var endless_set = false;
                 if (bc.receiver) |recv| {
                     if (inferReceiverType(ctx, recv)) |recv_type| {
                         if (lookupMethodReturn(ctx.db, recv_type, bm)) |rt| {
                             updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                                 ctx.error_count += 1;
                             };
+                            endless_set = true;
                         }
                     }
                 }
+                if (!endless_set) captureChainReturn(ctx, body, lc.line, lc.col);
             } else if (body.*.type == prism.NODE_INSTANCE_VAR_READ) {
                 if (ivarReturnType(ctx, body)) |rt| {
                     updateSymbolReturnType(ctx.db, sym_id, rt) catch {

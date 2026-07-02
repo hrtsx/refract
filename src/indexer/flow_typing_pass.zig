@@ -12,6 +12,27 @@ const db_mod = @import("../db.zig");
 // confidence 50 (< the 70 diagnostic gate), so diagnostics never read these types — no new
 // false positives. Idempotent: only updates rows whose type_hint is still NULL.
 pub fn runFlowTypingPass(db: db_mod.Db) void {
+    // Const-rooted AR chain defs (`def prunable_accounts; Account.remote.where...; end`).
+    // Runs FIRST so a chain-typed method's return feeds the const-receiver local pass below
+    // (`x = Foo.chain_method` → `x : [Model]`). Gated on the root being AR-shaped (owns a
+    // scope/association), so a plain `Config.load.freeze` on a non-model types nothing — the
+    // gate is the FP guard. `[Root]` for a relation terminal, `Root` for a singular one.
+    db.exec(
+        \\UPDATE symbols SET return_type = (
+        \\    SELECT CASE WHEN p.singular=1 THEN p.root_const ELSE '['||p.root_const||']' END
+        \\    FROM pending_chain_returns p
+        \\    WHERE p.file_id=symbols.file_id AND p.line=symbols.line AND p.col=symbols.col
+        \\      AND EXISTS (SELECT 1 FROM symbols m WHERE m.kind IN ('scope','association')
+        \\        AND (m.parent_name=p.root_const OR m.parent_name LIKE '%::'||p.root_const))
+        \\    LIMIT 1
+        \\  )
+        \\WHERE kind IN ('def','classdef') AND return_type IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_chain_returns p
+        \\    WHERE p.file_id=symbols.file_id AND p.line=symbols.line AND p.col=symbols.col
+        \\      AND EXISTS (SELECT 1 FROM symbols m WHERE m.kind IN ('scope','association')
+        \\        AND (m.parent_name=p.root_const OR m.parent_name LIKE '%::'||p.root_const)));
+    ) catch {};
+
     // self / implicit-self receiver: `@x = helper` / `@x = self.helper` — resolve the
     // method's return on the enclosing class (and its `%::Name` namespaced form).
     db.exec(

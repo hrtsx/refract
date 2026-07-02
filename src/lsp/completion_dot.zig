@@ -569,6 +569,22 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 }
             }
 
+            // Implicit-self method/scope/association call as a receiver: inside
+            // `class Account`, a bare `prunable_accounts.find_each` / `emails.each`
+            // calls an own scope/association/method on self. Resolve its recorded
+            // return type on the enclosing class — precise (only fires when that class
+            // actually declares the member with a return type), so it beats the naming
+            // guess below and never mis-resolves a plain local. Completion-only.
+            if (chain_class_buf == null and !th_hit and recv_word.len > 0 and
+                recv_word[0] != '@' and recv_word[0] != '$' and !std.ascii.isUpper(recv_word[0]) and
+                !std.mem.eql(u8, recv_word, "self") and std.mem.indexOf(u8, recv_word, "::") == null)
+            {
+                if (enclosingClassName(self, self.alloc, fdc_id, cursor_line_db)) |enc| {
+                    defer self.alloc.free(enc);
+                    chain_class_buf = returnTypeOnClass(self, recv_word, enc);
+                }
+            }
+
             // Bare-constant alias marker: a local typed `Foo.class` (from `x = Foo`)
             // holds the class object, so complete its singleton/class methods like a
             // constant receiver. Strip the marker and route through the constant path.

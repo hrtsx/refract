@@ -207,6 +207,21 @@ pub fn init(self: Db) DbError!void {
         \\)
     );
     self.exec("CREATE INDEX IF NOT EXISTS idx_pending_recv_file ON pending_recv_returns(file_id)") catch {};
+    // A method whose body tail is a constant-rooted call chain (`Account.remote
+    // .non_automated.where...`). The concrete return type — `[Root]` for a relation
+    // terminal, `Root` for a singular one — can only be trusted once the whole symbol
+    // table is built (the root must be confirmed AR-shaped), so the chain is staged
+    // here per (file,line,col) of the def and resolved by the post-index pass.
+    try self.exec(
+        \\CREATE TABLE IF NOT EXISTS pending_chain_returns (
+        \\  file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        \\  line       INTEGER NOT NULL,
+        \\  col        INTEGER NOT NULL,
+        \\  root_const TEXT NOT NULL,
+        \\  singular   INTEGER NOT NULL DEFAULT 0
+        \\)
+    );
+    self.exec("CREATE INDEX IF NOT EXISTS idx_pending_chain_file ON pending_chain_returns(file_id)") catch {};
     // Migration guards for gem indexing (Phase 8)
     self.execMigration("ALTER TABLE files ADD COLUMN is_gem INTEGER NOT NULL DEFAULT 0");
     self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {}; // migration
