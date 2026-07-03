@@ -253,7 +253,7 @@ pub fn stripArrayBrackets(t: ?[]const u8) ?[]const u8 {
     return t;
 }
 
-fn blockElemType(mname: []const u8, receiver_type: ?[]const u8) ?[]const u8 {
+pub fn blockElemType(mname: []const u8, receiver_type: ?[]const u8) ?[]const u8 {
     if (std.mem.eql(u8, mname, "times") or
         std.mem.eql(u8, mname, "upto") or
         std.mem.eql(u8, mname, "downto") or
@@ -379,6 +379,34 @@ pub fn insertBlockParams(ctx: *VisitCtx, block: *const prism.BlockNode, receiver
     }
 }
 
+// Stage a block param whose iterable receiver has no resolvable type at index time, for the
+// post-index flow pass to type once the receiver's local/ivar type is known. Records only the
+// first required param (the element); index-time typing already covers the special-slot cases
+// (each_with_index/each_with_object/inject) when the receiver type is immediately known.
+pub fn capturePendingBlockYield(ctx: *VisitCtx, block: *const prism.BlockNode, recv_kind: []const u8, recv_name: []const u8, method_name: []const u8) void {
+    if (block.parameters == null) return;
+    const param_generic: *const prism.Node = @ptrCast(@alignCast(block.parameters));
+    if (param_generic.*.type != prism.NODE_BLOCK_PARAMETERS) return;
+    const params_node: *const prism.BlockParametersNode = @ptrCast(@alignCast(block.parameters));
+    if (params_node.parameters == null) return;
+    const params_list: *const prism.ParametersNode = @ptrCast(@alignCast(params_node.parameters));
+    if (params_list.requireds.size == 0) return;
+    const p: *const prism.RequiredParamNode = @ptrCast(@alignCast(params_list.requireds.nodes[0]));
+    const pname = resolveConstant(ctx.parser, p.name);
+    const lc = locationLineCol(ctx.parser, p.base.location.start);
+    if (ctx.db.prepare("INSERT INTO pending_block_yields (file_id,param_name,line,col,recv_kind,recv_name,method_name) VALUES (?,?,?,?,?,?,?)")) |ps| {
+        defer ps.finalize();
+        ps.bind_int(1, ctx.file_id);
+        ps.bind_text(2, pname);
+        ps.bind_int(3, lc.line);
+        ps.bind_int(4, @intCast(lc.col));
+        ps.bind_text(5, recv_kind);
+        ps.bind_text(6, recv_name);
+        ps.bind_text(7, method_name);
+        _ = ps.step() catch {};
+    } else |_| {}
+}
+
 fn inferAssocReturnType(alloc: std.mem.Allocator, mname: []const u8, assoc_name: []const u8, class_name_override: ?[]const u8) ?[]u8 {
     const is_plural = std.mem.eql(u8, mname, "has_many") or
         std.mem.eql(u8, mname, "has_and_belongs_to_many") or
@@ -460,6 +488,18 @@ pub fn tableNameToModel(table: []const u8, buf: []u8) ?[]u8 {
         // Now camelCase below using temp singular
         return snakeToCamel(singular, buf);
     }
+    // Sibilant `-es` plurals where English REQUIRES the `es` (stem ends in ss/x/ch/sh):
+    // `addresses`→`address`, `boxes`→`box`, `matches`→`match`, `washes`→`wash`. Must precede the
+    // bare trailing-`s` rule, else `addresses`→`addresse` mis-parents every column of that table
+    // (the `Address` model never matches `Addresse`, so `address.created_at` silently vanishes).
+    // Deliberately excludes bare `ses`/`zes` — those are ambiguous (`statuses`→status but
+    // `houses`→house; `sizes`→size but `quizzes`→quiz), so stripping `es` there would break the
+    // common `-e`+s words. The safe sibilant set is a pure coverage gain with no regression.
+    inline for (.{ "sses", "xes", "ches", "shes" }) |suf| {
+        if (std.mem.endsWith(u8, table, suf) and table.len > suf.len) {
+            return snakeToCamel(table[0 .. table.len - 2], buf); // drop "es"
+        }
+    }
     if (std.mem.endsWith(u8, table, "s") and table.len > 1) {
         singular = table[0 .. table.len - 1];
     }
@@ -503,8 +543,41 @@ pub fn insertDescribedClass(ctx: *VisitCtx, cn: *const prism.CallNode) void {
             var marker_buf: [256]u8 = undefined;
             const hint = std.fmt.bufPrint(&marker_buf, "{s}.class", .{cls}) catch cls;
             insertLocalVar(ctx.db, ctx.file_id, "described_class", lcl.line, lcl.col, hint, 60, ctx.scope_id) catch {};
+            // Remember the class under test so `subject`/`let` blocks that instantiate it
+            // (`described_class.new`) can type their receiver to an instance.
+            if (cls.len <= ctx.described_class_buf.len) {
+                @memcpy(ctx.described_class_buf[0..cls.len], cls);
+                ctx.described_class = ctx.described_class_buf[0..cls.len];
+            }
         }
     }
+}
+
+threadlocal var described_block_buf: [256]u8 = undefined;
+
+// `described_class` / `described_class.new` inside a `let`/`subject` block → the class
+// under test recorded by insertDescribedClass. `.new` yields an instance (bare class
+// name); bare `described_class` holds the class object (`.class` marker). Null when the
+// file had no `describe SomeClass`, or the block returns anything else.
+fn isDescribedClassRecv(parser: *prism.Parser, node: *const prism.Node) bool {
+    if (node.*.type != prism.NODE_CALL) return false;
+    const c: *const prism.CallNode = @ptrCast(@alignCast(node));
+    if (c.receiver != null) return false;
+    return std.mem.eql(u8, resolveConstant(parser, c.name), "described_class");
+}
+
+fn describedClassBlockType(ctx: *VisitCtx, node: *const prism.Node) ?[]const u8 {
+    const cls = ctx.described_class orelse return null;
+    if (isDescribedClassRecv(ctx.parser, node)) {
+        return std.fmt.bufPrint(&described_block_buf, "{s}.class", .{cls}) catch null;
+    }
+    if (node.*.type != prism.NODE_CALL) return null;
+    const call: *const prism.CallNode = @ptrCast(@alignCast(node));
+    if (std.mem.eql(u8, resolveConstant(ctx.parser, call.name), "new")) {
+        const recv = call.receiver orelse return null;
+        if (isDescribedClassRecv(ctx.parser, recv)) return cls;
+    }
+    return null;
 }
 
 pub fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
@@ -535,7 +608,12 @@ pub fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: [
                 if (blk.body != null and blk.body.?.*.type == prism.NODE_STATEMENTS) {
                     const stmts: *const prism.StatementsNode = @ptrCast(@alignCast(blk.body));
                     if (stmts.body.size > 0) {
-                        if (type_hints.extractNewCallType(ctx.parser, stmts.body.nodes[stmts.body.size - 1])) |rt| {
+                        const last = stmts.body.nodes[stmts.body.size - 1];
+                        // `described_class.new` (or bare `described_class`) types the receiver
+                        // from the class under test when the generic finder can't (its
+                        // receiver is a call, not a constant).
+                        const rt_opt = type_hints.extractNewCallType(ctx.parser, last) orelse describedClassBlockType(ctx, last);
+                        if (rt_opt) |rt| {
                             const lcl = locationLineCol(ctx.parser, cn.base.location.start);
                             insertLocalVar(ctx.db, ctx.file_id, nm, lcl.line, lcl.col, rt, 60, ctx.scope_id) catch {};
                         }

@@ -1,0 +1,76 @@
+# Curated ActiveRecord::Base instance surface. Reached on model instances through the
+# superclass walk (User < ApplicationRecord < ActiveRecord::Base). Returns are kept coarse
+# (bool / self / untyped) where the precise Rails type adds no completion value.
+class ActiveRecord::Base
+  # Persistence
+  def save: (?untyped opts) -> bool
+  def save!: (?untyped opts) -> bool
+  def update: (untyped attributes) -> bool
+  def update!: (untyped attributes) -> bool
+  def update_attribute: (untyped name, untyped value) -> bool
+  def update_column: (untyped name, untyped value) -> bool
+  def update_columns: (untyped attributes) -> bool
+  def destroy: () -> self
+  def destroy!: () -> self
+  def delete: () -> self
+  def reload: (?untyped options) -> self
+  def touch: (*untyped names) -> bool
+  def increment: (untyped attribute, ?untyped by) -> self
+  def increment!: (untyped attribute, ?untyped by) -> self
+  def decrement: (untyped attribute, ?untyped by) -> self
+  def decrement!: (untyped attribute, ?untyped by) -> self
+  def toggle: (untyped attribute) -> self
+  def toggle!: (untyped attribute) -> bool
+  def becomes: (untyped klass) -> untyped
+  def becomes!: (untyped klass) -> untyped
+
+  # State
+  def new_record?: () -> bool
+  def persisted?: () -> bool
+  def destroyed?: () -> bool
+  def previously_new_record?: () -> bool
+  def frozen?: () -> bool
+  def readonly?: () -> bool
+
+  # Attributes
+  def attributes: () -> Hash
+  def attribute_names: () -> Array
+  def assign_attributes: (untyped new_attributes) -> untyped
+  def read_attribute: (untyped attr_name) -> untyped
+  def write_attribute: (untyped attr_name, untyped value) -> untyped
+  def []: (untyped attr_name) -> untyped
+  def []=: (untyped attr_name, untyped value) -> untyped
+  def id: () -> untyped
+  def id=: (untyped value) -> untyped
+  def to_param: () -> String?
+  def to_key: () -> Array?
+  def has_attribute?: (untyped attr_name) -> bool
+
+  # Dirty tracking
+  def changed?: () -> bool
+  def changed: () -> Array
+  def changes: () -> Hash
+  def changed_attributes: () -> Hash
+  def previous_changes: () -> Hash
+  def saved_changes: () -> Hash
+  def saved_changes?: () -> bool
+  def attribute_changed?: (untyped attr) -> bool
+  def will_save_change_to_attribute?: (untyped attr) -> bool
+  def restore_attributes: (?untyped attributes) -> untyped
+
+  # Validation
+  def valid?: (?untyped context) -> bool
+  def invalid?: (?untyped context) -> bool
+  def validate: (?untyped context) -> bool
+  def errors: () -> untyped
+
+  # Introspection
+  def model_name: () -> untyped
+  def persisted: () -> bool
+  def inspect: () -> String
+  def to_json: (?untyped options) -> String
+  def as_json: (?untyped options) -> Hash
+  def with_lock: (?untyped lock) { () -> untyped } -> untyped
+  def lock!: (?untyped lock) -> self
+  def transaction: (?untyped options) { () -> untyped } -> untyped
+end

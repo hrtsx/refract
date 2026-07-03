@@ -222,6 +222,22 @@ pub fn init(self: Db) DbError!void {
         \\)
     );
     self.exec("CREATE INDEX IF NOT EXISTS idx_pending_chain_file ON pending_chain_returns(file_id)") catch {};
+    // A block param whose iterable receiver (`xs.each { |x| }`, `@xs.map { |x| }`) has no type
+    // yet at index time — the receiver local/ivar is often typed only by the post-index flow pass
+    // (e.g. `xs = fetch_all`). Staged per (file,line,col) of the param and resolved after the
+    // receiver-return passes complete, applying element extraction over the finished table.
+    try self.exec(
+        \\CREATE TABLE IF NOT EXISTS pending_block_yields (
+        \\  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        \\  param_name  TEXT NOT NULL,
+        \\  line        INTEGER NOT NULL,
+        \\  col         INTEGER NOT NULL,
+        \\  recv_kind   TEXT NOT NULL,
+        \\  recv_name   TEXT NOT NULL,
+        \\  method_name TEXT NOT NULL
+        \\)
+    );
+    self.exec("CREATE INDEX IF NOT EXISTS idx_pending_block_file ON pending_block_yields(file_id)") catch {};
     // Migration guards for gem indexing (Phase 8)
     self.execMigration("ALTER TABLE files ADD COLUMN is_gem INTEGER NOT NULL DEFAULT 0");
     self.exec("CREATE INDEX IF NOT EXISTS idx_files_isgem ON files(is_gem)") catch {}; // migration

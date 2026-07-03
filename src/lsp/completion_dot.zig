@@ -380,18 +380,20 @@ fn guessReceiverClass(self: *Server, recv_word: []const u8) ?[]u8 {
     const stripped = stripConventionPrefix(recv_word);
     const bases = [_][]const u8{ recv_word, stripped };
     for (bases) |base| {
-        if (lookupClassByCamel(self, base)) |c| return c;
+        // For a PLURAL-looking word, prefer the collection shape: singular class → Array[C].
+        // This must run BEFORE the bare match — otherwise `pending_registrations` could match a
+        // (rare) plural class name and resolve to a SINGULAR receiver, losing the relation/
+        // Enumerable surface (`.all?`/`.map`). Member completion on Array[C] offers Enumerable +
+        // the element's scopes instead of scalar C methods.
         const sing = singularizeIdent(base, &sbuf);
         if (!std.mem.eql(u8, sing, base)) {
             if (lookupClassByCamel(self, sing)) |c| {
-                // base is plural and matched its singular class — the receiver is a
-                // collection of C (`accounts`, `emails`), so type it as Array[C].
-                // Member completion then offers Enumerable methods (first/last/map/
-                // all?/select/…) and element access instead of scalar C methods.
                 defer self.alloc.free(c);
                 return std.fmt.allocPrint(self.alloc, "Array[{s}]", .{c}) catch null;
             }
         }
+        // Singular word (or plural with no singular class): match the name directly.
+        if (lookupClassByCamel(self, base)) |c| return c;
     }
     return null;
 }
@@ -1111,6 +1113,12 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             "minimum",   "maximum",   "exists?", "any?",      "none?",    "many?",
                             "find",      "find_by",   "find_each", "first",   "last",     "take",
                             "reload",    "to_a",      "ids",     "merge",     "or",       "unscope",
+                            // Enumerable core — a relation is enumerable; these were absent and
+                            // caused `xs.all?`/`.map`/`.each` completion misses on collections.
+                            "all?",      "map",       "each",    "reject",    "detect",   "filter",
+                            "flat_map",  "filter_map", "each_with_index", "each_with_object", "reduce", "inject",
+                            "min_by",    "max_by",    "sort_by", "group_by",  "partition", "find_index",
+                            "include?",  "empty?",    "size",    "length",    "tally",    "each_slice",
                         };
                         for (rel_methods) |m| {
                             if (seen_names.contains(m)) continue;

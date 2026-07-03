@@ -205,6 +205,21 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
     if (recv.*.type == prism.NODE_CALL) {
         if (extractNewCallType(parser, recv)) |inner_type| {
             if (lookupStdlibReturn(inner_type, mname)) |rt| return rt;
+            // AR relation chains: `Model.where(..).order(..)` — the const handling below
+            // only sees a constant receiver, so a chained call receiver that is itself a
+            // relation (`[Model]`) must propagate. Relation-preserving methods keep the
+            // `[Model]` shape (so `.all?`/`.map`/Enumerable surface); singular terminals
+            // (`.first`/`.find`/…) yield one `Model`.
+            if (inner_type.len > 2 and inner_type[0] == '[' and inner_type[inner_type.len - 1] == ']') {
+                const rel_keep = [_][]const u8{ "where", "all", "order", "limit", "includes", "joins", "preload", "eager_load", "select", "group", "having", "left_joins", "left_outer_joins", "distinct", "not", "merge", "unscope", "reorder", "except", "or", "extending", "none", "readonly", "references", "rewhere", "excluding", "without", "reselect" };
+                for (rel_keep) |m| {
+                    if (std.mem.eql(u8, mname, m)) return inner_type;
+                }
+                const rel_singular = [_][]const u8{ "first", "last", "find", "find_by", "find_by!", "take", "sole", "find_sole_by", "second", "third" };
+                for (rel_singular) |m| {
+                    if (std.mem.eql(u8, mname, m)) return inner_type[1 .. inner_type.len - 1];
+                }
+            }
         }
     }
     if (!std.mem.eql(u8, mname, "new")) {

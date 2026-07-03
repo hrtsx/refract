@@ -40,6 +40,11 @@ pub const VisitCtx = struct {
     /// Holds the camelized model name (e.g. "User" for table "users").
     schema_table: ?[]const u8 = null,
     schema_table_buf: [256]u8 = undefined,
+    /// Non-null after an `RSpec.describe SomeClass`/`describe SomeClass` in this file —
+    /// the class under test. Lets `subject { described_class.new }` and
+    /// `let(:x) { described_class.new }` type their receiver to an instance of it.
+    described_class: ?[]const u8 = null,
+    described_class_buf: [256]u8 = undefined,
 };
 
 /// Record a semantic token (1-based line). OOM drops the token — highlighting

@@ -894,29 +894,24 @@ pub fn handleLocalVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
         }
     }
 
-    // TypeProf-lite: x = some_method → look up return_type from symbols
-    if (type_hint == null) {
+    // Deferred receiver-scoped typing for `x = recv.method` (non-constructor): capture the
+    // (recv, method) shape and resolve it in the post-index flow-typing pass over the COMPLETE
+    // symbol table — receiver-scoped (self→enclosing class, const→named class, ivar→ivar type)
+    // at confidence 50. Restricted to PRECISE receivers (implicit/explicit self, a constant, or an
+    // @ivar): an unresolvable receiver (`x = local.foo` / a chain) would fall to the unscoped
+    // any-same-named-return guess, which types the local to an arbitrary class and offers the
+    // wrong members — measured to depress member_recall. Leaving those untyped is strictly better
+    // for recall. Mirrors the `@ivar = recv.method` capture in handleInstanceVarWrite.
+    if (!inserted and type_hint == null) {
         if (lv.value) |val| {
             if (val.*.type == prism.NODE_CALL) {
                 const call: *const prism.CallNode = @ptrCast(@alignCast(val));
                 const mname = resolveConstant(ctx.parser, call.name);
-                if (!std.mem.eql(u8, mname, "new")) {
-                    if (ctx.db.prepare("SELECT return_type FROM symbols WHERE name = ? AND kind = 'def' " ++
-                        "AND return_type IS NOT NULL LIMIT 1")) |rs|
-                    {
-                        defer rs.finalize();
-                        rs.bind_text(1, mname);
-                        if (rs.step() catch false) {
-                            const rt = rs.column_text(0);
-                            if (rt.len > 0) {
-                                insertLocalVar(ctx.db, ctx.file_id, name, lc.line, lc.col, rt, 0, ctx.scope_id) catch {
-                                    ctx.error_count += 1;
-                                };
-                                inserted = true;
-                            }
-                        }
-                    } else |_| {}
-                }
+                const precise_recv = call.receiver == null or switch (call.receiver.?.*.type) {
+                    prism.NODE_SELF, prism.NODE_CONSTANT, prism.NODE_CONSTANT_PATH, prism.NODE_INSTANCE_VAR_READ => true,
+                    else => false,
+                };
+                if (precise_recv and !std.mem.eql(u8, mname, "new")) capturePendingRecvReturn(ctx, call, name, lc, mname);
             }
         }
     }

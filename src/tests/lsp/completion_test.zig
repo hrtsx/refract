@@ -999,6 +999,80 @@ test "chained dot completion" {
     try std.testing.expect(items.items.len > 0);
 }
 
+test "local from method return completes member (interproc)" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_local_interproc";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/interproc.rb",
+        .data =
+        \\class Widget
+        \\  def spin_the_widget; end
+        \\end
+        \\class Factory
+        \\  def build_widget
+        \\    Widget.new
+        \\  end
+        \\  def go
+        \\    w = build_widget
+        \\    w.
+        \\  end
+        \\end
+        ,
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/interproc.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/interproc.rb\"},\"position\":{\"line\":9,\"character\":6}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    const comp_resp = getResponseById(responses, 2) orelse return error.NoCompletionResponse;
+    const obj = switch (comp_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const result_obj = switch (result) {
+        .object => |o| o,
+        else => return error.ResultNotObject,
+    };
+    const items = switch (result_obj.get("items") orelse return error.NoItems) {
+        .array => |a| a,
+        else => return error.ItemsNotArray,
+    };
+    var found = false;
+    for (items.items) |it| {
+        const io = switch (it) {
+            .object => |o| o,
+            else => continue,
+        };
+        const label = switch (io.get("label") orelse continue) {
+            .string => |st| st,
+            else => continue,
+        };
+        if (std.mem.eql(u8, label, "spin_the_widget")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "completion ranked prefix first" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p23_rank";

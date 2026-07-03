@@ -1,5 +1,6 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
+const rails_dsl = @import("rails_dsl.zig");
 
 // Post-index flow-typing pass. Resolves the deferred `@ivar = recv.method` typings
 // captured in pending_recv_returns over the COMPLETE symbol table — looking up the
@@ -109,4 +110,60 @@ pub fn runFlowTypingPass(db: db_mod.Db) void {
         \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
         \\      AND s.name=p.method_name AND s.kind IN ('def','classdef','scope') AND s.return_type IS NOT NULL);
     ) catch {};
+
+    // Block-yield element typing: `xs.each { |x| }` / `@xs.map { |x| }` where the receiver's type
+    // was unknown at index time (typed only by the local/ivar passes above). Resolves the
+    // receiver's now-complete type and applies element extraction. Runs LAST so it sees every
+    // type the passes above wrote. Confidence 50 (< 70 gate) and NULL-gated — completion-only,
+    // never an FP, never overrides a higher-confidence index-time typing.
+    resolveBlockYields(db);
+}
+
+fn dupSlice(buf: []u8, s: []const u8) ?[]const u8 {
+    if (s.len == 0 or s.len > buf.len) return null;
+    @memcpy(buf[0..s.len], s);
+    return buf[0..s.len];
+}
+
+fn resolveBlockYields(db: db_mod.Db) void {
+    const sel = db.prepare("SELECT file_id, param_name, line, col, recv_name, method_name FROM pending_block_yields") catch return;
+    defer sel.finalize();
+    const recv_stmt = db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY confidence DESC, line DESC LIMIT 1") catch return;
+    defer recv_stmt.finalize();
+    const upd = db.prepare("UPDATE local_vars SET type_hint=?, confidence=50 WHERE file_id=? AND name=? AND line=? AND col=? AND type_hint IS NULL") catch return;
+    defer upd.finalize();
+    while (sel.step() catch false) {
+        const file_id = sel.column_int(0);
+        var pbuf: [128]u8 = undefined;
+        var rbuf: [128]u8 = undefined;
+        var mbuf: [64]u8 = undefined;
+        const pname = dupSlice(&pbuf, sel.column_text(1)) orelse continue;
+        const line = sel.column_int(2);
+        const col = sel.column_int(3);
+        const rname = dupSlice(&rbuf, sel.column_text(4)) orelse continue;
+        const method = dupSlice(&mbuf, sel.column_text(5)) orelse continue;
+        recv_stmt.reset();
+        recv_stmt.bind_int(1, file_id);
+        recv_stmt.bind_text(2, rname);
+        var tbuf: [128]u8 = undefined;
+        const recv_type: ?[]const u8 = blk: {
+            if (recv_stmt.step() catch false) {
+                const t = recv_stmt.column_text(0);
+                if (t.len > 0 and t.len <= tbuf.len) {
+                    @memcpy(tbuf[0..t.len], t);
+                    break :blk tbuf[0..t.len];
+                }
+            }
+            break :blk null;
+        };
+        const rt = recv_type orelse continue;
+        const elem = rails_dsl.blockElemType(method, rt) orelse continue;
+        upd.reset();
+        upd.bind_text(1, elem);
+        upd.bind_int(2, file_id);
+        upd.bind_text(3, pname);
+        upd.bind_int(4, line);
+        upd.bind_int(5, col);
+        _ = upd.step() catch {};
+    }
 }

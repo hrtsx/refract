@@ -60,6 +60,7 @@ const insertAttachedSymbols = rails_dsl.insertAttachedSymbols;
 const insertAttrSymbols = rails_dsl.insertAttrSymbols;
 const insertAttributeSymbol = rails_dsl.insertAttributeSymbol;
 const insertBlockParams = rails_dsl.insertBlockParams;
+const capturePendingBlockYield = rails_dsl.capturePendingBlockYield;
 const insertComposedOfSymbols = rails_dsl.insertComposedOfSymbols;
 const insertDelegatedTypeSymbols = rails_dsl.insertDelegatedTypeSymbols;
 const insertEnumSymbols = rails_dsl.insertEnumSymbols;
@@ -504,10 +505,16 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                             };
                         }
                     }
+                } else if (!db_hit and cn.block.?.*.type == prism.NODE_BLOCK) {
+                    // Receiver local has no type yet — the post-index pass may type it (`xs = fetch`).
+                    // Stage the block param for deterministic resolution over the finished table.
+                    const bnp: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+                    capturePendingBlockYield(ctx, bnp, "local", rv_name, mname);
                 }
             } else if (recv.*.type == prism.NODE_INSTANCE_VAR_READ) {
                 const rv: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(recv));
                 const rv_name = resolveConstant(ctx.parser, rv.name);
+                var ivar_hit = false;
                 if (ctx.db.prepare("SELECT type_hint FROM local_vars WHERE file_id=? AND name=? AND type_hint IS NOT NULL ORDER BY line DESC LIMIT 1")) |lv| {
                     defer lv.finalize();
                     lv.bind_int(1, ctx.file_id);
@@ -515,6 +522,7 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                     if (lv.step() catch false) {
                         const ivar_type = lv.column_text(0);
                         if (ivar_type.len > 0 and cn.block.?.*.type == prism.NODE_BLOCK) {
+                            ivar_hit = true;
                             const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
                             insertBlockParams(ctx, block_node, ivar_type, mname, accum_t) catch {
                                 ctx.error_count += 1;
@@ -522,6 +530,10 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                         }
                     }
                 } else |_| {}
+                if (!ivar_hit and cn.block.?.*.type == prism.NODE_BLOCK) {
+                    const bnp: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+                    capturePendingBlockYield(ctx, bnp, "ivar", rv_name, mname);
+                }
             } else if (recv.*.type == prism.NODE_CALL) {
                 const outer_call: *const prism.CallNode = @ptrCast(@alignCast(recv));
                 if (outer_call.receiver) |outer_recv| {
@@ -721,6 +733,14 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                             };
                         }
                     }
+                }
+            } else if (std.mem.eql(u8, mname, "timestamps")) {
+                // `t.timestamps` generates the created_at/updated_at datetime columns — the most
+                // common column pair, invisible if not synthesized (schemaColumnType has no entry
+                // for `timestamps`). Emit both readers so `model.created_at` completes.
+                const lc_ts = locationLineCol(ctx.parser, cn.message_loc.start);
+                inline for (.{ "created_at", "updated_at" }) |ts| {
+                    insertSymbolWithReturn(ctx, "def", ts, lc_ts.line, lc_ts.col, "Time", "column", model_name, null) catch {};
                 }
             }
         }

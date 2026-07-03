@@ -157,7 +157,7 @@ class LspClient
         },
         workspace: { workspaceFolders: true, configuration: false },
       },
-      initializationOptions: {},
+      initializationOptions: ENV["REFRACT_INIT"] ? JSON.parse(ENV["REFRACT_INIT"]) : {},
     }, timeout: 60)
     send_notify("initialized", {})
   end

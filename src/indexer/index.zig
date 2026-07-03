@@ -565,6 +565,11 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     del_pcr.bind_int(1, real_file_id);
     _ = try del_pcr.step();
 
+    const del_pby = try real_db.prepare("DELETE FROM pending_block_yields WHERE file_id = ?");
+    defer del_pby.finalize();
+    del_pby.bind_int(1, real_file_id);
+    _ = try del_pby.step();
+
     // Domain tables (routes, i18n) are generated per-file in mem_db too; clear the
     // real_db copies for this file before re-inserting so a re-index doesn't leave
     // stale rows.
@@ -791,6 +796,31 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         ins_pcr.bind_text(4, sel_pcr.column_text(2));
         ins_pcr.bind_int(5, sel_pcr.column_int(3));
         _ = try ins_pcr.step();
+    }
+
+    // Copy pending_block_yields (deferred `xs.each { |x| }` params; keyed on line/col, no id
+    // remap needed). The post-index flow-typing pass resolves the receiver's element type.
+    const sel_pby = try mem_db.prepare(
+        \\SELECT param_name, line, col, recv_kind, recv_name, method_name FROM pending_block_yields WHERE file_id = ?
+    );
+    defer sel_pby.finalize();
+    sel_pby.bind_int(1, mem_file_id);
+
+    const ins_pby = try real_db.prepare(
+        \\INSERT INTO pending_block_yields (file_id, param_name, line, col, recv_kind, recv_name, method_name) VALUES (?, ?, ?, ?, ?, ?, ?)
+    );
+    defer ins_pby.finalize();
+
+    while (try sel_pby.step()) {
+        ins_pby.reset();
+        ins_pby.bind_int(1, real_file_id);
+        ins_pby.bind_text(2, sel_pby.column_text(0));
+        ins_pby.bind_int(3, sel_pby.column_int(1));
+        ins_pby.bind_int(4, sel_pby.column_int(2));
+        ins_pby.bind_text(5, sel_pby.column_text(3));
+        ins_pby.bind_text(6, sel_pby.column_text(4));
+        ins_pby.bind_text(7, sel_pby.column_text(5));
+        _ = try ins_pby.step();
     }
 
     // Copy sem_tokens

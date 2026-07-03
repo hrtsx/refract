@@ -1,0 +1,51 @@
+# Curated ActionController::Base instance surface. Reached inside controllers through the
+# superclass walk (UsersController < ApplicationController < ActionController::Base). Covers the
+# rendering, redirect, request/response, and session/param accessors used at nearly every action.
+class ActionController::Base
+  # Rendering / response
+  def render: (*untyped args) -> untyped
+  def render_to_string: (*untyped args) -> String
+  def redirect_to: (untyped options, *untyped response_options) -> untyped
+  def redirect_back: (untyped options) -> untyped
+  def redirect_back_or_to: (untyped fallback, *untyped options) -> untyped
+  def head: (untyped status, ?untyped options) -> untyped
+  def send_data: (untyped data, ?untyped options) -> untyped
+  def send_file: (untyped path, ?untyped options) -> untyped
+  def respond_to: (*untyped mimes) { (untyped format) -> untyped } -> untyped
+  def performed?: () -> bool
+
+  # Request / response objects
+  def request: () -> untyped
+  def response: () -> untyped
+  def headers: () -> untyped
+  def cookies: () -> untyped
+  def session: () -> untyped
+  def flash: () -> untyped
+  def params: () -> untyped
+  def response_body: () -> untyped
+
+  # Params helpers
+  def query_parameters: () -> untyped
+  def request_parameters: () -> untyped
+
+  # Callbacks / filters
+  def before_action: (*untyped names) -> untyped
+  def after_action: (*untyped names) -> untyped
+  def around_action: (*untyped names) -> untyped
+  def skip_before_action: (*untyped names) -> untyped
+
+  # Auth / URL
+  def url_for: (?untyped options) -> String
+  def url_options: () -> Hash
+  def authenticate_or_request_with_http_basic: (?untyped realm) { (untyped, untyped) -> untyped } -> untyped
+  def authenticate_with_http_basic: () { (untyped, untyped) -> untyped } -> untyped
+
+  # Streaming / misc
+  def reset_session: () -> untyped
+  def default_url_options: () -> Hash
+  def helpers: () -> untyped
+  def view_context: () -> untyped
+  def logger: () -> untyped
+  def action_name: () -> String
+  def controller_name: () -> String
+end
