@@ -281,6 +281,26 @@ pub fn paramHintVisitor(node: ?*const prism_mod.Node, data: ?*anyopaque) callcon
     return true;
 }
 
+/// Lock guard returned by `Server.lockHot`. Carries the hot-index pointer that
+/// is valid only while `locked` is true. `deinit` releases the lock (idempotent
+/// with `unlock`, which a caller uses to drop the lock early). See `lockHot`.
+pub const HotGuard = struct {
+    server: *Server,
+    hot: ?*hot_index_mod.HotIndex,
+    locked: bool,
+
+    pub fn unlock(self: *HotGuard) void {
+        if (self.locked) {
+            self.server.hot_mu.unlock(std.Options.debug_io);
+            self.locked = false;
+        }
+    }
+
+    pub fn deinit(self: *HotGuard) void {
+        self.unlock();
+    }
+};
+
 pub const Server = struct {
     db: db_mod.Db,
     db_pathz: [:0]u8,
@@ -446,6 +466,23 @@ pub const Server = struct {
     /// :memory: fallback under db_mutex) it uses the writer connection. So the
     /// ~90 existing cachedStmt call sites need no edits — a read handler that
     /// opens a ReadTxn transparently runs every query on the read snapshot.
+    /// The one blessed way to reach `*self.hot`. Bundles the enable-gate, the
+    /// `hot_mu` acquire, and the pointer load so a reader physically cannot
+    /// observe the pointer without holding the lock — `rebuildHotIndex` frees
+    /// the old index under `hot_mu`, so a load-before-lock is a use-after-free
+    /// (the segfault fixed in aa8c2e1). `hot` is non-null only while the lock is
+    /// held. Usage:
+    ///     var hg = self.lockHot();
+    ///     defer hg.deinit();
+    ///     if (hg.hot) |hot| { ... }
+    /// A handler that must drop the lock early (before SQL round-trips) calls
+    /// `hg.unlock()` once it is done dereferencing `hot`; `deinit` is idempotent.
+    pub fn lockHot(self: *Server) HotGuard {
+        if (!self.hot_index_enabled.load(.monotonic)) return .{ .server = self, .hot = null, .locked = false };
+        self.hot_mu.lockUncancelable(std.Options.debug_io);
+        return .{ .server = self, .hot = self.hot.load(.acquire), .locked = true };
+    }
+
     pub fn cachedStmt(self: *Server, comptime sql: [*:0]const u8) !db_mod.CachedStmt {
         if (read_depth > 0) return self.readCachedStmt(sql);
         const key: usize = @intFromPtr(sql);

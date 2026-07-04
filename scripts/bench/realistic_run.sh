@@ -82,7 +82,13 @@ run_cell() {
     timeout 600 ruby "$DRIVER_DIR/lsp_realistic.rb" "$server" "${cmd_args[@]}" \
     > "$out_json" 2> "$out_log"
   local rc=$?
-  if (( rc != 0 )); then
+  if (( rc == 124 )); then
+    echo "    TIMEOUT (server too slow — killed by the 600s backstop), see $out_log" >&2
+    return
+  elif (( rc == 3 )); then
+    echo "    FAIL: server DIED (crash/segfault) during $workload, see $out_log" >&2
+    return
+  elif (( rc != 0 )); then
     echo "    FAIL rc=$rc, see $out_log" >&2
     return
   fi

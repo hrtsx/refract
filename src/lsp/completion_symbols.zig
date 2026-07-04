@@ -121,10 +121,10 @@ pub fn completeArgContext(self: *Server, msg: types.RequestMessage, path: []cons
     // Then global symbols (methods, classes, constants). Hot path: serve
     // first 200 from the in-mem index using pre-rendered bodies.
     var served_from_hot = false;
-    if (self.hot_index_enabled.load(.monotonic)) {
-        self.hot_mu.lockUncancelable(std.Options.debug_io);
-        defer self.hot_mu.unlock(std.Options.debug_io);
-        if (self.hot.load(.acquire)) |hot| {
+    {
+        var hg = self.lockHot();
+        defer hg.deinit();
+        if (hg.hot) |hot| {
             var count_h: usize = 0;
             for (hot.sorted_by_name) |sym| {
                 if (count_h >= 200) break;
@@ -172,10 +172,10 @@ pub fn completeAllSymbols(self: *Server, msg: types.RequestMessage) !types.Respo
     // Hot-index fast path: empty-word completion fires on every keystroke at
     // line starts. Skip the 500-row SQL scan + per-row format when the in-mem
     // index is available.
-    if (self.hot_index_enabled.load(.monotonic)) {
-        self.hot_mu.lockUncancelable(std.Options.debug_io);
-        defer self.hot_mu.unlock(std.Options.debug_io);
-        if (self.hot.load(.acquire)) |hot| {
+    {
+        var hg = self.lockHot();
+        defer hg.deinit();
+        if (hg.hot) |hot| {
             var items_aw_hot = std.Io.Writer.Allocating.init(self.alloc);
             const wh = &items_aw_hot.writer;
             var first_h = true;
@@ -276,13 +276,12 @@ pub fn completeGeneral(self: *Server, msg: types.RequestMessage, path: []const u
     var first = true;
     var symbol_count: usize = 0;
 
-    const want_hot = self.hot_index_enabled.load(.monotonic) and word.len > 0;
-    if (want_hot) self.hot_mu.lockUncancelable(std.Options.debug_io);
-    defer if (want_hot) self.hot_mu.unlock(std.Options.debug_io);
-    const hot_opt = if (want_hot) self.hot.load(.acquire) else null;
-    const use_hot = hot_opt != null;
-    if (use_hot) {
-        const hot = hot_opt.?;
+    // Empty-word completion deliberately skips the hot path (lookupPrefix("")
+    // would sweep the whole index); only take the lock when there's a prefix.
+    var hg = if (word.len > 0) self.lockHot() else S.HotGuard{ .server = self, .hot = null, .locked = false };
+    defer hg.deinit();
+    const use_hot = hg.hot != null;
+    if (hg.hot) |hot| {
         var ranked = std.ArrayList(RankedSymbol).empty;
         defer ranked.deinit(self.alloc);
         // HotSymbol names are arena-stable until rebuildHotIndex, and we hold

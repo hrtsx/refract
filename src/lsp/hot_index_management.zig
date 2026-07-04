@@ -73,6 +73,9 @@ pub fn rebuildHotIndex(self: *Server) void {
         return;
     }
 
+    // Invariant: this swap frees `old` under hot_mu, so every reader that derefs
+    // *self.hot must also hold hot_mu (load the pointer *inside* the lock, not
+    // before it). Only presence checks (`.load() != null`) may skip the lock.
     if (self.hot.load(.acquire)) |old| {
         old.deinit();
         self.alloc.destroy(old);

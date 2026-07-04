@@ -434,11 +434,10 @@ fn resolveHoverReceiverType(self: *Server, path: []const u8, recv_name: []const 
 }
 
 fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []const u8, class_name: []const u8, hover_line: u32, wc16: u32, we16: u32) !?types.ResponseMessage {
-    if (self.hot_index_enabled.load(.monotonic)) {
-        self.hot_mu.lockUncancelable(std.Options.debug_io);
-        var hot_lock_held = true;
-        defer if (hot_lock_held) self.hot_mu.unlock(std.Options.debug_io);
-        if (self.hot.load(.acquire)) |hot| {
+    {
+        var hg = self.lockHot();
+        defer hg.deinit();
+        if (hg.hot) |hot| {
             if (hot.lookupMethodOnClass(class_name, method_name)) |hs| {
                 if (hot.pathFor(hs.file_id)) |sym_path| {
                     const kind_str: []const u8 = if (hs.kind == .classdef) "classdef" else "def";
@@ -479,8 +478,7 @@ fn hoverLookupOnClass(self: *Server, msg: types.RequestMessage, method_name: []c
                     try w.writeAll("\"}");
                     try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
                     const raw_resp = try aw.toOwnedSlice();
-                    hot_lock_held = false;
-                    self.hot_mu.unlock(std.Options.debug_io);
+                    hg.unlock();
                     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
                 }
             }
@@ -624,15 +622,14 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
     var hot_name_owned: ?[]u8 = null;
     defer if (hot_name_owned) |b| self.alloc.free(b);
     var hot_hit = false;
-    if (self.hot_index_enabled.load(.monotonic)) {
-        // Hold hot_mu over the entire hot read + pure-hot render. rebuildHotIndex
-        // destroys the old HotIndex under the same mutex; without this guard the
-        // bg-thread free can race with this read and produce a UAF.
-        self.hot_mu.lockUncancelable(std.Options.debug_io);
-        var hot_lock_held = true;
-        defer if (hot_lock_held) self.hot_mu.unlock(std.Options.debug_io);
+    {
+        // lockHot holds hot_mu over the entire hot read + pure-hot render;
+        // rebuildHotIndex frees the old HotIndex under the same mutex, so the
+        // pointer must never be touched outside the guard (UAF, aa8c2e1).
+        var hg = self.lockHot();
+        defer hg.deinit();
 
-        if (self.hot.load(.acquire)) |hot| {
+        if (hg.hot) |hot| {
             var best: ?hot_index_mod.HotSymbol = null;
             var best_score: i64 = std.math.minInt(i64);
             for (hot.lookupName(name)) |s| {
@@ -679,8 +676,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
                                 try w2.writeAll("\"}");
                                 try w2.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
                                 const raw_resp = try aw2.toOwnedSlice();
-                                hot_lock_held = false;
-                                self.hot_mu.unlock(std.Options.debug_io);
+                                hg.unlock();
                                 return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
                             }
                         }
@@ -719,8 +715,7 @@ pub fn hoverLookup(self: *Server, msg: types.RequestMessage, name: []const u8, c
                         try w.print(",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ hover_line, wc16, hover_line, we16 });
                         const raw_resp = try aw.toOwnedSlice();
                         // Release hot_mu before returning — the response is now in our memory.
-                        hot_lock_held = false;
-                        self.hot_mu.unlock(std.Options.debug_io);
+                        hg.unlock();
                         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw_resp, .@"error" = null };
                     }
                 }

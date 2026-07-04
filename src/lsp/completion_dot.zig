@@ -38,10 +38,9 @@ const addStdlibCompletions = c_common.addStdlibCompletions;
 const lit_recv = @import("literal_receiver.zig");
 
 fn hotCrossFileReturnType(self: *Server, method_name: []const u8, parent_class: []const u8) ?[]u8 {
-    if (!self.hot_index_enabled.load(.monotonic)) return null;
-    self.hot_mu.lockUncancelable(std.Options.debug_io);
-    defer self.hot_mu.unlock(std.Options.debug_io);
-    const hot = self.hot.load(.acquire) orelse return null;
+    var hg = self.lockHot();
+    defer hg.deinit();
+    const hot = hg.hot orelse return null;
     for (hot.lookupName(method_name)) |sym| {
         if (sym.kind != .def) continue;
         const ret = sym.return_type orelse continue;

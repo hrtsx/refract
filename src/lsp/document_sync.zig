@@ -215,15 +215,20 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
     }
     self.notifyFileTouched(real_path);
 
-    if (self.hot.load(.acquire)) |hot_idx| {
-        self.hot_mu.lockUncancelable(std.Options.debug_io);
-        defer self.hot_mu.unlock(std.Options.debug_io);
-        const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch return;
-        defer db_stmt.finalize();
-        db_stmt.bind_text(1, real_path);
-        if (db_stmt.step() catch false) {
-            const file_id = db_stmt.column_int(0);
-            hot_idx.invalidateFileCache(@intCast(file_id));
+    // invalidateFileCache writes into the hot index; reach it only through
+    // lockHot so the pointer is touched under hot_mu — rebuildHotIndex frees the
+    // old index under that lock, so a load-before-lock is a UAF (aa8c2e1).
+    {
+        var hg = self.lockHot();
+        defer hg.deinit();
+        if (hg.hot) |hot_idx| {
+            const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch return;
+            defer db_stmt.finalize();
+            db_stmt.bind_text(1, real_path);
+            if (db_stmt.step() catch false) {
+                const file_id = db_stmt.column_int(0);
+                hot_idx.invalidateFileCache(@intCast(file_id));
+            }
         }
     }
 

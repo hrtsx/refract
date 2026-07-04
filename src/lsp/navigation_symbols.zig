@@ -97,10 +97,9 @@ pub fn emitDefinitionOnClass(
     frc: *std.StringHashMapUnmanaged([]const u8),
     origin: ?DefOrigin,
 ) !void {
-    if (!self.hot_index_enabled.load(.monotonic)) return;
-    self.hot_mu.lockUncancelable(std.Options.debug_io);
-    defer self.hot_mu.unlock(std.Options.debug_io);
-    const hot = self.hot.load(.acquire) orelse return;
+    var hg = self.lockHot();
+    defer hg.deinit();
+    const hot = hg.hot orelse return;
     const base = if (class_name.len > 2 and class_name[0] == '[' and class_name[class_name.len - 1] == ']')
         class_name[1 .. class_name.len - 1]
     else
@@ -122,10 +121,9 @@ pub fn tryEmitFromHotIndex(
     frc: *std.StringHashMapUnmanaged([]const u8),
     origin: ?DefOrigin,
 ) !u32 {
-    if (!self.hot_index_enabled.load(.monotonic)) return 0;
-    self.hot_mu.lockUncancelable(std.Options.debug_io);
-    defer self.hot_mu.unlock(std.Options.debug_io);
-    const hot = self.hot.load(.acquire) orelse return 0;
+    var hg = self.lockHot();
+    defer hg.deinit();
+    const hot = hg.hot orelse return 0;
 
     // Fast-fast path: pre-rendered def JSON, populated at warmup for the top-N
     // most-referenced unambiguous-def names. Skips the SQL+UTF-16-column work.

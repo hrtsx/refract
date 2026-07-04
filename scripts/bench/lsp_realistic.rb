@@ -69,6 +69,7 @@ def percentile(arr, p)
 end
 
 def stats_for(arr)
+  return { n: 0 } unless arr.is_a?(Array)
   return { n: 0 } if arr.empty?
   {
     n: arr.length,
@@ -203,6 +204,7 @@ SESSION_OPS = 200
 def run_session(client, opens, files)
   rng = Random.new(SEED)
   per_method = Hash.new { |h, k| h[k] = [] }
+  timeouts = Hash.new(0)
   diag_first = []
   diag_settle = []
   diag_count = 0
@@ -219,7 +221,7 @@ def run_session(client, opens, files)
 
   ops.each_with_index do |op, idx|
     if client.respond_to?(:write_dead?) && client.write_dead?
-      per_method[:server_died_at_op] = idx
+      $server_died = { workload: "session", at_op: idx }
       break
     end
     # Pick a random open file for this op
@@ -229,20 +231,27 @@ def run_session(client, opens, files)
     line, char = positions.sample(random: rng)
     uri = opens[file][:uri]
 
+    resp = nil
     ms = case op
-         when :hover then time_block { client.hover(uri, line, char, timeout: 10) }
-         when :definition then time_block { client.definition(uri, line, char, timeout: 10) }
-         when :completion then time_block { client.completion(uri, line, char, timeout: 10) }
-         when :references then time_block { client.references(uri, line, char, timeout: 15) }
-         when :document_symbol then time_block { client.document_symbol(uri, timeout: 15) }
+         when :hover then time_block { resp = client.hover(uri, line, char, timeout: 10) }
+         when :definition then time_block { resp = client.definition(uri, line, char, timeout: 10) }
+         when :completion then time_block { resp = client.completion(uri, line, char, timeout: 10) }
+         when :references then time_block { resp = client.references(uri, line, char, timeout: 15) }
+         when :document_symbol then time_block { resp = client.document_symbol(uri, timeout: 15) }
          when :symbol
            # Pick a query that's likely to match: a random identifier from text
            q = opens[file][:text].scan(/\bclass\s+([A-Z][\w]+)/).flatten.sample(random: rng) || "Application"
-           time_block { client.workspace_symbol(q, timeout: 15) }
+           time_block { resp = client.workspace_symbol(q, timeout: 15) }
          when :rename
-           time_block { client.rename(uri, line, char, "renamed_at_#{idx}", timeout: 15) }
+           time_block { resp = client.rename(uri, line, char, "renamed_at_#{idx}", timeout: 15) }
          end
-    per_method[op] << ms
+    # A nil response means the request hit its deadline (no reply). Count it as a
+    # timeout/miss — never as a latency sample, or it poisons the percentiles.
+    if resp.nil?
+      timeouts[op] += 1
+    else
+      per_method[op] << ms
+    end
 
     # Periodic save → wait for diagnostics
     if saves_at.include?(idx)
@@ -259,6 +268,7 @@ def run_session(client, opens, files)
   out[:diag_first_ms] = stats_for(diag_first)
   out[:diag_settle_ms] = stats_for(diag_settle)
   out[:diag_total_publishes] = diag_count
+  out[:timeouts] = timeouts unless timeouts.empty?
   out
 end
 
@@ -277,6 +287,7 @@ def run_typing(client, opens, files)
   return { error: "no positions" } if positions.empty?
 
   per_method = Hash.new { |h, k| h[k] = [] }
+  timeouts = Hash.new(0)
   did_change_count = 0
 
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + TYPING_DURATION_S
@@ -285,7 +296,7 @@ def run_typing(client, opens, files)
 
   while (now = Process.clock_gettime(Process::CLOCK_MONOTONIC)) < deadline
     if client.respond_to?(:write_dead?) && client.write_dead?
-      per_method[:server_died] = true
+      $server_died = { workload: "typing", did_change_count: did_change_count }
       break
     end
     if now >= next_change_at
@@ -297,12 +308,17 @@ def run_typing(client, opens, files)
     elsif now >= next_query_at
       method = %i[hover definition completion].sample(random: rng)
       line, char = positions.sample(random: rng)
+      resp = nil
       ms = case method
-           when :hover then time_block { client.hover(uri, line, char, timeout: 5) }
-           when :definition then time_block { client.definition(uri, line, char, timeout: 5) }
-           when :completion then time_block { client.completion(uri, line, char, timeout: 5) }
+           when :hover then time_block { resp = client.hover(uri, line, char, timeout: 5) }
+           when :definition then time_block { resp = client.definition(uri, line, char, timeout: 5) }
+           when :completion then time_block { resp = client.completion(uri, line, char, timeout: 5) }
            end
-      per_method[method] << ms
+      if resp.nil?
+        timeouts[method] += 1
+      else
+        per_method[method] << ms
+      end
       next_query_at = now + 1.0 / QUERY_RATE_HZ
     else
       sleep [next_change_at, next_query_at].min - now
@@ -312,6 +328,7 @@ def run_typing(client, opens, files)
   out = per_method.transform_values { |v| stats_for(v) }
   out[:didchange_count] = did_change_count
   out[:duration_s] = TYPING_DURATION_S
+  out[:timeouts] = timeouts unless timeouts.empty?
   out
 end
 
@@ -328,17 +345,30 @@ def run_micro(client, opens, files)
   end
   positions = positions.shuffle(random: rng).first(50)
 
-  positions.each do |uri, line, char|
-    per_method[:hover] << time_block { client.hover(uri, line, char, timeout: 10) }
+  timeouts = Hash.new(0)
+  # A nil response is a deadline miss (no reply) — count it, never time it.
+  record = lambda do |method, resp, ms|
+    resp.nil? ? (timeouts[method] += 1) : (per_method[method] << ms)
   end
   positions.each do |uri, line, char|
-    per_method[:definition] << time_block { client.definition(uri, line, char, timeout: 10) }
+    r = nil
+    ms = time_block { r = client.hover(uri, line, char, timeout: 10) }
+    record.call(:hover, r, ms)
   end
   positions.each do |uri, line, char|
-    per_method[:completion] << time_block { client.completion(uri, line, char, timeout: 10) }
+    r = nil
+    ms = time_block { r = client.definition(uri, line, char, timeout: 10) }
+    record.call(:definition, r, ms)
+  end
+  positions.each do |uri, line, char|
+    r = nil
+    ms = time_block { r = client.completion(uri, line, char, timeout: 10) }
+    record.call(:completion, r, ms)
   end
 
-  per_method.transform_values { |v| stats_for(v) }
+  out = per_method.transform_values { |v| stats_for(v) }
+  out[:timeouts] = timeouts unless timeouts.empty?
+  out
 end
 
 # ---------- Run -------------------------------------------------------------
@@ -364,6 +394,7 @@ per_method = case WORKLOAD
              end
 
 result[:per_method] = per_method
+result[:server_died] = $server_died if $server_died
 result[:peak_rss_mb] = (client.rss_peak_kb / 1024.0).round(1)
 result[:peak_fd] = client.fd_peak
 clk_tck = (`getconf CLK_TCK`.to_i.nonzero? || 100)
@@ -383,3 +414,12 @@ end
 
 client.stop
 puts JSON.pretty_generate(result)
+
+# A server death (segfault / write pipe dead) is a first-class failure, not a
+# data row. Exit non-zero so the runner flags the cell instead of the crash
+# getting swallowed into a partial JSON. The refract stderr tail is already in
+# the cell's .log (the client tees it with a [refract.stderr] prefix).
+if $server_died
+  warn "FAIL: #{NAME} server died during #{WORKLOAD} (#{$server_died.inspect}); see the [refract.stderr] tail in the cell log."
+  exit 3
+end

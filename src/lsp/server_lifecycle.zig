@@ -151,6 +151,11 @@ pub fn deinit(self: *Server) void {
     var rmc_it = self.rubocop_mtime_cache.keyIterator();
     while (rmc_it.next()) |k| self.alloc.free(k.*);
     self.rubocop_mtime_cache.deinit(self.alloc);
+    // Teardown free (a writer, not a reader — the twin of rebuildHotIndex's
+    // swap): loads + frees + stores null under hot_mu. Not routed through
+    // lockHot because it must free regardless of hot_index_enabled, which
+    // lockHot short-circuits on — gating here would leak an index built before
+    // the flag was cleared.
     self.hot_mu.lockUncancelable(std.Options.debug_io);
     if (self.hot.load(.acquire)) |h| {
         h.deinit();
