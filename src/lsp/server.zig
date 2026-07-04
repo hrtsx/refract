@@ -483,6 +483,18 @@ pub const Server = struct {
         return .{ .server = self, .hot = self.hot.load(.acquire), .locked = true };
     }
 
+    /// Snapshot an open-doc buffer under `open_docs_mu` and return an OWNED copy
+    /// (caller frees). The blessed reader for `open_docs`: writers free evicted
+    /// values under the same lock, so a copy-under-lock is the only way a reader
+    /// can hold a buffer that never outlives a concurrent evict/free. Never
+    /// dereference `open_docs.get()` outside the lock — route every read here.
+    pub fn openDocDupe(self: *Server, uri: []const u8) ?[]u8 {
+        self.open_docs_mu.lockUncancelable(std.Options.debug_io);
+        defer self.open_docs_mu.unlock(std.Options.debug_io);
+        const cached = self.open_docs.get(uri) orelse return null;
+        return self.alloc.dupe(u8, cached) catch null;
+    }
+
     pub fn cachedStmt(self: *Server, comptime sql: [*:0]const u8) !db_mod.CachedStmt {
         if (read_depth > 0) return self.readCachedStmt(sql);
         const key: usize = @intFromPtr(sql);

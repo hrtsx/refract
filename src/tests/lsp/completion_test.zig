@@ -1532,6 +1532,30 @@ test "Struct.new reader in completion" {
     _ = obj.get("result") orelse return error.NoResult;
 }
 
+test "typed global var completes member" {
+    var h = try harness.probe(std.testing.allocator, .{
+        .source =
+        \\class Redis
+        \\  def ping_the_server; end
+        \\end
+        \\$redis = Redis.new
+        \\$redis.
+        \\
+        ,
+        .line = 4,
+        .character = 7,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
+    const obj = switch (r) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    try std.testing.expect(obj.get("error") == null);
+    try std.testing.expect(h.rawContains("ping_the_server"));
+}
+
 test "completionItem/resolve adds documentation" {
     var h = try harness.probe(std.testing.allocator, .{
         .source = "# Returns something\ndef documented_method; end\n",

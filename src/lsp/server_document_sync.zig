@@ -49,7 +49,7 @@ const computeDiagCol = S.computeDiagCol;
 const serverLogSinkCb = S.serverLogSinkCb;
 
 pub fn readSourceForUri(self: *Server, uri: []const u8, path: []const u8) ![]u8 {
-    if (self.open_docs.get(uri)) |cached| return self.alloc.dupe(u8, cached);
+    if (self.openDocDupe(uri)) |cached| return cached;
     const raw = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, self.alloc, std.Io.Limit.limited(self.max_file_size.load(.monotonic)));
     defer self.alloc.free(raw);
     const norm = normalizeCRLF(raw);
@@ -176,7 +176,8 @@ pub fn flushDirtyUrisImpl(self: *Server, force: bool) void {
     for (due.items) |uri_key| {
         const path = uriToPath(self.alloc, uri_key) catch continue;
         defer self.alloc.free(path);
-        if (self.open_docs.get(uri_key)) |src| {
+        if (self.openDocDupe(uri_key)) |src| {
+            defer self.alloc.free(src);
             self.db_mutex.lockUncancelable(std.Options.debug_io);
             indexer.indexSource(src, path, self.db, self.alloc) catch |e| {
                 var buf: [512]u8 = undefined;

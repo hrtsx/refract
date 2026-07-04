@@ -323,8 +323,11 @@ pub fn utf16ColToUtf8(line_src: []const u8, utf16_col: u32) usize {
     var i: usize = 0;
     while (i < line_src.len and units < utf16_col) {
         const b = line_src[i];
-        const seq: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
-        units += if (seq == 4) 2 else 1;
+        const raw_seq: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+        // Clamp a truncated trailing multibyte lead so i never overruns line_src
+        // on malformed UTF-8 (defensive; no effect on valid input).
+        const seq = @min(raw_seq, line_src.len - i);
+        units += if (raw_seq == 4) 2 else 1;
         i += seq;
     }
     // If utf16_col extends past the line, carry the overshoot through so posToOffset

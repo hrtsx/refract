@@ -483,6 +483,16 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
         recv_offset = if (recv_offset >= 1) recv_offset - 1 else 0;
         recv_word = extractQualifiedName(source, recv_offset);
     }
+    // Global variable receiver: `$redis.` — extractQualifiedName stops at `$`
+    // (not an ident char), but globals are indexed under their `$`-prefixed name
+    // (handleGlobalVarWrite in visitor_vars.zig). Reattach the sigil so the type_hint
+    // lookup below matches. Inert when no typed global exists (falls to guess paths).
+    if (recv_word.len > 0) {
+        const rw_start = @intFromPtr(recv_word.ptr) - @intFromPtr(source.ptr);
+        if (rw_start > 0 and source[rw_start - 1] == '$') {
+            recv_word = source[rw_start - 1 .. rw_start + recv_word.len];
+        }
+    }
     // Index access: `arr[0].` / `hash[:k].` — the char before the dot is ']'.
     // Resolve the collection receiver and complete on its element/value type.
     // A ']' immediately before the dot unambiguously marks index access, regardless

@@ -146,7 +146,8 @@ pub fn enqueueAllOpenDocs(self: *Server) void {
 }
 
 pub fn publishDiagnostics(self: *Server, uri: []const u8, path: []const u8, run_rubocop: bool) void {
-    const diag_source: ?[]const u8 = self.open_docs.get(uri);
+    const diag_source: ?[]u8 = self.openDocDupe(uri);
+    defer if (diag_source) |s| self.alloc.free(s);
     const prism_diags = if (diag_source) |src|
         indexer.getDiagsFromSource(src, path, self.alloc) catch return
     else

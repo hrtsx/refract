@@ -185,6 +185,9 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
             const order_key2 = self.alloc.dupe(u8, uri) catch "";
             if (order_key2.len > 0) self.open_docs_order.append(self.alloc, order_key2) catch self.alloc.free(order_key2);
         }
+        // Evicted values are freed here under open_docs_mu; any reader that
+        // dereferences a buffer outside the lock is a UAF. Readers must route
+        // through Server.openDocDupe (copy-under-lock) — the one blessed reader.
         while (self.open_docs.count() > OPEN_DOC_CACHE_SIZE) {
             if (self.open_docs_order.items.len == 0) break;
             const lru_uri = self.open_docs_order.swapRemove(0);

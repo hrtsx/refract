@@ -20,6 +20,8 @@ const diagnostics_mod = @import("diagnostics.zig");
 const semantic_tokens = @import("semantic_tokens.zig");
 const code_actions = @import("code_actions.zig");
 const editing = @import("editing.zig");
+const editing_ranges = @import("editing_ranges.zig");
+const editing_hints = @import("editing_hints.zig");
 const rename = @import("rename.zig");
 const hot_index_mod = @import("hot_index.zig");
 const workspace_config = @import("workspace_config.zig");
@@ -304,19 +306,19 @@ pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessag
         if (self.recorder) |*rec| rec.recordRequest("textDocument/references", dt_ns);
         return result;
     } else if (std.mem.eql(u8, msg.method, "textDocument/signatureHelp")) {
-        return try editing.handleSignatureHelp(self, msg);
+        return try editing_hints.handleSignatureHelp(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/typeDefinition")) {
         return try navigation.handleTypeDefinition(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/inlayHint")) {
-        return try editing.handleInlayHint(self, msg);
+        return try editing_hints.handleInlayHint(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/semanticTokens/full")) {
         return try semantic_tokens.handleSemanticTokensFull(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/semanticTokens/range")) {
         return try semantic_tokens.handleSemanticTokensRange(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/documentHighlight")) {
-        return try editing.handleDocumentHighlight(self, msg);
+        return try editing_hints.handleDocumentHighlight(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/documentLink")) {
-        return try editing.handleDocumentLink(self, msg);
+        return try editing_hints.handleDocumentLink(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/prepareRename")) {
         return try rename.handlePrepareRename(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/rename")) {
@@ -331,13 +333,13 @@ pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessag
     } else if (std.mem.eql(u8, msg.method, "textDocument/formatting")) {
         return try code_actions.handleFormatting(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/foldingRange")) {
-        return try editing.handleFoldingRange(self, msg);
+        return try editing_ranges.handleFoldingRange(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/rangeFormatting")) {
         return try code_actions.handleRangeFormatting(self, msg);
     } else if (std.mem.eql(u8, msg.method, "workspace/executeCommand")) {
         return try code_actions.handleExecuteCommand(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/codeLens")) {
-        return try editing.handleCodeLens(self, msg);
+        return try editing_hints.handleCodeLens(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/prepareTypeHierarchy")) {
         return try navigation.handlePrepareTypeHierarchy(self, msg);
     } else if (std.mem.eql(u8, msg.method, "typeHierarchy/supertypes")) {
@@ -347,9 +349,9 @@ pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessag
     } else if (std.mem.eql(u8, msg.method, "textDocument/semanticTokens/full/delta")) {
         return try semantic_tokens.handleSemanticTokensDelta(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/selectionRange")) {
-        return try editing.handleSelectionRange(self, msg);
+        return try editing_ranges.handleSelectionRange(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/linkedEditingRange")) {
-        return try editing.handleLinkedEditingRange(self, msg);
+        return try editing_ranges.handleLinkedEditingRange(self, msg);
     } else if (std.mem.eql(u8, msg.method, "textDocument/prepareCallHierarchy")) {
         return try navigation.handleCallHierarchyPrepare(self, msg);
     } else if (std.mem.eql(u8, msg.method, "callHierarchy/incomingCalls")) {
