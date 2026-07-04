@@ -1,0 +1,13 @@
+class ActionController::MimeResponds::Collector
+  def html: () -> untyped
+  def json: () -> untyped
+  def xml: () -> untyped
+  def js: () -> untyped
+  def text: () -> untyped
+  def any: (*untyped) -> untyped
+  def all: () -> untyped
+  def turbo_stream: () -> untyped
+  def none: () -> untyped
+  def atom: () -> untyped
+  def rss: () -> untyped
+end

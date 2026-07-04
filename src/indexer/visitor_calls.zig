@@ -558,6 +558,17 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
             }
         }
     }
+    // `respond_to do |format|` — no explicit receiver (implicit self). Type the block
+    // param to a synthetic `ActionController::Responder` so `format.json`/`.html`/… complete.
+    // Confidence 60 (< the 70 diagnostic gate); the surface is defined in bundled RBS.
+    if (cn.block != null and cn.receiver == null and std.mem.eql(u8, mname, "respond_to")) {
+        if (cn.block.?.*.type == prism.NODE_BLOCK) {
+            const block_node: *const prism.BlockNode = @ptrCast(@alignCast(cn.block.?));
+            insertBlockParams(ctx, block_node, "ActionController::MimeResponds::Collector", "respond_to", null) catch {
+                ctx.error_count += 1;
+            };
+        }
+    }
     // Symbol to_proc: &:method_name at call site
     if (cn.block != null and cn.block.?.*.type == prism.NODE_SYMBOL) {
         const sym_block: *const prism.SymbolNode = @ptrCast(@alignCast(cn.block.?));

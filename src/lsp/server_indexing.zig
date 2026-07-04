@@ -678,6 +678,18 @@ pub const BgCtx = struct {
                 \\  AND kind NOT IN ('keyword','keyword_rest','rest','block')
                 \\  AND (SELECT name FROM symbols WHERE id = params.symbol_id) IN (SELECT callee FROM call_arg_types)
             ) catch {};
+            // Repair mis-singularized schema-column parents: a table like `statuses`
+            // singularizes to `Statuse` (bare strip-`s`) when the real model is `Status`
+            // — the generic singularizer can't disambiguate `-ses` (statuses→status vs
+            // houses→house) without a dictionary. Reality-check instead: if a member's
+            // parent model isn't an indexed class but the trailing-`e`-trimmed form is
+            // (`Statuse`→`Status`, `Addresse`→`Address`), re-parent to the real model.
+            db.exec(
+                \\UPDATE symbols SET parent_name = substr(parent_name, 1, length(parent_name) - 1)
+                \\WHERE parent_name LIKE '%e'
+                \\  AND parent_name NOT IN (SELECT name FROM symbols WHERE kind IN ('class','module'))
+                \\  AND substr(parent_name, 1, length(parent_name) - 1) IN (SELECT name FROM symbols WHERE kind IN ('class','module'))
+            ) catch {};
             // Post-index flow-typing: resolve deferred `@ivar = recv.method` typings over the
             // now-complete table (receiver-scoped, deterministic). Replaces the racy single-pass
             // index-write lookup. Completion-only (confidence 50 < the 70 diagnostic gate).
@@ -730,6 +742,12 @@ pub const BgCtx = struct {
                 const gmsg = std.fmt.bufPrint(&gbuf, "refract: gem table clear failed: {s}", .{@errorName(e)}) catch "refract: gem table clear failed";
                 self.server_ptr.sendLogMessage(2, gmsg);
             };
+            // The is_gem=1 clear also drops the bundled RBS (curated stdlib/Rails stubs
+            // are stored is_gem=1). Re-add them immediately — BEFORE the slow gem worker
+            // indexing — so their curated surfaces (e.g. the `respond_to |format|`
+            // Collector) are present even if the gem index is still running or the
+            // session ends early.
+            indexer.ensureBundledRbs(db);
             self.server_ptr.db_mutex.unlock(std.Options.debug_io);
 
             const gem_paths = gems.findGemPaths(self.io, self.root_path, alloc, self.bundle_timeout_ms * std.time.ns_per_ms) catch {

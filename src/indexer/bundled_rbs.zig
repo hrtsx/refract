@@ -21,4 +21,5 @@ pub const files = [_]BundledRbs{
     .{ .path = "<bundled>/rails/active_support.rbs", .content = @embedFile("bundled_rbs/active_support.rbs") },
     .{ .path = "<bundled>/rails/active_record.rbs", .content = @embedFile("bundled_rbs/active_record.rbs") },
     .{ .path = "<bundled>/rails/action_controller.rbs", .content = @embedFile("bundled_rbs/action_controller.rbs") },
+    .{ .path = "<bundled>/rails/action_controller_responder.rbs", .content = @embedFile("bundled_rbs/action_controller_responder.rbs") },
 };
