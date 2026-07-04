@@ -414,7 +414,12 @@ pub fn extractQualifiedName(source: []const u8, offset: usize) []const u8 {
     var end = offset;
     while (end < source.len and isRubyIdent(source[end])) end += 1;
     var start = offset;
-    while (start > 0 and isRubyIdent(source[start - 1])) start -= 1;
+    // `!`/`?` are valid only as the TRAILING char of a method name (`save!`, `ok?`);
+    // they never start or sit inside an identifier. The forward scan above already
+    // captured any trailing one, so the backward scan must exclude them — otherwise a
+    // unary-`!` prefix (`!current_user.confirmed?`) gets swallowed into the receiver
+    // word (`!current_user`), which then matches no class and yields no completion.
+    while (start > 0 and isRubyIdent(source[start - 1]) and source[start - 1] != '!' and source[start - 1] != '?') start -= 1;
     while (start >= 2 and source[start - 1] == ':' and source[start - 2] == ':') {
         var new_start = start - 2;
         while (new_start > 0 and isRubyIdent(source[new_start - 1])) new_start -= 1;

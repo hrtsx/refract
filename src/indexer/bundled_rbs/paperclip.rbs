@@ -1,0 +1,12 @@
+class Paperclip::Attachment
+  def url: (*untyped) -> String
+  def path: (*untyped) -> String
+  def exists?: () -> bool
+  def content_type: () -> String
+  def original_filename: () -> String
+  def size: () -> Integer
+  def queued_for_write: () -> untyped
+  def present?: () -> bool
+  def blank?: () -> bool
+  def file?: () -> bool
+end

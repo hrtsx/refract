@@ -116,6 +116,14 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
         insertSecureTokenSymbols(ctx, cn) catch {
             ctx.error_count += 1;
         };
+    } else if (cn.receiver == null and std.mem.eql(u8, mname, "devise")) {
+        rails_dsl.insertDeviseSymbols(ctx, cn) catch {
+            ctx.error_count += 1;
+        };
+    } else if (cn.receiver == null and std.mem.eql(u8, mname, "has_attached_file")) {
+        rails_dsl.insertPaperclipSymbols(ctx, cn) catch {
+            ctx.error_count += 1;
+        };
     } else if (cn.receiver == null and std.mem.eql(u8, mname, "attribute")) {
         insertAttributeSymbol(ctx, cn) catch {
             ctx.error_count += 1;

@@ -118,6 +118,7 @@ pub fn isRailsDsl(mname: []const u8) bool {
         "has_many_attached",       "has_rich_text",             "encrypts",               "normalizes",
         "attribute",               "has_secure_password",       "has_secure_token",       "delegated_type",
         "connects_to",             "composed_of",               "store_accessor",         "accepts_nested_attributes_for",
+        "devise",                  "has_attached_file",
         // ActiveJob / ActionMailer class-level DSLs
         "queue_as",                "retry_on",                  "discard_on",             "default",
     };
@@ -832,14 +833,19 @@ fn insertEnumValueMethods(ctx: *VisitCtx, vname: []const u8, line: i64, col: i64
     if (vname.len == 0 or vname.len > 120) return;
     const l: i32 = @intCast(@min(line, std.math.maxInt(i32)));
     const c: u32 = @intCast(@min(@max(col, 0), std.math.maxInt(u32)));
+    // Parent the synthesized methods on the enclosing model so completion on a
+    // receiver typed to that model (`record.active?`) finds them — plain
+    // insertSymbol leaves parent_name NULL, which the member query never matches.
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
     var pred_buf: [128]u8 = undefined;
     const pred = std.fmt.bufPrint(&pred_buf, "{s}?", .{vname}) catch return;
-    try insertSymbol(ctx, "def", pred, l, c, null);
+    try insertSymbolWithReturn(ctx, "def", pred, l, c, "TrueClass | FalseClass", null, parent, null);
     var bang_buf: [128]u8 = undefined;
     const bang = std.fmt.bufPrint(&bang_buf, "{s}!", .{vname}) catch return;
-    try insertSymbol(ctx, "def", bang, l, c, null);
+    try insertSymbolWithReturn(ctx, "def", bang, l, c, null, null, parent, null);
     // Rails also generates a class-level scope method with the same name
-    try insertSymbol(ctx, "scope", vname, l, c, null);
+    try insertSymbolWithReturn(ctx, "scope", vname, l, c, null, null, parent, null);
 }
 
 pub fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
@@ -849,12 +855,15 @@ pub fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
 
     var values_node: ?*const prism.Node = null;
 
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
     // Style: enum :status, [:draft, :published]  (positional, Ruby 3.2+)
     if (args.nodes[0].*.type == prism.NODE_SYMBOL) {
         const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[0]));
         if (sym.unescaped.source) |src| {
             const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-            try insertSymbol(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null);
+            try insertSymbolWithReturn(ctx, "def", src[0..sym.unescaped.length], lc.line, lc.col, null, null, parent, null);
         }
         if (args.size >= 2) values_node = args.nodes[1];
     }
@@ -870,7 +879,7 @@ pub fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
             const ksym: *const prism.SymbolNode = @ptrCast(@alignCast(assoc.key));
             if (ksym.unescaped.source == null) continue;
             const lc = locationLineCol(ctx.parser, assoc.key.*.location.start);
-            try insertSymbol(ctx, "def", ksym.unescaped.source[0..ksym.unescaped.length], lc.line, lc.col, null);
+            try insertSymbolWithReturn(ctx, "def", ksym.unescaped.source[0..ksym.unescaped.length], lc.line, lc.col, null, null, parent, null);
             // Index values from this key's array/hash
             insertEnumValues(ctx, assoc.value) catch {
                 ctx.error_count += 1;
@@ -1024,6 +1033,73 @@ pub fn insertSecureTokenSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void
     var br: [128]u8 = undefined;
     const r = std.fmt.bufPrint(&br, "regenerate_{s}", .{name}) catch return;
     try insertSymbolWithReturn(ctx, "def", r, line, col, "String", "has_secure_token", parent, null);
+}
+
+// `devise :confirmable, :recoverable, ...` — synthesize the public instance methods
+// each Devise module mixes into the model, onto the enclosing class. Iterates the
+// positional SYMBOL args (the trailing options hash/kwargs are ignored). Every name is
+// a real Devise API, so this only adds completion / suppresses false undefined-method.
+pub fn insertDeviseSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    if (args.size == 0) return;
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    const Mod = struct { name: []const u8, preds: []const []const u8, plains: []const []const u8 };
+    const modules = [_]Mod{
+        .{ .name = "confirmable", .preds = &.{ "confirmed?", "pending_reconfirmation?", "reconfirmation_required?" }, .plains = &.{ "confirm", "confirmed_at", "confirmation_token", "unconfirmed_email", "send_confirmation_instructions" } },
+        .{ .name = "database_authenticatable", .preds = &.{"valid_password?"}, .plains = &.{ "authenticatable_salt", "password", "password=", "password_digest" } },
+        .{ .name = "recoverable", .preds = &.{}, .plains = &.{ "reset_password", "reset_password!", "send_reset_password_instructions" } },
+        .{ .name = "rememberable", .preds = &.{}, .plains = &.{ "remember_me", "remember_me!", "forget_me!", "remember_created_at" } },
+        .{ .name = "lockable", .preds = &.{"access_locked?"}, .plains = &.{ "lock_access!", "unlock_access!", "failed_attempts", "locked_at" } },
+        .{ .name = "trackable", .preds = &.{}, .plains = &.{ "sign_in_count", "current_sign_in_at", "last_sign_in_at", "update_tracked_fields!" } },
+        .{ .name = "timeoutable", .preds = &.{"timedout?"}, .plains = &.{} },
+        .{ .name = "two_factor_authenticatable", .preds = &.{}, .plains = &.{ "otp_secret", "current_otp", "validate_and_consume_otp!" } },
+    };
+
+    for (0..args.size) |i| {
+        if (args.nodes[i].*.type != prism.NODE_SYMBOL) continue;
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(args.nodes[i]));
+        if (sym.unescaped.source == null) continue;
+        const modname = sym.unescaped.source[0..sym.unescaped.length];
+        const lc = locationLineCol(ctx.parser, args.nodes[i].*.location.start);
+        for (modules) |m| {
+            if (!std.mem.eql(u8, modname, m.name)) continue;
+            for (m.preds) |p| try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", null, parent, null);
+            for (m.plains) |p| try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, null, null, parent, null);
+        }
+    }
+}
+
+// `has_attached_file :file` (Paperclip) — synthesize the attachment reader/predicate/
+// setter and the Paperclip column accessors onto the enclosing model. The reader
+// returns Paperclip::Attachment (bundled RBS) so `model.file.url(:original)` resolves.
+pub fn insertPaperclipSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    const sym_name = extractFirstSymbolName(cn) orelse return;
+    if (sym_name.len == 0 or sym_name.len > 100) return;
+    const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+
+    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, "Paperclip::Attachment", "has_attached_file", parent, null);
+    var q_buf: [128]u8 = undefined;
+    const q = std.fmt.bufPrint(&q_buf, "{s}?", .{sym_name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", q, lc.line, lc.col, "TrueClass | FalseClass", "has_attached_file", parent, null);
+    var w_buf: [128]u8 = undefined;
+    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
+    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "has_attached_file", parent, null);
+    const cols = [_]struct { suffix: []const u8, ret: []const u8 }{
+        .{ .suffix = "_file_name", .ret = "String" },
+        .{ .suffix = "_content_type", .ret = "String" },
+        .{ .suffix = "_file_size", .ret = "Integer" },
+        .{ .suffix = "_updated_at", .ret = "Time" },
+    };
+    for (cols) |c| {
+        var cb: [128]u8 = undefined;
+        const cname = std.fmt.bufPrint(&cb, "{s}{s}", .{ sym_name, c.suffix }) catch continue;
+        try insertSymbolWithReturn(ctx, "def", cname, lc.line, lc.col, c.ret, "has_attached_file", parent, null);
+    }
 }
 
 pub fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
