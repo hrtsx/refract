@@ -421,28 +421,15 @@ test "didChange reindexes hover shows new type" {
 }
 
 test "P27 T10.62 yard param hover shows type" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p27_t1062";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "# @param count [Integer]\ndef run(count)\ncount\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"# @param count [Integer]\\ndef run(count)\\ncount\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "# @param count [Integer]\ndef run(count)\ncount\nend\n",
+        .method = "textDocument/hover",
+        .line = 2,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -451,28 +438,15 @@ test "P27 T10.62 yard param hover shows type" {
 }
 
 test "P28 T11.29 hover union type two branches" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p28_t1129";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "if true\nx = User.new\nelse\nx = Post.new\nend\nx\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"if true\\nx = User.new\\nelse\\nx = Post.new\\nend\\nx\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "if true\nx = User.new\nelse\nx = Post.new\nend\nx\n",
+        .method = "textDocument/hover",
+        .line = 5,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const r_obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -481,28 +455,15 @@ test "P28 T11.29 hover union type two branches" {
 }
 
 test "P28 T11.30 hover single type no pipe" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p28_t1130";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "x = User.new\nx\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"x = User.new\\nx\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "x = User.new\nx\n",
+        .method = "textDocument/hover",
+        .line = 1,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const r_obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,

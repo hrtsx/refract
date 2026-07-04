@@ -177,6 +177,118 @@ pub const Session = struct {
     }
 };
 
+var ws_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// One-shot single-file LSP probe. Collapses the init/index/query/shutdown
+/// boilerplate shared by the position-based query tests (completion, hover,
+/// definition, …). Writes `source` to a temp workspace, indexes it via
+/// `didChangeWatchedFiles` (file-on-disk semantics — NOT an unsaved didOpen
+/// overlay), fires one request as id 2 at (line, character), and captures the
+/// reply. Caller owns assertions on `raw`/`resp`.
+pub const Probe = struct {
+    source: []const u8,
+    line: i64,
+    character: i64,
+    file: []const u8 = "a.rb",
+    method: []const u8 = "textDocument/completion",
+    /// Raw JSON for `initializationOptions`. Default disables gem indexing so
+    /// the probe stays hermetic and fast.
+    init_opts: []const u8 = "{\"disableGemIndex\":true}",
+    /// How the source reaches the server. `.watched` writes the file and syncs
+    /// via `didChangeWatchedFiles` (file-on-disk). `.overlay` also writes the
+    /// file, then sends a `didOpen` carrying the same text as an unsaved buffer
+    /// (exercises the overlay path + synchronous open-time indexing).
+    open: enum { watched, overlay } = .watched,
+};
+
+/// Append `s` to `out` as the body of a JSON string (no surrounding quotes),
+/// escaping the characters that appear in Ruby test fixtures.
+fn jsonEscape(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '"' => try out.appendSlice(alloc, "\\\""),
+        '\\' => try out.appendSlice(alloc, "\\\\"),
+        '\n' => try out.appendSlice(alloc, "\\n"),
+        '\r' => try out.appendSlice(alloc, "\\r"),
+        '\t' => try out.appendSlice(alloc, "\\t"),
+        else => try out.append(alloc, c),
+    };
+}
+
+pub const OneShot = struct {
+    alloc: std.mem.Allocator,
+    ws: []u8,
+    raw: []u8,
+    resp: []std.json.Parsed(std.json.Value),
+
+    pub fn deinit(self: *OneShot) void {
+        for (self.resp) |*p| p.deinit();
+        self.alloc.free(self.resp);
+        self.alloc.free(self.raw);
+        std.Io.Dir.cwd().deleteTree(std.Options.debug_io, self.ws) catch {};
+        self.alloc.free(self.ws);
+    }
+
+    pub fn response(self: *OneShot, id: i64) ?std.json.Value {
+        return getResponseById(self.resp, id);
+    }
+
+    pub fn rawContains(self: *OneShot, needle: []const u8) bool {
+        return std.mem.indexOf(u8, self.raw, needle) != null;
+    }
+};
+
+pub fn probe(alloc: std.mem.Allocator, p: Probe) !OneShot {
+    const n = ws_counter.fetchAdd(1, .monotonic);
+    const ts = std.Io.Timestamp.now(std.Options.debug_io, .real).toMicroseconds();
+    const ws = try std.fmt.allocPrint(alloc, "/tmp/refract_test_ws_{d}_{d}", .{ ts, n });
+    errdefer alloc.free(ws);
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    errdefer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    const sub = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ ws, p.file });
+    defer alloc.free(sub);
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = sub, .data = p.source });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    const init_msg = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"rootUri\":\"file://{s}\",\"capabilities\":{{}},\"initializationOptions\":{s}}}}}", .{ ws, p.init_opts });
+    defer alloc.free(init_msg);
+    try s.send(init_msg);
+    try s.send(base_initialized);
+
+    switch (p.open) {
+        .watched => {
+            const watch = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{{\"changes\":[{{\"uri\":\"file://{s}/{s}\",\"type\":1}}]}}}}", .{ ws, p.file });
+            defer alloc.free(watch);
+            try s.send(watch);
+            try s.waitIdle(100);
+        },
+        .overlay => {
+            var open_msg = std.ArrayList(u8).empty;
+            defer open_msg.deinit(alloc);
+            const prefix = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/{s}\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"", .{ ws, p.file });
+            defer alloc.free(prefix);
+            try open_msg.appendSlice(alloc, prefix);
+            try jsonEscape(alloc, &open_msg, p.source);
+            try open_msg.appendSlice(alloc, "\"}}}");
+            try s.send(open_msg.items);
+        },
+    }
+
+    const query = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"{s}\",\"params\":{{\"textDocument\":{{\"uri\":\"file://{s}/{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ p.method, ws, p.file, p.line, p.character });
+    defer alloc.free(query);
+    try s.send(query);
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    errdefer alloc.free(raw);
+    const resp = try extractResponses(alloc, raw);
+    return .{ .alloc = alloc, .ws = ws, .raw = raw, .resp = resp };
+}
+
 pub fn extractResponses(alloc: std.mem.Allocator, raw: []const u8) ![]std.json.Parsed(std.json.Value) {
     var results = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
     errdefer {

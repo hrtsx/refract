@@ -1499,28 +1499,14 @@ test "open doc cache didChange updates completion" {
 }
 
 test "has_many completion suggestion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p24_t720";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class User\n  has_many :posts\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class User\\n  has_many :posts\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class User\n  has_many :posts\nend\n",
+        .line = 0,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1530,28 +1516,14 @@ test "has_many completion suggestion" {
 }
 
 test "Struct.new reader in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p24_t722";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "MyModel = Struct.new(:name)\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"MyModel = Struct.new(:name)\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "MyModel = Struct.new(:name)\n",
+        .line = 0,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1561,28 +1533,14 @@ test "Struct.new reader in completion" {
 }
 
 test "completionItem/resolve adds documentation" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p24_t732";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "# Returns something\ndef documented_method; end\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"# Returns something\\ndef documented_method; end\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "# Returns something\ndef documented_method; end\n",
+        .line = 0,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1592,28 +1550,14 @@ test "completionItem/resolve adds documentation" {
 }
 
 test "prepend method appears before include in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p24_t733";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "module Prepended; def prep_method; end; end\nmodule Included; def incl_method; end; end\nclass MyClass\n  prepend Prepended\n  include Included\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Prepended; def prep_method; end; end\\nmodule Included; def incl_method; end; end\\nclass MyClass\\n  prepend Prepended\\n  include Included\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Prepended; def prep_method; end; end\nmodule Included; def incl_method; end; end\nclass MyClass\n  prepend Prepended\n  include Included\nend\n",
+        .line = 0,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1623,29 +1567,14 @@ test "prepend method appears before include in completion" {
 }
 
 test "double colon completion returns constants" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p25_t816";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "module Foo\n  class Bar; end\n  class Baz; end\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Foo\\n  class Bar; end\\n  class Baz; end\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":5}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    // Build source with Foo:: at line 4
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Foo\n  class Bar; end\n  class Baz; end\nend\n",
+        .line = 4,
+        .character = 5,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1655,28 +1584,14 @@ test "double colon completion returns constants" {
 }
 
 test "double colon completion does not return methods" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p25_t817";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "module Foo\n  class Bar; end\nend\nFoo::\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Foo\\n  class Bar; end\\nend\\nFoo::\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Foo\n  class Bar; end\nend\nFoo::\n",
+        .line = 3,
+        .character = 5,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1686,28 +1601,14 @@ test "double colon completion does not return methods" {
 }
 
 test "AR chained completion posts after find" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p25_t835";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class User\n  def name; end\nend\nu = User.find(1)\nu.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class User\\n  def name; end\\nend\\nu = User.find(1)\\nu.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class User\n  def name; end\nend\nu = User.find(1)\nu.\n",
+        .line = 4,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1717,28 +1618,14 @@ test "AR chained completion posts after find" {
 }
 
 test "namespace module completion via double colon" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p25_t845";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "module Foo\n  class Bar; end\nend\nFoo::\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Foo\\n  class Bar; end\\nend\\nFoo::\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Foo\n  class Bar; end\nend\nFoo::\n",
+        .line = 3,
+        .character = 5,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1748,28 +1635,14 @@ test "namespace module completion via double colon" {
 }
 
 test "P27 T10.8 yard return in completion detail" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p27_t1008";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "# @return [String]\ndef hello\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"# @return [String]\\ndef hello\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":0}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "# @return [String]\ndef hello\nend\n",
+        .line = 2,
+        .character = 0,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1778,28 +1651,14 @@ test "P27 T10.8 yard return in completion detail" {
 }
 
 test "P27 T10.19 or-assign completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p27_t1019";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class User\ndef foo\nend\nend\nx ||= User.new\nx.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class User\\ndef foo\\nend\\nend\\nx ||= User.new\\nx.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":5,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class User\ndef foo\nend\nend\nx ||= User.new\nx.\n",
+        .line = 5,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1808,28 +1667,14 @@ test "P27 T10.19 or-assign completion" {
 }
 
 test "P27 T10.57 rescue binding in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p27_t1057";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "def foo\nbegin\nrescue IOError => e\ne.\nend\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"def foo\\nbegin\\nrescue IOError => e\\ne.\\nend\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "def foo\nbegin\nrescue IOError => e\ne.\nend\nend\n",
+        .line = 3,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1862,28 +1707,14 @@ test "P29 T12.4 schema v21 value_snippet column exists" {
 }
 
 test "P29 T12.15 global var in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1215";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "$config = Config.new\n$config\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"$config = Config.new\\n$config\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "$config = Config.new\n$config\n",
+        .line = 1,
+        .character = 7,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2031,28 +1862,15 @@ test "P29 T12.25 value_snippet capped at 120 chars" {
 }
 
 test "P29 T12.26 hover shows constant value_snippet" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1226";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "TIMEOUT = 30\nTIMEOUT\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"TIMEOUT = 30\\nTIMEOUT\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":3}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "TIMEOUT = 30\nTIMEOUT\n",
+        .method = "textDocument/hover",
+        .line = 1,
+        .character = 3,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoHoverResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2076,28 +1894,15 @@ test "P29 T12.26 hover shows constant value_snippet" {
 }
 
 test "P29 T12.27 hover no value snippet for call constant" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1227";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "RESULT = compute_something\nRESULT\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"RESULT = compute_something\\nRESULT\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":3}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoHoverResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "RESULT = compute_something\nRESULT\n",
+        .method = "textDocument/hover",
+        .line = 1,
+        .character = 3,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoHoverResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2107,28 +1912,14 @@ test "P29 T12.27 hover no value snippet for call constant" {
 }
 
 test "P29 T12.41 private method hidden from dot completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1241";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Service\n  def public_action; end\n  private\n  def secret_action; end\nend\nobj = Service.new\nobj.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Service\\n  def public_action; end\\n  private\\n  def secret_action; end\\nend\\nobj = Service.new\\nobj.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":6,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Service\n  def public_action; end\n  private\n  def secret_action; end\nend\nobj = Service.new\nobj.\n",
+        .line = 6,
+        .character = 4,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2163,28 +1954,14 @@ test "P29 T12.41 private method hidden from dot completion" {
 }
 
 test "P29 T12.42 private method present in self completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1242";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Engine\n  def run\n    self.\n  end\n  private\n  def internal; end\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Engine\\n  def run\\n    self.\\n  end\\n  private\\n  def internal; end\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":9},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Engine\n  def run\n    self.\n  end\n  private\n  def internal; end\nend\n",
+        .line = 2,
+        .character = 9,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2219,28 +1996,14 @@ test "P29 T12.42 private method present in self completion" {
 }
 
 test "P29 T12.61 completion keyword def snippet present" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1261";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "de\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"de\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":2},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "de\n",
+        .line = 0,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2281,28 +2044,14 @@ test "P29 T12.61 completion keyword def snippet present" {
 }
 
 test "P29 T12.62 completion keyword class snippet" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1262";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "cla\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"cla\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":3},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "cla\n",
+        .line = 0,
+        .character = 3,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2337,28 +2086,14 @@ test "P29 T12.62 completion keyword class snippet" {
 }
 
 test "P29 T12.63 completion keyword sorts after symbols" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1263";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "def defer_work; end\nde\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"def defer_work; end\\nde\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":1,\"character\":2},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "def defer_work; end\nde\n",
+        .line = 1,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2396,28 +2131,14 @@ test "P29 T12.63 completion keyword sorts after symbols" {
 }
 
 test "P29 T12.64 completion keyword filtered by prefix" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1264";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "cl\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"cl\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":0,\"character\":2},\"context\":{\"triggerKind\":1}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "cl\n",
+        .line = 0,
+        .character = 2,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2452,28 +2173,14 @@ test "P29 T12.64 completion keyword filtered by prefix" {
 }
 
 test "P29 T12.65 completion keyword not on dot trigger" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1265";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class MyObj\n  def go; end\nend\nobj = MyObj.new\nobj.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class MyObj\\n  def go; end\\nend\\nobj = MyObj.new\\nobj.\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":4},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\".\"}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class MyObj\n  def go; end\nend\nobj = MyObj.new\nobj.\n",
+        .line = 4,
+        .character = 4,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2505,28 +2212,14 @@ test "P29 T12.65 completion keyword not on dot trigger" {
 }
 
 test "P29 T12.66 completion keyword not on colon trigger" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p29_t1266";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "module Foo\n  class Bar; end\nend\nFoo::\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"module Foo\\n  class Bar; end\\nend\\nFoo::\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":5},\"context\":{\"triggerKind\":2,\"triggerCharacter\":\":\"}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Foo\n  class Bar; end\nend\nFoo::\n",
+        .line = 3,
+        .character = 5,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2557,30 +2250,14 @@ test "P29 T12.66 completion keyword not on colon trigger" {
 }
 
 test "P30 T13.1 Struct.new members in dot completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p30_t1301";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"x\"") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "MyPoint = Struct.new(:x, :y)\np = MyPoint.new\np.\n",
+        .line = 2,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"x\"") != null);
 }
 
 test "P31 T14.20 require completion suggests json for 'js prefix" {
@@ -2636,271 +2313,114 @@ test "P31 T14.22 require stdlib set completion" {
 }
 
 test "P31 T14.27 Enumerable synthesis map in dot-completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p31_t1427";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1427\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1427.new\nc.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"map\"") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class MyCol1427\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1427.new\nc.\n",
+        .line = 7,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"map\"") != null);
 }
 
 test "P31 T14.28 Enumerable synthesis select in dot-completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p31_t1428";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1428\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1428.new\nc.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"select\"") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class MyCol1428\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1428.new\nc.\n",
+        .line = 7,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"select\"") != null);
 }
 
 test "P31 T14.29 Enumerable synthesis any? in dot-completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p31_t1429";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class MyCol1429\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1429.new\nc.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "any?") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class MyCol1429\n  include Enumerable\n  def each\n    yield 1\n  end\nend\nc = MyCol1429.new\nc.\n",
+        .line = 7,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "any?") != null);
 }
 
 test "P31 T14.30 Comparable synthesis <= in dot-completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p31_t1430";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class MyVal1430\n  include Comparable\n  def <=>(other)\n    0\n  end\nend\nv = MyVal1430.new\nv.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":7,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"<=\"") != null or std.mem.indexOf(u8, raw, "between?") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class MyVal1430\n  include Comparable\n  def <=>(other)\n    0\n  end\nend\nv = MyVal1430.new\nv.\n",
+        .line = 7,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"<=\"") != null or std.mem.indexOf(u8, h.raw, "between?") != null);
 }
 
 test "P31 T14.41 p31 regression completion still works" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p31_t1441";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class RegClass1441\n  def regmethod1441\n  end\nend\nreg\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":3}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "regmethod1441") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class RegClass1441\n  def regmethod1441\n  end\nend\nreg\n",
+        .line = 4,
+        .character = 3,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "regmethod1441") != null);
 }
 
 test "P32 T15.29 @type with completion uses annotated type" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p32_t1529";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Anno1529\n  def meth1529_a; end\n  def meth1529_b; end\nend\n# @type [Anno1529]\nz1529 = nil\nz1529.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":6,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "meth1529") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Anno1529\n  def meth1529_a; end\n  def meth1529_b; end\nend\n# @type [Anno1529]\nz1529 = nil\nz1529.\n",
+        .line = 6,
+        .character = 7,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "meth1529") != null);
 }
 
 test "P32 T15.32 pattern matching completion uses bound type" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p32_t1532";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "v1532 = \"hello\"\ncase v1532\nin String => s1532\n  s1532.\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":8}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "upcase") != null or std.mem.indexOf(u8, raw, "downcase") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "v1532 = \"hello\"\ncase v1532\nin String => s1532\n  s1532.\nend\n",
+        .line = 3,
+        .character = 8,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "upcase") != null or std.mem.indexOf(u8, h.raw, "downcase") != null);
 }
 
 test "P32 T15.36 delegate method in completion" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p32_t1536";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Order1536\n  delegate :greet1536, to: :user1536\nend\no1536 = Order1536.new\no1536.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "greet1536") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Order1536\n  delegate :greet1536, to: :user1536\nend\no1536 = Order1536.new\no1536.\n",
+        .line = 4,
+        .character = 7,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "greet1536") != null);
 }
 
 test "P32 T15.45 p32 regression completion still works" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p32_t1545";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Comp1545\n  def mcomp1545; end\nend\nc1545 = Comp1545.new\nc1545.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "mcomp1545") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Comp1545\n  def mcomp1545; end\nend\nc1545 = Comp1545.new\nc1545.\n",
+        .line = 4,
+        .character = 7,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "mcomp1545") != null);
 }
 
 test "T_COMP_COMMENT completion inside comment returns empty" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_tcompcomment";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/comment.rb", .data = "# this is a comment\ndef foo; end\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/comment.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"# this is a comment\\ndef foo; end\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/comment.rb\"},\"position\":{\"line\":0,\"character\":10}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "# this is a comment\ndef foo; end\n",
+        .file = "comment.rb",
+        .line = 0,
+        .character = 10,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -2919,28 +2439,15 @@ test "T_COMP_COMMENT completion inside comment returns empty" {
 }
 
 test "T_COMP_STRING completion inside string returns empty" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_tcompstring";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/str.rb", .data = "x = \"hello world\"\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/str.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"x = \\\"hello world\\\"\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/str.rb\"},\"position\":{\"line\":0,\"character\":10}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    const r = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "x = \"hello world\"\n",
+        .file = "str.rb",
+        .line = 0,
+        .character = 10,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const r = h.response(2) orelse return error.NoCompletionResponse;
     const obj = switch (r) {
         .object => |o| o,
         else => return error.NotObject,
@@ -3567,136 +3074,78 @@ test "completion on Time.cu filters to receiver methods (no global leak)" {
 }
 
 test "respond_to block param types format to responder (format.json completes)" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_respond_to_fmt";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class FooController\n  def index\n    respond_to do |format|\n      format.\n    end\n  end\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":3,\"character\":13}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "json") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class FooController\n  def index\n    respond_to do |format|\n      format.\n    end\n  end\nend\n",
+        .line = 3,
+        .character = 13,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "json") != null);
 }
 
 test "devise :confirmable synthesizes confirmed? on the model" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_devise_conf";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Userx\n  devise :confirmable\nend\nu = Userx.new\nu.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "confirmed?") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Userx\n  devise :confirmable\nend\nu = Userx.new\nu.\n",
+        .line = 4,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "confirmed?") != null);
 }
 
 test "has_attached_file typing chains to Paperclip::Attachment (file.url completes)" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_paperclip";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Docx\n  has_attached_file :file\nend\nm = Docx.new\nm.file.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "original_filename") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Docx\n  has_attached_file :file\nend\nm = Docx.new\nm.file.\n",
+        .line = 4,
+        .character = 7,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "original_filename") != null);
 }
 
 test "enum predicate parented to model (record.draft? completes)" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_enum_parent";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Postx\n  enum :state, [:draft, :published]\nend\np = Postx.new\np.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":2}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "draft?") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Postx\n  enum :state, [:draft, :published]\nend\np = Postx.new\np.\n",
+        .line = 4,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "draft?") != null);
 }
 
 test "unary-bang receiver still completes (!obj.method extraction)" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_bang_recv";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class Widget\n  def ready?; end\nend\nw = Widget.new\nx = !w.\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"type\":1}]}}");
-    try s.waitIdle(100);
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":4,\"character\":7}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const resp = try extractResponses(alloc, raw);
-    defer {
-        for (resp) |r| r.deinit();
-        alloc.free(resp);
-    }
-    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
-    try std.testing.expect(std.mem.indexOf(u8, raw, "ready?") != null);
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Widget\n  def ready?; end\nend\nw = Widget.new\nx = !w.\n",
+        .line = 4,
+        .character = 7,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "ready?") != null);
+}
+
+test "identity method is transparent in chain fold (reload.role completes)" {
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Rolex\n  def zorpcode; end\nend\nclass Userx\n  def role\n    Rolex.new\n  end\nend\nu = Userx.new\nu.reload.role.\n",
+        .line = 9,
+        .character = 14,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorpcode") != null);
+}
+
+test "namespaced compound local guesses the namespaced class (chatx_message)" {
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "module Chatx\n  class Message\n    def zorptext; end\n  end\nend\nchatx_message.\n",
+        .line = 5,
+        .character = 14,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorptext") != null);
 }

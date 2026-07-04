@@ -403,8 +403,10 @@ comp_attempted = Hash.new(0); comp_resolved = Hash.new(0); comp_recall_hits = Ha
 comp_typeable_attempted = Hash.new(0); comp_typeable_hits = Hash.new(0)
 comp_setter_lhs_dropped = 0
 # Receivers with no static type: RSpec/WebMock expectation/matcher proxies and the
-# dynamic class-under-test handle. Excluded from the typeable-subset recall.
-UNDECIDABLE_RECV = %w[is_expected expect described_class allow receive expect_any_instance_of allow_any_instance_of].freeze
+# dynamic class-under-test handle. A matcher-chain receiver (`have_been_made.once`,
+# `is_expected.to`) resolves to a gem matcher object with no source/RBS in these repos,
+# so no LSP (solargraph/ruby-lsp included) can type it — excluded from typeable recall.
+UNDECIDABLE_RECV = %w[is_expected expect described_class allow receive expect_any_instance_of allow_any_instance_of have_been_made have_received a_request].freeze
 comp_samples = {} # server => [{recv, meth, loc, got}] — completion missed the called method
 
 pr_row = lambda do |tp, fp, fn|

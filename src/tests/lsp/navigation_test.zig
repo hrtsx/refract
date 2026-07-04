@@ -1183,28 +1183,16 @@ test "definition on qualified name" {
 }
 
 test "implementation returns definition location" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p22_impl";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/impl.rb", .data = "class Foo\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/impl.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Foo\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/implementation\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/impl.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-    const resp = getResponseById(responses, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Foo\nend\n",
+        .file = "impl.rb",
+        .method = "textDocument/implementation",
+        .line = 0,
+        .character = 6,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const resp = h.response(2) orelse return error.NoResponse;
     const obj = switch (resp) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1218,28 +1206,16 @@ test "implementation returns definition location" {
 }
 
 test "declaration returns definition location" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p22_decl";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/decl.rb", .data = "class Bar\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/decl.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class Bar\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/declaration\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/decl.rb\"},\"position\":{\"line\":0,\"character\":6}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-    const resp = getResponseById(responses, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Bar\nend\n",
+        .file = "decl.rb",
+        .method = "textDocument/declaration",
+        .line = 0,
+        .character = 6,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const resp = h.response(2) orelse return error.NoResponse;
     const obj = switch (resp) {
         .object => |o| o,
         else => return error.NotObject,
@@ -1320,28 +1296,16 @@ test "cattr_accessor indexed" {
 }
 
 test "callHierarchy prepare returns item" {
-    const alloc = std.testing.allocator;
-    const ws = "/tmp/refract_test_p22_callh";
-    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/ch.rb", .data = "def my_method\nend\n" });
-    var s = try Session.init(alloc);
-    defer s.deinit();
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
-    try s.send(base_initialized);
-    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ch.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"def my_method\\nend\\n\"}}}");
-    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/prepareCallHierarchy\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/ch.rb\"},\"position\":{\"line\":0,\"character\":4}}}");
-    try s.send(base_shutdown);
-    try s.send(base_exit);
-    const raw = try s.run();
-    defer alloc.free(raw);
-    const responses = try extractResponses(alloc, raw);
-    defer {
-        for (responses) |r| r.deinit();
-        alloc.free(responses);
-    }
-    const resp = getResponseById(responses, 2) orelse return error.NoResponse;
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "def my_method\nend\n",
+        .file = "ch.rb",
+        .method = "textDocument/prepareCallHierarchy",
+        .line = 0,
+        .character = 4,
+        .open = .overlay,
+    });
+    defer h.deinit();
+    const resp = h.response(2) orelse return error.NoResponse;
     const obj = switch (resp) {
         .object => |o| o,
         else => return error.NotObject,

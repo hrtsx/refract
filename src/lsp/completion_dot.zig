@@ -76,6 +76,22 @@ fn qualifyClassName(self: *Server, alloc: std.mem.Allocator, bare: []const u8) ?
     return null;
 }
 
+// Exact-name class lookup (no `%::` suffix fallback). A coincidental suffix match is
+// weak — `chat_channel` camelizes to `ChatChannel`, which suffix-matches an unrelated
+// page-object `PageObjects::…::ChatChannel` and shadows the real AR model `Chat::Channel`.
+// Used to prioritize strong exact matches (flat then namespaced-split) in the guess.
+fn qualifyClassExact(self: *Server, alloc: std.mem.Allocator, bare: []const u8) ?[]u8 {
+    if (bare.len == 0) return null;
+    const st = self.cachedStmt("SELECT name FROM symbols WHERE kind IN ('class','module') AND name = ?1 LIMIT 1") catch return null;
+    defer st.reset();
+    st.bind_text(1, bare);
+    if (st.step() catch false) {
+        const n = st.column_text(0);
+        if (n.len > 0) return alloc.dupe(u8, n) catch null;
+    }
+    return null;
+}
+
 // When a receiver is a homogeneous collection of an ActiveRecord model (`Array[Order]`
 // from a plural query/var), it behaves as a relation: it responds to AR query methods and
 // the model's named scopes, not just Enumerable. Returns the element model name when the
@@ -186,6 +202,17 @@ fn isElementReturningMethod(method: []const u8) bool {
     return false;
 }
 
+// Methods that return the receiver itself (same runtime type), so a chain link
+// through one is transparent for type-folding: `reload`/`dup`/`clone`/`freeze`
+// (AR + core), `itself`/`tap` (core), `presence` (ActiveSupport, receiver-or-nil).
+fn isIdentityReturningMethod(method: []const u8) bool {
+    const names = [_][]const u8{ "reload", "dup", "clone", "freeze", "itself", "tap", "presence" };
+    for (names) |n| {
+        if (std.mem.eql(u8, method, n)) return true;
+    }
+    return false;
+}
+
 // Base class of a (possibly parameterized) type. The indexer represents an array
 // of T as the bracket-prefixed `[T]` (AR plural queries, array literals), whose
 // base class is Array. Kept local to completion so global extractBaseClass — used
@@ -216,6 +243,12 @@ fn collectionElementType(type_str: []const u8) []const u8 {
 fn returnTypeOnClass(self: *Server, method: []const u8, class: []const u8) ?[]u8 {
     const resolved = baseClassOf(class);
     if (resolved.len == 0) return null;
+    // Identity / self-returning methods: `reload`/`dup`/`clone`/`freeze`/`itself`/
+    // `tap`/`presence` return the receiver unchanged, so a chain link through one keeps
+    // the current type (`user.reload.role` → reload is transparent, role resolves on
+    // User). Return the FULL `class` (preserving any `[T]` collection shape) so a
+    // relation `.dup.each` still yields the element. Very common in specs/AR code.
+    if (isIdentityReturningMethod(method)) return self.alloc.dupe(u8, class) catch null;
     // `Const.new` → an instance of Const (constructor inference through a chain).
     if (std.mem.eql(u8, method, "new") and std.ascii.isUpper(resolved[0])) {
         return self.alloc.dupe(u8, resolved) catch null;
@@ -371,6 +404,38 @@ fn lookupClassByCamel(self: *Server, snake: []const u8) ?[]u8 {
     return qualifyClassName(self, self.alloc, cand);
 }
 
+// Namespace-split guess: a compound snake identifier whose flat camelization names
+// no class may instead name a NAMESPACED class — `chat_message` → `Chat::Message`,
+// `direct_message` → `DirectMessage` (flat, already tried) vs `Direct::Message`. Camelize
+// each underscore segment and join with `::`, then match the class table exact-or-suffix.
+// Only fires as a fallback when the flat forms miss AND the split names a REAL indexed
+// class, so it can only ADD a correct completion, never mis-resolve to a phantom class.
+fn namespaceSplitClass(self: *Server, recv_word: []const u8) ?[]u8 {
+    if (std.mem.indexOfScalar(u8, recv_word, '_') == null) return null;
+    var buf: [128]u8 = undefined;
+    var len: usize = 0;
+    var it = std.mem.splitScalar(u8, recv_word, '_');
+    var first = true;
+    while (it.next()) |seg| {
+        if (seg.len == 0) continue;
+        if (!first) {
+            if (len + 2 > buf.len) return null;
+            buf[len] = ':';
+            buf[len + 1] = ':';
+            len += 2;
+        }
+        first = false;
+        if (len >= buf.len) return null;
+        buf[len] = std.ascii.toUpper(seg[0]);
+        len += 1;
+        if (len + seg.len - 1 > buf.len) return null;
+        @memcpy(buf[len .. len + seg.len - 1], seg[1..]);
+        len += seg.len - 1;
+    }
+    if (len == 0 or first) return null;
+    return qualifyClassExact(self, self.alloc, buf[0..len]);
+}
+
 // Completion-only receiver-type guess from an identifier, idiomatic-Rails aware:
 // tries the name, its singular, and a convention-prefix-stripped form (+ its
 // singular) against the class table. Never persisted, so a wrong guess only fails
@@ -379,6 +444,18 @@ fn guessReceiverClass(self: *Server, recv_word: []const u8) ?[]u8 {
     var sbuf: [128]u8 = undefined;
     const stripped = stripConventionPrefix(recv_word);
     const bases = [_][]const u8{ recv_word, stripped };
+    // Strong exact matches FIRST — a coincidental `%::CamelName` suffix (page objects,
+    // serializers) must not shadow the real class. Flat exact (`account`→`Account`),
+    // then namespaced-split exact (`chat_channel`→`Chat::Message` model, not the
+    // `PageObjects::…::ChatChannel` suffix). Only affects compound names whose flat
+    // form has no exact class, so plain receivers are unchanged.
+    for (bases) |base| {
+        var cb: [128]u8 = undefined;
+        if (camelizeIdent(base, &cb)) |cand| {
+            if (qualifyClassExact(self, self.alloc, cand)) |c| return c;
+        }
+    }
+    if (namespaceSplitClass(self, recv_word)) |c| return c;
     for (bases) |base| {
         // For a PLURAL-looking word, prefer the collection shape: singular class → Array[C].
         // This must run BEFORE the bare match — otherwise `pending_registrations` could match a
