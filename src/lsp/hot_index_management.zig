@@ -6,6 +6,7 @@ const hot_index_mod = @import("hot_index.zig");
 const navigation = @import("navigation.zig");
 const completion = @import("completion.zig");
 const server_util = @import("server_util.zig");
+const server_indexing = @import("server_indexing.zig");
 
 const writeEscapedJson = server_util.writeEscapedJson;
 const writeEscapedJsonContent = server_util.writeEscapedJsonContent;
@@ -77,6 +78,13 @@ pub fn rebuildHotIndex(self: *Server) void {
         self.alloc.destroy(old);
     }
     self.hot.store(new_idx, .release);
+
+    // Return freed pages to the OS. buildFromDb allocates large temporary
+    // name/tail/method lists (freed by the time we get here) and, on a rebuild,
+    // we just freed the previous whole-repo arena. glibc retains both on its
+    // freelist otherwise — trimming here collapses the first-cold-start build
+    // spike (old==null path, which the previous guard skipped) as well.
+    server_indexing.mallocTrim();
 
     if (profiling) {
         const hot_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds() - hot_start;

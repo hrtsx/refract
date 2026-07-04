@@ -1,5 +1,6 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
+const limits = @import("../lsp/limits.zig");
 const Db = db_mod.Db;
 const DbError = db_mod.DbError;
 const CURRENT_SCHEMA = db_mod.CURRENT_SCHEMA;
@@ -77,7 +78,7 @@ pub fn init(self: Db) DbError!void {
         \\PRAGMA synchronous=NORMAL;
         \\PRAGMA cache_size=-32000;
         \\PRAGMA temp_store=MEMORY;
-        \\PRAGMA mmap_size=268435456;
+        ++ std.fmt.comptimePrint("PRAGMA mmap_size={d};\n", .{limits.DB_MMAP_SIZE_BYTES}) ++
         \\PRAGMA busy_timeout=5000;
         \\PRAGMA foreign_keys=ON;
         \\CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

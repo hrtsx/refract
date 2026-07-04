@@ -32,6 +32,7 @@ const sorbet_bridge = @import("sorbet_bridge.zig");
 const sorbet_worker = @import("sorbet_worker.zig");
 const llm_adapter = @import("llm_adapter.zig");
 const server_util = @import("server_util.zig");
+const limits = @import("limits.zig");
 const S = @import("server.zig");
 const Server = S.Server;
 const INCR_WATCH_SLEEP_MS = S.INCR_WATCH_SLEEP_MS;
@@ -107,6 +108,56 @@ pub fn indexStdlibRbsLsp(ctx: *BgCtx, alloc: std.mem.Allocator) void {
     ctx.server_ptr.sendLogMessage(3, smsg);
 }
 
+/// Return freed heap pages to the OS. glibc's malloc keeps large freed arenas on
+/// its own freelist, so RSS stays high after the cold-index workers exit and free
+/// their arenas — malloc_trim forces the release. No-op off glibc (musl has no
+/// malloc_trim; the extern is only declared under the comptime guard so non-glibc
+/// targets never reference the symbol).
+pub fn mallocTrim() void {
+    if (comptime builtin.os.tag == .linux and builtin.abi == .gnu) {
+        const trim = struct {
+            extern "c" fn malloc_trim(pad: usize) c_int;
+        };
+        _ = trim.malloc_trim(0);
+    }
+}
+
+/// Current resident set size in bytes, or 0 if unavailable. Linux-only
+/// (`/proc/self/statm` field 2 = resident pages). Used only under
+/// REFRACT_INIT_PROFILE for peak attribution.
+fn readRssBytes() usize {
+    if (comptime builtin.os.tag != .linux) return 0;
+    var buf: [256]u8 = undefined;
+    const f = std.Io.Dir.cwd().openFile(std.Options.debug_io, "/proc/self/statm", .{}) catch return 0;
+    defer f.close(std.Options.debug_io);
+    const n = f.readStreaming(std.Options.debug_io, &.{buf[0..]}) catch return 0;
+    var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
+    _ = it.next() orelse return 0; // total program size
+    const res = it.next() orelse return 0; // resident pages
+    const pages = std.fmt.parseInt(usize, std.mem.trim(u8, res, " \n"), 10) catch return 0;
+    return pages * std.heap.pageSize();
+}
+
+/// Available RAM in bytes from `/proc/meminfo` MemAvailable, or 0 if unknown.
+/// Drives the memory-aware worker-count floor on constrained hosts.
+fn readAvailableRamBytes() usize {
+    if (comptime builtin.os.tag != .linux) return 0;
+    var buf: [4096]u8 = undefined;
+    const f = std.Io.Dir.cwd().openFile(std.Options.debug_io, "/proc/meminfo", .{}) catch return 0;
+    defer f.close(std.Options.debug_io);
+    const n = f.readStreaming(std.Options.debug_io, &.{buf[0..]}) catch return 0;
+    var lines = std.mem.tokenizeScalar(u8, buf[0..n], '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "MemAvailable:")) {
+            var toks = std.mem.tokenizeScalar(u8, line["MemAvailable:".len..], ' ');
+            const kb_str = toks.next() orelse return 0;
+            const kb = std.fmt.parseInt(usize, kb_str, 10) catch return 0;
+            return kb * 1024;
+        }
+    }
+    return 0;
+}
+
 pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
@@ -114,7 +165,22 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
     const mem_db = db_mod.Db.open(":memory:") catch return;
     defer mem_db.close();
     mem_db.init_schema() catch return;
+    // Cold-index RAM bound: without a periodic trim each worker retains the
+    // high-water of its biggest file (arena + in-mem DB freelist) for its whole
+    // lifetime; N workers × that is the transient peak RSS. Trim on a file-count
+    // cadence (and immediately if the arena blows past its cap) so the footprint
+    // stays bounded while the workers keep running in parallel. See limits.zig.
+    var processed: usize = 0;
+    var commits_since_ckpt: usize = 0;
     while (wctx.queue.pop()) |work| {
+        processed += 1;
+        if (processed % limits.RSS_TRIM_BATCH == 0 or arena.queryCapacity() > limits.WORKER_ARENA_CAP_BYTES) {
+            // Prior iteration already reset (retain_capacity); free_all now returns
+            // the retained high-water to the OS. VACUUM compacts the in-memory DB's
+            // page freelist (rows are already cleared per file via DELETE FROM files).
+            _ = arena.reset(.free_all);
+            mem_db.exec("VACUUM") catch {};
+        }
         // Count every consumed work item, regardless of skip/error/success.
         // The cold-index poll loop watches this counter; if skips don't count,
         // it spins until bg_cancelled fires.
@@ -183,6 +249,16 @@ pub fn bgWorkerFn(wctx: BgWorkerCtx) void {
                 wctx.bg_ctx.server_ptr.sendLogMessage(2, msg);
                 _ = wctx.bg_ctx.index_failures.fetchAdd(1, .monotonic);
             };
+            // Bound WAL growth during the burst: left alone the shared-DB WAL
+            // accumulates every insert until the maintenance checkpoint, ballooning
+            // to the full index size in memory (wal-index/shm) and on disk. A
+            // PASSIVE checkpoint on a commit cadence keeps it small without blocking
+            // readers. Cheap and already under db_mutex here.
+            commits_since_ckpt += 1;
+            if (commits_since_ckpt >= limits.RSS_TRIM_BATCH) {
+                commits_since_ckpt = 0;
+                shared_db.exec("PRAGMA wal_checkpoint(PASSIVE)") catch {};
+            }
         }
         // Clear mem_db for next file (CASCADE handles all child tables)
         mem_db.exec("DELETE FROM files") catch {}; // cleanup
@@ -364,7 +440,7 @@ pub const BgCtx = struct {
     extra_exclude_dirs: []const []const u8 = &.{},
     gitignore_negations: []const []const u8 = &.{},
     bundle_timeout_ms: u64 = 15_000,
-    max_workers: usize = 8,
+    max_workers: usize = limits.DEFAULT_COLD_INDEX_WORKERS,
     index_failures: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     progress_done: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     io: std.Io = std.Options.debug_io,
@@ -380,8 +456,21 @@ pub const BgCtx = struct {
         const db = self.server_ptr.db;
         const cpu_count = std.Thread.getCpuCount() catch 4;
         const desired_workers = @min(@max(cpu_count, 1), self.max_workers);
-        const num_workers: usize = @min(desired_workers, total_paths);
+        // Memory-aware floor: each worker's transient footprint is bounded by the
+        // trims in bgWorkerFn, so we can divide available RAM by that estimate to
+        // avoid oversubscribing memory on constrained hosts (containers, CI). Only
+        // lowers the pool when RAM is genuinely scarce; a roomy host keeps the full
+        // CPU/`--max-workers` count. 0 (unknown RAM) disables the floor.
+        const avail_ram = readAvailableRamBytes();
+        const ram_cap: usize = if (avail_ram > 0)
+            @max(1, avail_ram / limits.PER_WORKER_RAM_ESTIMATE_BYTES)
+        else
+            desired_workers;
+        const num_workers: usize = @min(@min(desired_workers, ram_cap), total_paths);
         if (num_workers == 0) return;
+
+        const profiling = std.c.getenv("REFRACT_INIT_PROFILE") != null;
+        const rss_start = if (profiling) readRssBytes() else 0;
 
         std.debug.print("refract: {s} start: {d} files, {d} workers\n", .{ label, total_paths, num_workers });
         self.index_failures.store(0, .monotonic);
@@ -440,12 +529,22 @@ pub const BgCtx = struct {
                 _ = std.c.nanosleep(&poll_ts, null);
             }
             for (workers.items) |t| t.join();
+            // Workers have exited and freed their arenas + in-mem DBs; force glibc
+            // to return those pages to the OS so peak RSS actually drops after the
+            // burst instead of lingering on malloc's freelist. Also checkpoint the
+            // shared WAL back into the main DB now that inserts are done.
+            db.exec("PRAGMA wal_checkpoint(TRUNCATE)") catch {};
+            mallocTrim();
             const done_final = self.progress_done.load(.monotonic);
             const fail_n = self.index_failures.load(.monotonic);
             if (self.server_ptr.bg_cancelled.load(.acquire))
                 std.debug.print("refract: {s} CANCELLED at {d}/{d} files ({d} failures)\n", .{ label, done_final, total_paths, fail_n })
             else
                 std.debug.print("refract: {s} complete: {d}/{d} files ({d} failures)\n", .{ label, done_final, total_paths, fail_n });
+            if (profiling) {
+                const rss_end = readRssBytes();
+                std.debug.print("refract_profile: {s} rss start={d}MB end={d}MB workers={d}\n", .{ label, rss_start / (1024 * 1024), rss_end / (1024 * 1024), num_workers });
+            }
         } else {
             // Worker spawn failed entirely — fall back to serial reindex on the main thread.
             self.server_ptr.db_mutex.lockUncancelable(std.Options.debug_io);

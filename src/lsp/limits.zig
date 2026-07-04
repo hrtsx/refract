@@ -23,6 +23,44 @@ pub const RUBOCOP_MTIME_CACHE_SIZE: usize = 512;
 /// Worker thread pool (indexer). Clamped to [1, MAX_WORKERS_HARD_CAP] in main.
 pub const MAX_WORKERS_HARD_CAP: u32 = 16;
 
+/// Default cold-index worker count. The parallel pool (indexPathsViaWorkers) is
+/// used only by first-index passes (workspace cold-index, gem-index, rbs); the
+/// incremental single-file reindex loop is separate and unaffected. N workers ×
+/// (arena + in-mem SQLite) is the dominant term of the one-time first-index RSS
+/// spike, so a lower default trades first-index wall-time for a smaller spike.
+/// `--max-workers N` overrides this upward for users who want the old speed.
+pub const DEFAULT_COLD_INDEX_WORKERS: usize = 4;
+
+/// Cold-index RAM controls. Each parallel worker holds a parse arena plus a
+/// per-worker in-memory SQLite; left unchecked their high-water is retained for
+/// the worker's lifetime, so N workers × biggest-file footprint is the transient
+/// peak RSS during a cold index. These bound that footprint without serializing
+/// the workers (they stay parallel — only their retained capacity is trimmed).
+///
+/// Trim cadence, in files processed per worker: at each boundary the worker
+/// frees its arena high-water, compacts its in-memory DB, and (on commit count)
+/// checkpoints the shared WAL so it can't balloon to the full index size.
+pub const RSS_TRIM_BATCH: usize = 64;
+
+/// Per-worker arena high-water ceiling. Independent of the batch cadence: a
+/// single pathological file that pushes the arena past this frees immediately.
+/// N workers × this cap is the arena share of the cold-index transient peak.
+pub const WORKER_ARENA_CAP_BYTES: usize = 2 * 1024 * 1024;
+
+/// Conservative per-worker resident estimate (arena cap + in-mem DB + overhead)
+/// used to derive a memory-aware worker count on constrained hosts. Only lowers
+/// the pool below the CPU/`--max-workers` bound when available RAM is scarce.
+pub const PER_WORKER_RAM_ESTIMATE_BYTES: usize = 24 * 1024 * 1024;
+
+/// SQLite `mmap_size` on the writer connection. mmap-mapped DB pages count in
+/// process RSS, so a 256 MB cap made the whole DB resident on symbol-dense repos
+/// (a 180 MB index → 180 MB RSS on top of everything else). The LSP query path
+/// runs on a separate read-only connection that never sets mmap (SQLite default
+/// 0), so capping the writer's mmap trades only cold-index read locality, not
+/// hot-query latency. 64 MB keeps the hot pages mapped while the OS page cache
+/// (shared, reclaimable, not per-process anon RSS) backs the cold tail.
+pub const DB_MMAP_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
 /// Default file-size budget for indexing; tunable via `maxFileSizeMb`.
 pub const DEFAULT_MAX_FILE_SIZE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_FILE_SIZE_BYTES_CEILING: usize = 2 * 1024 * 1024 * 1024;
