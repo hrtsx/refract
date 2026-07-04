@@ -24,17 +24,7 @@ for s in refract ruby-lsp solargraph; do
   [[ " $SKIP_SERVERS " == *" $s "* ]] || SERVERS+=("$s")
 done
 
-corpus_root() {
-  case "$1" in
-    mastodon)      echo "$PILOT_DIR/mastodon" ;;
-    discourse)     echo "$PILOT_DIR/discourse" ;;
-    discourse-lib) echo "$PILOT_DIR/discourse/lib" ;;
-    homebrew)      echo "$PILOT_DIR/homebrew/Library/Homebrew" ;;
-    solidus)       echo "$PILOT_DIR/solidus" ;;
-    gitlabhq)      echo "$PILOT_DIR/gitlabhq" ;;
-    *)             echo "$1" ;;
-  esac
-}
+source "$DRIVER_DIR/bench_lib.sh"
 
 # Diagnostic FP audit only on the metaprogramming-heavy repos.
 diag_audit_for() { case "$1" in homebrew|solidus) echo 1 ;; *) echo 0 ;; esac; }

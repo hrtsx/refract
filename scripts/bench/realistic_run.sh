@@ -33,17 +33,7 @@ CORPORA_RAW="${REALISTIC_CORPORA:-mastodon discourse-lib}"
 WORKLOADS_RAW="${REALISTIC_WORKLOADS:-session typing micro}"
 SERVERS_RAW="${REALISTIC_SERVERS:-refract solargraph ruby-lsp}"
 
-corpus_root() {
-  case "$1" in
-    mastodon)        echo "$PILOT_DIR/mastodon" ;;
-    discourse-lib)   echo "$PILOT_DIR/discourse/lib" ;;
-    discourse)       echo "$PILOT_DIR/discourse" ;;
-    homebrew)        echo "$PILOT_DIR/homebrew/Library/Homebrew" ;;
-    solidus)         echo "$PILOT_DIR/solidus" ;;
-    gitlabhq)        echo "$PILOT_DIR/gitlabhq" ;;
-    *)               echo "$1" ;;  # treat unknown name as a literal path
-  esac
-}
+source "$DRIVER_DIR/bench_lib.sh"
 
 reset_refract_db() {
   local root="$1"
