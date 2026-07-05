@@ -58,8 +58,8 @@ pub fn insertAliasAttribute(ctx: *VisitCtx, cn: *const prism.CallNode) void {
     if (s0.unescaped.source == null) return;
     const new_name = s0.unescaped.source[0..s0.unescaped.length];
     const lc = locationLineCol(ctx.parser, a0.*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
     insertSymbolWithReturn(ctx, "def", new_name, lc.line, lc.col, null, "alias_attribute", parent, null) catch {
         ctx.error_count += 1;
     };
@@ -702,8 +702,8 @@ pub fn insertRailsDslSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: [
         std.mem.eql(u8, mname, "after_touch") or
         std.mem.eql(u8, mname, "after_validation") or
         std.mem.eql(u8, mname, "validate")) "callback" else "def";
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
     // Capture the full DSL call source as value_snippet (e.g. "has_many :posts, dependent: :destroy")
     var call_snip_buf: [123]u8 = undefined;
     var call_snip: ?[]const u8 = null;
@@ -847,8 +847,8 @@ fn insertEnumValueMethods(ctx: *VisitCtx, vname: []const u8, line: i64, col: i64
     // Parent the synthesized methods on the enclosing model so completion on a
     // receiver typed to that model (`record.active?`) finds them — plain
     // insertSymbol leaves parent_name NULL, which the member query never matches.
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
     var pred_buf: [128]u8 = undefined;
     const pred = std.fmt.bufPrint(&pred_buf, "{s}?", .{vname}) catch return;
     try insertSymbolWithReturn(ctx, "def", pred, l, c, "TrueClass | FalseClass", null, parent, null);
@@ -866,8 +866,8 @@ pub fn insertEnumSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
 
     var values_node: ?*const prism.Node = null;
 
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     // Style: enum :status, [:draft, :published]  (positional, Ruby 3.2+)
     if (args.nodes[0].*.type == prism.NODE_SYMBOL) {
@@ -924,45 +924,65 @@ fn extractFirstSymbolName(cn: *const prism.CallNode) ?[]const u8 {
     return null;
 }
 
+// Shared buffer sizes for the synth cluster below. Arg names are guarded to <=100, so a
+// member name (`{prefix}{base}{suffix}`) never exceeds MEMBER_BUF; namespace paths use their
+// own larger buffer.
+const MEMBER_BUF = 160;
+const NAMESPACE_BUF = 256;
+
+// One synthesized member: `{prefix}{base}{suffix}`, of `kind` (defaults to instance `def`),
+// returning `ret` (null for writers/void). Lets the emitters below describe a member family
+// as a small array instead of a run of hand-rolled bufPrint + insertSymbolWithReturn calls.
+const DslMember = struct {
+    prefix: []const u8 = "",
+    suffix: []const u8 = "",
+    ret: ?[]const u8 = null,
+    kind: []const u8 = "def",
+};
+
+// Emit each variant as a symbol parented to `parent`, tagged with `doc` (the DSL macro name).
+// Skip-on-overflow (`catch continue`) is uniform — a name too long for MEMBER_BUF is dropped,
+// never aborting the remaining variants mid-family.
+fn emitDslMembers(ctx: *VisitCtx, base: []const u8, line: i32, col: u32, parent: ?[]const u8, doc: ?[]const u8, variants: []const DslMember) !void {
+    for (variants) |v| {
+        var buf: [MEMBER_BUF]u8 = undefined;
+        const nm = std.fmt.bufPrint(&buf, "{s}{s}{s}", .{ v.prefix, base, v.suffix }) catch continue;
+        try insertSymbolWithReturn(ctx, v.kind, nm, line, col, v.ret, doc, parent, null);
+    }
+}
+
+// The enclosing namespace path (`Foo::Bar`) for symbols emitted at the current visitor
+// position, or null at top level. `buf` must outlive the returned slice (it points into it).
+fn currentParent(ctx: *const VisitCtx, buf: []u8) ?[]const u8 {
+    return if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, buf) else null;
+}
+
 pub fn insertAttachedSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
     const sym_name = extractFirstSymbolName(cn) orelse return;
     if (sym_name.len == 0 or sym_name.len > 100) return;
     const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
     const is_many = std.mem.eql(u8, mname, "has_many_attached");
-    const reader_type: []const u8 = if (is_many) "ActiveStorage::Attached::Many" else "ActiveStorage::Attached::One";
-    const att_type: []const u8 = if (is_many) "ActiveStorage::Attachment::Many" else "ActiveStorage::Attachment";
-    const blob_type: []const u8 = if (is_many) "ActiveStorage::Blob::Many" else "ActiveStorage::Blob";
-    const att_suffix: []const u8 = if (is_many) "_attachments" else "_attachment";
-    const blob_suffix: []const u8 = if (is_many) "_blobs" else "_blob";
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, reader_type, mname, parent, null);
-    var w_buf: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, mname, parent, null);
-    var a_buf: [128]u8 = undefined;
-    const a = std.fmt.bufPrint(&a_buf, "{s}{s}", .{ sym_name, att_suffix }) catch return;
-    try insertSymbolWithReturn(ctx, "def", a, lc.line, lc.col, att_type, mname, parent, null);
-    var b_buf: [128]u8 = undefined;
-    const b = std.fmt.bufPrint(&b_buf, "{s}{s}", .{ sym_name, blob_suffix }) catch return;
-    try insertSymbolWithReturn(ctx, "def", b, lc.line, lc.col, blob_type, mname, parent, null);
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, sym_name, lc.line, lc.col, parent, mname, &.{
+        .{ .ret = if (is_many) "ActiveStorage::Attached::Many" else "ActiveStorage::Attached::One" },
+        .{ .suffix = "=" },
+        .{ .suffix = if (is_many) "_attachments" else "_attachment", .ret = if (is_many) "ActiveStorage::Attachment::Many" else "ActiveStorage::Attachment" },
+        .{ .suffix = if (is_many) "_blobs" else "_blob", .ret = if (is_many) "ActiveStorage::Blob::Many" else "ActiveStorage::Blob" },
+    });
 }
 
 pub fn insertRichTextSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     const sym_name = extractFirstSymbolName(cn) orelse return;
     if (sym_name.len == 0 or sym_name.len > 100) return;
     const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, "ActionText::RichText", "has_rich_text", parent, null);
-    var w_buf: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "has_rich_text", parent, null);
-    var p_buf: [128]u8 = undefined;
-    const p = std.fmt.bufPrint(&p_buf, "{s}?", .{sym_name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", "has_rich_text", parent, null);
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, sym_name, lc.line, lc.col, parent, "has_rich_text", &.{
+        .{ .ret = "ActionText::RichText" },
+        .{ .suffix = "=" },
+        .{ .suffix = "?", .ret = "TrueClass | FalseClass" },
+    });
 }
 
 pub fn insertSecurePasswordSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
@@ -989,18 +1009,13 @@ pub fn insertSecurePasswordSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !v
         line = lc.line;
         col = lc.col;
     }
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    var b1: [128]u8 = undefined;
-    const setter = std.fmt.bufPrint(&b1, "{s}=", .{prefix}) catch return;
-    try insertSymbolWithReturn(ctx, "def", setter, line, col, "String", "has_secure_password", parent, null);
-    var b2: [128]u8 = undefined;
-    const conf = std.fmt.bufPrint(&b2, "{s}_confirmation=", .{prefix}) catch return;
-    try insertSymbolWithReturn(ctx, "def", conf, line, col, "String", "has_secure_password", parent, null);
-    var b3: [128]u8 = undefined;
-    const digest = std.fmt.bufPrint(&b3, "{s}_digest", .{prefix}) catch return;
-    try insertSymbolWithReturn(ctx, "def", digest, line, col, "String", "has_secure_password", parent, null);
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, prefix, line, col, parent, "has_secure_password", &.{
+        .{ .suffix = "=", .ret = "String" },
+        .{ .suffix = "_confirmation=", .ret = "String" },
+        .{ .suffix = "_digest", .ret = "String" },
+    });
     if (std.mem.eql(u8, prefix, "password")) {
         try insertSymbolWithReturn(ctx, "def", "authenticate", line, col, null, "has_secure_password", parent, null);
     } else {
@@ -1034,16 +1049,13 @@ pub fn insertSecureTokenSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void
         line = lc.line;
         col = lc.col;
     }
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    try insertSymbolWithReturn(ctx, "def", name, line, col, "String", "has_secure_token", parent, null);
-    var bw: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, line, col, "String", "has_secure_token", parent, null);
-    var br: [128]u8 = undefined;
-    const r = std.fmt.bufPrint(&br, "regenerate_{s}", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", r, line, col, "String", "has_secure_token", parent, null);
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, name, line, col, parent, "has_secure_token", &.{
+        .{ .ret = "String" },
+        .{ .suffix = "=", .ret = "String" },
+        .{ .prefix = "regenerate_", .ret = "String" },
+    });
 }
 
 // `devise :confirmable, :recoverable, ...` — synthesize the public instance methods
@@ -1054,8 +1066,8 @@ pub fn insertDeviseSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     if (cn.arguments == null) return;
     const args = cn.arguments[0].arguments;
     if (args.size == 0) return;
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     const Mod = struct { name: []const u8, preds: []const []const u8, plains: []const []const u8 };
     const modules = [_]Mod{
@@ -1090,27 +1102,17 @@ pub fn insertPaperclipSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     const sym_name = extractFirstSymbolName(cn) orelse return;
     if (sym_name.len == 0 or sym_name.len > 100) return;
     const lc = locationLineCol(ctx.parser, cn.arguments[0].arguments.nodes[0].*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    try insertSymbolWithReturn(ctx, "def", sym_name, lc.line, lc.col, "Paperclip::Attachment", "has_attached_file", parent, null);
-    var q_buf: [128]u8 = undefined;
-    const q = std.fmt.bufPrint(&q_buf, "{s}?", .{sym_name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", q, lc.line, lc.col, "TrueClass | FalseClass", "has_attached_file", parent, null);
-    var w_buf: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&w_buf, "{s}=", .{sym_name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "has_attached_file", parent, null);
-    const cols = [_]struct { suffix: []const u8, ret: []const u8 }{
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, sym_name, lc.line, lc.col, parent, "has_attached_file", &.{
+        .{ .ret = "Paperclip::Attachment" },
+        .{ .suffix = "?", .ret = "TrueClass | FalseClass" },
+        .{ .suffix = "=" },
         .{ .suffix = "_file_name", .ret = "String" },
         .{ .suffix = "_content_type", .ret = "String" },
         .{ .suffix = "_file_size", .ret = "Integer" },
         .{ .suffix = "_updated_at", .ret = "Time" },
-    };
-    for (cols) |c| {
-        var cb: [128]u8 = undefined;
-        const cname = std.fmt.bufPrint(&cb, "{s}{s}", .{ sym_name, c.suffix }) catch continue;
-        try insertSymbolWithReturn(ctx, "def", cname, lc.line, lc.col, c.ret, "has_attached_file", parent, null);
-    }
+    });
 }
 
 pub fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
@@ -1118,8 +1120,8 @@ pub fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     if (name.len == 0 or name.len > 100) return;
     const args = cn.arguments[0].arguments;
     const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     var rt: ?[]const u8 = null;
     if (args.size >= 2 and args.nodes[1].*.type == prism.NODE_SYMBOL) {
@@ -1130,13 +1132,11 @@ pub fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
         }
     }
 
-    try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, rt, "attribute", parent, null);
-    var bw: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, rt, "attribute", parent, null);
-    var bp: [128]u8 = undefined;
-    const p = std.fmt.bufPrint(&bp, "{s}?", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", "attribute", parent, null);
+    try emitDslMembers(ctx, name, lc.line, lc.col, parent, "attribute", &.{
+        .{ .ret = rt },
+        .{ .suffix = "=", .ret = rt },
+        .{ .suffix = "?", .ret = "TrueClass | FalseClass" },
+    });
 }
 
 // A class whose superclass is (or ends in) `ApplicationJob`/`ActiveJob::Base` is an
@@ -1208,8 +1208,8 @@ pub fn insertStateMachineSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, guar
     const blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block));
     if (blk.body == null or blk.body.?.*.type != prism.NODE_STATEMENTS) return;
     const stmts: *const prism.StatementsNode = @ptrCast(@alignCast(blk.body));
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
     var i: usize = 0;
     while (i < stmts.body.size) : (i += 1) {
         const st = stmts.body.nodes[i];
@@ -1237,17 +1237,15 @@ pub fn insertStateMachineSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, guar
             if (en.len == 0 or en.len > 100) break;
             const lc = locationLineCol(ctx.parser, arg.*.location.start);
             if (is_state) {
-                var pb: [128]u8 = undefined;
-                const pred = std.fmt.bufPrint(&pb, "{s}?", .{en}) catch continue;
-                try insertSymbolWithReturn(ctx, "def", pred, lc.line, lc.col, "TrueClass | FalseClass", "aasm", parent, null);
+                try emitDslMembers(ctx, en, lc.line, lc.col, parent, "aasm", &.{
+                    .{ .suffix = "?", .ret = "TrueClass | FalseClass" },
+                });
             } else {
-                try insertSymbolWithReturn(ctx, "def", en, lc.line, lc.col, null, "aasm", parent, null);
-                var bb: [128]u8 = undefined;
-                const bang = std.fmt.bufPrint(&bb, "{s}!", .{en}) catch break;
-                try insertSymbolWithReturn(ctx, "def", bang, lc.line, lc.col, null, "aasm", parent, null);
-                var mb: [128]u8 = undefined;
-                const may = std.fmt.bufPrint(&mb, "{s}{s}?", .{ guard_prefix, en }) catch break;
-                try insertSymbolWithReturn(ctx, "def", may, lc.line, lc.col, "TrueClass | FalseClass", "aasm", parent, null);
+                try emitDslMembers(ctx, en, lc.line, lc.col, parent, "aasm", &.{
+                    .{},
+                    .{ .suffix = "!" },
+                    .{ .prefix = guard_prefix, .suffix = "?", .ret = "TrueClass | FalseClass" },
+                });
                 break; // only the first symbol is the event name; the rest are options
             }
         }
@@ -1263,8 +1261,8 @@ pub fn insertCurrentAttributesAccessors(ctx: *VisitCtx, cn: *const prism.CallNod
     if (cn.arguments == null) return;
     const cls = ctx.current_attr_class orelse return;
     const args = cn.arguments[0].arguments;
-    var ns_buf: [256]u8 = undefined;
-    const iparent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const iparent = currentParent(ctx, &ns_buf);
     var i: usize = 0;
     while (i < args.size) : (i += 1) {
         const arg = args.nodes[i];
@@ -1274,12 +1272,14 @@ pub fn insertCurrentAttributesAccessors(ctx: *VisitCtx, cn: *const prism.CallNod
         const nm = sym.unescaped.source[0..sym.unescaped.length];
         if (nm.len == 0 or nm.len > 100) continue;
         const lc = locationLineCol(ctx.parser, arg.*.location.start);
-        var wbuf: [128]u8 = undefined;
-        const w = std.fmt.bufPrint(&wbuf, "{s}=", .{nm}) catch continue;
-        try insertSymbolWithReturn(ctx, "classdef", nm, lc.line, lc.col, null, "current_attributes", cls, null);
-        try insertSymbolWithReturn(ctx, "classdef", w, lc.line, lc.col, null, "current_attributes", cls, null);
-        try insertSymbolWithReturn(ctx, "def", nm, lc.line, lc.col, null, "current_attributes", iparent, null);
-        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "current_attributes", iparent, null);
+        try emitDslMembers(ctx, nm, lc.line, lc.col, cls, "current_attributes", &.{
+            .{ .kind = "classdef" },
+            .{ .kind = "classdef", .suffix = "=" },
+        });
+        try emitDslMembers(ctx, nm, lc.line, lc.col, iparent, "current_attributes", &.{
+            .{},
+            .{ .suffix = "=" },
+        });
     }
 }
 
@@ -1287,8 +1287,8 @@ pub fn insertStoreAccessorSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !vo
     if (cn.arguments == null) return;
     const args = cn.arguments[0].arguments;
     if (args.size < 2) return;
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     var i: usize = 1;
     while (i < args.size) : (i += 1) {
@@ -1299,10 +1299,10 @@ pub fn insertStoreAccessorSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !vo
         const name = sym.unescaped.source[0..sym.unescaped.length];
         if (name.len == 0 or name.len > 100) continue;
         const lc = locationLineCol(ctx.parser, arg.*.location.start);
-        try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, "Object", "store_accessor", parent, null);
-        var bw: [128]u8 = undefined;
-        const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch continue;
-        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "store_accessor", parent, null);
+        try emitDslMembers(ctx, name, lc.line, lc.col, parent, "store_accessor", &.{
+            .{ .ret = "Object" },
+            .{ .suffix = "=" },
+        });
     }
 }
 
@@ -1311,8 +1311,8 @@ pub fn insertComposedOfSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void 
     if (name.len == 0 or name.len > 100) return;
     const args = cn.arguments[0].arguments;
     const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     var class_buf: [128]u8 = undefined;
     var class_name: ?[]const u8 = null;
@@ -1337,10 +1337,10 @@ pub fn insertComposedOfSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void 
     }
     if (class_name == null) class_name = snakeToCamel(name, &class_buf);
 
-    try insertSymbolWithReturn(ctx, "def", name, lc.line, lc.col, class_name, "composed_of", parent, null);
-    var bw: [128]u8 = undefined;
-    const w = std.fmt.bufPrint(&bw, "{s}=", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, class_name, "composed_of", parent, null);
+    try emitDslMembers(ctx, name, lc.line, lc.col, parent, "composed_of", &.{
+        .{ .ret = class_name },
+        .{ .suffix = "=", .ret = class_name },
+    });
 }
 
 pub fn insertDelegatedTypeSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
@@ -1348,26 +1348,21 @@ pub fn insertDelegatedTypeSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !vo
     if (name.len == 0 or name.len > 100) return;
     const args = cn.arguments[0].arguments;
     const lc = locationLineCol(ctx.parser, args.nodes[0].*.location.start);
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
-
-    try insertSymbolWithReturn(ctx, "association", name, lc.line, lc.col, null, "delegated_type", parent, null);
-    var bt: [128]u8 = undefined;
-    const t = std.fmt.bufPrint(&bt, "{s}_type", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", t, lc.line, lc.col, "String", "delegated_type", parent, null);
-    var bi: [128]u8 = undefined;
-    const i_ = std.fmt.bufPrint(&bi, "{s}_id", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", i_, lc.line, lc.col, "Integer", "delegated_type", parent, null);
-    var bc: [128]u8 = undefined;
-    const c_ = std.fmt.bufPrint(&bc, "{s}_class", .{name}) catch return;
-    try insertSymbolWithReturn(ctx, "def", c_, lc.line, lc.col, "Class", "delegated_type", parent, null);
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
+    try emitDslMembers(ctx, name, lc.line, lc.col, parent, "delegated_type", &.{
+        .{ .kind = "association" },
+        .{ .suffix = "_type", .ret = "String" },
+        .{ .suffix = "_id", .ret = "Integer" },
+        .{ .suffix = "_class", .ret = "Class" },
+    });
 }
 
 pub fn insertNestedAttributesSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     if (cn.arguments == null) return;
     const args = cn.arguments[0].arguments;
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
 
     var i: usize = 0;
     while (i < args.size) : (i += 1) {
@@ -1378,9 +1373,9 @@ pub fn insertNestedAttributesSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) 
         const name = sym.unescaped.source[0..sym.unescaped.length];
         if (name.len == 0 or name.len > 100) continue;
         const lc = locationLineCol(ctx.parser, arg.*.location.start);
-        var bw: [160]u8 = undefined;
-        const w = std.fmt.bufPrint(&bw, "{s}_attributes=", .{name}) catch continue;
-        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "accepts_nested_attributes_for", parent, null);
+        try emitDslMembers(ctx, name, lc.line, lc.col, parent, "accepts_nested_attributes_for", &.{
+            .{ .suffix = "_attributes=" },
+        });
     }
 }
 
@@ -1411,8 +1406,8 @@ pub fn insertConfirmationSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mnam
         }
         if (!has_confirmation) return;
     }
-    var ns_buf: [256]u8 = undefined;
-    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var ns_buf: [NAMESPACE_BUF]u8 = undefined;
+    const parent = currentParent(ctx, &ns_buf);
     var i: usize = 0;
     while (i < args.size) : (i += 1) {
         const arg = args.nodes[i];
@@ -1422,11 +1417,9 @@ pub fn insertConfirmationSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mnam
         const name = sym.unescaped.source[0..sym.unescaped.length];
         if (name.len == 0 or name.len > 100) continue;
         const lc = locationLineCol(ctx.parser, arg.*.location.start);
-        var rb: [160]u8 = undefined;
-        var wb: [160]u8 = undefined;
-        const r = std.fmt.bufPrint(&rb, "{s}_confirmation", .{name}) catch continue;
-        try insertSymbolWithReturn(ctx, "def", r, lc.line, lc.col, null, mname, parent, null);
-        const w = std.fmt.bufPrint(&wb, "{s}_confirmation=", .{name}) catch continue;
-        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, mname, parent, null);
+        try emitDslMembers(ctx, name, lc.line, lc.col, parent, mname, &.{
+            .{ .suffix = "_confirmation" },
+            .{ .suffix = "_confirmation=" },
+        });
     }
 }
