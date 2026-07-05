@@ -45,6 +45,13 @@ pub const VisitCtx = struct {
     /// `let(:x) { described_class.new }` type their receiver to an instance of it.
     described_class: ?[]const u8 = null,
     described_class_buf: [256]u8 = undefined,
+    /// Non-null while visiting the body of an `ActiveSupport::CurrentAttributes`
+    /// subclass — holds that class's fully-qualified name. Lets a bare
+    /// `attribute :user` inside it synthesize the delegated `Current.user` /
+    /// `Current.user=` class methods (CurrentAttributes forwards class calls to a
+    /// per-request instance), which the plain AR `attribute` handler never emits.
+    current_attr_class: ?[]const u8 = null,
+    current_attr_class_buf: [256]u8 = undefined,
 };
 
 /// Record a semantic token (1-based line). OOM drops the token — highlighting

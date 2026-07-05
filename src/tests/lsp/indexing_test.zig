@@ -2262,6 +2262,265 @@ test "mattr_reader indexed" {
     try std.testing.expect(arr.items.len >= 1);
 }
 
+test "class_attribute indexed with reader/writer/predicate" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_class_attribute";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/m.rb", .data = "class Widget\n  class_attribute :setting\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/m.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"setting\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // reader `setting`, writer `setting=`, predicate `setting?`
+    try std.testing.expect(arr.items.len >= 3);
+}
+
+test "validates confirmation synthesizes _confirmation accessor" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_confirmation";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/u.rb", .data = "class User\n  validates :password, confirmation: true\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/u.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"password_confirmation\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `password_confirmation` reader + `password_confirmation=` writer
+    try std.testing.expect(arr.items.len >= 2);
+}
+
+test "ActiveJob subclass synthesizes perform_later class methods" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_activejob";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/j.rb", .data = "class MailJob < ApplicationJob\n  def perform; end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/j.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"perform_later\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `perform_later` class method synthesized on MailJob
+    try std.testing.expect(arr.items.len >= 1);
+}
+
+test "CurrentAttributes attribute synthesizes delegated class accessors" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_curattr";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/c.rb", .data = "class Current < ActiveSupport::CurrentAttributes\n  attribute :account, :user\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/c.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"account\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `account` reader + `account=` writer (class + instance), second symbol `:user` consumed too
+    try std.testing.expect(arr.items.len >= 2);
+}
+
+test "Sidekiq worker include synthesizes perform_async class methods" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_sidekiq";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/w.rb", .data = "class HardWorker\n  include Sidekiq::Job\n  def perform; end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/w.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"perform_async\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `perform_async` class method synthesized on HardWorker
+    try std.testing.expect(arr.items.len >= 1);
+}
+
+test "aasm state machine synthesizes event and predicate methods" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_aasm";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/m.rb", .data = "class Order\n  include AASM\n  aasm do\n    state :pending, initial: true\n    state :shipped\n    event :ship do\n      transitions from: :pending, to: :shipped\n    end\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/m.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"may_ship\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `may_ship?` guard predicate synthesized from `event :ship`
+    try std.testing.expect(arr.items.len >= 1);
+}
+
+test "state_machines gem synthesizes can_ guard and event methods" {
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_statemachines";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/v.rb", .data = "class Vehicle\n  state_machine :state, initial: :parked do\n    event :ignite do\n      transition parked: :idling\n    end\n    state :parked\n    state :idling\n  end\nend\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file://" ++ ws ++ "/v.rb\",\"type\":1}]}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"can_ignite\"}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+    const sym_resp = getResponseById(responses, 2) orelse return error.NoSymbolResponse;
+    const obj = switch (sym_resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    const arr = switch (result) {
+        .array => |a| a,
+        else => return error.ResultNotArray,
+    };
+    // `can_ignite?` guard predicate synthesized from `event :ignite`
+    try std.testing.expect(arr.items.len >= 1);
+}
+
 test "scope indexes exist in schema v5" {
     const alloc = std.testing.allocator;
     const ws = "/tmp/refract_test_p23_idxcheck";

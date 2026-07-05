@@ -96,6 +96,11 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
     if (cn.receiver == null and std.mem.eql(u8, mname, "alias_attribute")) {
         rails_dsl.insertAliasAttribute(ctx, cn);
     }
+    if (cn.receiver == null and (std.mem.eql(u8, mname, "validates_confirmation_of") or std.mem.eql(u8, mname, "validates"))) {
+        rails_dsl.insertConfirmationSymbols(ctx, cn, mname) catch {
+            ctx.error_count += 1;
+        };
+    }
     if (cn.receiver == null and std.mem.eql(u8, mname, "enum")) {
         insertEnumSymbols(ctx, cn) catch {
             ctx.error_count += 1;
@@ -124,6 +129,10 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
         rails_dsl.insertPaperclipSymbols(ctx, cn) catch {
             ctx.error_count += 1;
         };
+    } else if (cn.receiver == null and ctx.current_attr_class != null and std.mem.eql(u8, mname, "attribute")) {
+        rails_dsl.insertCurrentAttributesAccessors(ctx, cn) catch {
+            ctx.error_count += 1;
+        };
     } else if (cn.receiver == null and std.mem.eql(u8, mname, "attribute")) {
         insertAttributeSymbol(ctx, cn) catch {
             ctx.error_count += 1;
@@ -142,6 +151,14 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
         };
     } else if (cn.receiver == null and std.mem.eql(u8, mname, "accepts_nested_attributes_for")) {
         insertNestedAttributesSymbols(ctx, cn) catch {
+            ctx.error_count += 1;
+        };
+    } else if (cn.receiver == null and std.mem.eql(u8, mname, "aasm") and cn.block != null) {
+        rails_dsl.insertStateMachineSymbols(ctx, cn, "may_") catch {
+            ctx.error_count += 1;
+        };
+    } else if (cn.receiver == null and std.mem.eql(u8, mname, "state_machine") and cn.block != null) {
+        rails_dsl.insertStateMachineSymbols(ctx, cn, "can_") catch {
             ctx.error_count += 1;
         };
     } else if (cn.receiver == null and isRailsDsl(mname)) {
@@ -326,6 +343,12 @@ pub fn handleCall(ctx: *VisitCtx, n: *const prism.Node) bool {
                     if (mod_name.len > 0) insertMixin(ctx.db, ctx.current_class_id.?, mod_name, mname) catch {
                         ctx.error_count += 1;
                     };
+                    if (std.mem.eql(u8, mname, "include") and rails_dsl.isSidekiqInclude(mod_name)) {
+                        const slc = locationLineCol(ctx.parser, cn.base.location.start);
+                        rails_dsl.emitSidekiqClassMethods(ctx, ctx.current_class_id.?, slc.line, slc.col) catch {
+                            ctx.error_count += 1;
+                        };
+                    }
                 }
             }
         }

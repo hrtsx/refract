@@ -138,7 +138,8 @@ pub fn isAttrMethod(name: []const u8) bool {
         std.mem.eql(u8, name, "thread_mattr_writer") or
         std.mem.eql(u8, name, "thread_cattr_accessor") or
         std.mem.eql(u8, name, "thread_cattr_reader") or
-        std.mem.eql(u8, name, "thread_cattr_writer");
+        std.mem.eql(u8, name, "thread_cattr_writer") or
+        std.mem.eql(u8, name, "class_attribute");
 }
 
 pub fn visitor(node: ?*const prism.Node, data: ?*anyopaque) callconv(.c) bool {

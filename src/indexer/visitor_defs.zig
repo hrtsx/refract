@@ -158,10 +158,16 @@ pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
     defer if (doc) |d| ctx.alloc.free(d);
     const class_pn: ?[]const u8 = if (ns_parent) |np| if (np.len > 0) np else null else null;
     const class_sym_id = insertSymbolGetId(ctx, "class", insert_name, lc.line, lc.col, doc, @intCast(end_lc.line), "public", class_pn) catch 0;
+    var sc_is_job = false;
+    var sc_is_curattr = false;
     if (cn.superclass) |sc| {
         const sc_owned = buildQualifiedName(ctx.parser, sc, ctx.alloc) catch null;
         defer if (sc_owned) |p| ctx.alloc.free(p);
         const sc_name: []const u8 = sc_owned orelse "";
+        if (sc_name.len > 0) {
+            sc_is_job = rails_dsl.isActiveJobSuper(sc_name);
+            sc_is_curattr = rails_dsl.isCurrentAttributesSuper(sc_name);
+        }
         if (sc_name.len > 0 and class_sym_id > 0) {
             // Record the real superclass for every class. parent_name keeps
             // its existing meaning (namespace for nested classes, superclass
@@ -182,10 +188,17 @@ pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
             }
         }
     }
+    if (sc_is_job) rails_dsl.emitJobClassMethods(ctx, insert_name, lc.line, lc.col) catch {};
     addSemToken(ctx, lc.line, lc.col, @intCast(short_name.len), 0);
     const prev_class = ctx.current_class_id;
     const prev_vis = ctx.current_visibility;
     const prev_mf = ctx.module_function_mode;
+    const prev_attr_class = ctx.current_attr_class;
+    if (sc_is_curattr) {
+        const cn_len = @min(insert_name.len, ctx.current_attr_class_buf.len);
+        @memcpy(ctx.current_attr_class_buf[0..cn_len], insert_name[0..cn_len]);
+        ctx.current_attr_class = ctx.current_attr_class_buf[0..cn_len];
+    }
     ctx.current_class_id = if (class_sym_id > 0) class_sym_id else null;
     ctx.current_visibility = "public";
     ctx.module_function_mode = false;
@@ -204,6 +217,7 @@ pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
     ctx.current_class_id = prev_class;
     ctx.current_visibility = prev_vis;
     ctx.module_function_mode = prev_mf;
+    ctx.current_attr_class = prev_attr_class;
     return false;
 }
 

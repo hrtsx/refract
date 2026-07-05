@@ -24,14 +24,23 @@ pub fn insertAttrSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []con
         const attr_name = src[0..sym.unescaped.length];
         const lc = locationLineCol(ctx.parser, sym.base.location.start);
         try insertSymbol(ctx, "def", attr_name, lc.line, lc.col, null);
+        const is_class_attribute = std.mem.eql(u8, mname, "class_attribute");
         if (std.mem.eql(u8, mname, "attr_writer") or std.mem.eql(u8, mname, "attr_accessor") or
             std.mem.eql(u8, mname, "mattr_writer") or std.mem.eql(u8, mname, "mattr_accessor") or
             std.mem.eql(u8, mname, "cattr_writer") or std.mem.eql(u8, mname, "cattr_accessor") or
+            is_class_attribute or
             std.mem.endsWith(u8, mname, "_writer") or std.mem.endsWith(u8, mname, "_accessor"))
         {
             const writer_name = try std.fmt.allocPrint(ctx.alloc, "{s}=", .{attr_name});
             defer ctx.alloc.free(writer_name);
             try insertSymbol(ctx, "def", writer_name, lc.line, lc.col, null);
+        }
+        // `class_attribute :x` also generates the `x?` predicate (instance + class),
+        // unlike attr_*/mattr_* which don't. Emit it so `obj.x?` completes.
+        if (is_class_attribute) {
+            const pred_name = try std.fmt.allocPrint(ctx.alloc, "{s}?", .{attr_name});
+            defer ctx.alloc.free(pred_name);
+            try insertSymbol(ctx, "def", pred_name, lc.line, lc.col, null);
         }
     }
 }
@@ -119,6 +128,7 @@ pub fn isRailsDsl(mname: []const u8) bool {
         "attribute",               "has_secure_password",       "has_secure_token",       "delegated_type",
         "connects_to",             "composed_of",               "store_accessor",         "accepts_nested_attributes_for",
         "devise",                  "has_attached_file",
+        "class_attribute",         "validates_confirmation_of",
         // ActiveJob / ActionMailer class-level DSLs
                 "queue_as",               "retry_on",
         "discard_on",              "default",
@@ -1129,6 +1139,150 @@ pub fn insertAttributeSymbol(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     try insertSymbolWithReturn(ctx, "def", p, lc.line, lc.col, "TrueClass | FalseClass", "attribute", parent, null);
 }
 
+// A class whose superclass is (or ends in) `ApplicationJob`/`ActiveJob::Base` is an
+// ActiveJob — its instances are enqueued via the class-level `perform_later`/
+// `perform_now`/`set` trio that `ActiveJob::Base` mixes in, none of which appear as
+// literal defs anywhere in app source.
+pub fn isActiveJobSuper(sc: []const u8) bool {
+    return std.mem.eql(u8, sc, "ApplicationJob") or
+        std.mem.eql(u8, sc, "ActiveJob::Base") or
+        std.mem.endsWith(u8, sc, "::ApplicationJob");
+}
+
+// A class whose superclass is `ActiveSupport::CurrentAttributes` (bare or namespaced)
+// gets delegated class methods for each `attribute`.
+pub fn isCurrentAttributesSuper(sc: []const u8) bool {
+    return std.mem.endsWith(u8, sc, "CurrentAttributes");
+}
+
+// Emit the ActiveJob class-method trio as `classdef` members of `class_name` so
+// `SomeJob.perform_later`/`.perform_now`/`.set` complete on the constant receiver.
+// Class-method-only + completion-only, so it can never FP a diagnostic (the
+// undefined-method check is receiverless-only).
+pub fn emitJobClassMethods(ctx: *VisitCtx, class_name: []const u8, line: i32, col: u32) !void {
+    const methods = [_][]const u8{ "perform_later", "perform_now", "set" };
+    for (methods) |m| {
+        try insertSymbolWithReturn(ctx, "classdef", m, line, col, null, "active_job", class_name, null);
+    }
+}
+
+// `include Sidekiq::Job` (or the legacy `Sidekiq::Worker`) marks a Sidekiq worker —
+// enqueued via class-level `perform_async`/`perform_in`/`perform_at`/`perform_bulk`/
+// `set`, mixed in by the module and absent from app source. Unlike ActiveJob this is an
+// include, not a superclass, so it is detected at the include call site.
+pub fn isSidekiqInclude(mod_name: []const u8) bool {
+    return std.mem.eql(u8, mod_name, "Sidekiq::Job") or std.mem.eql(u8, mod_name, "Sidekiq::Worker");
+}
+
+// Emit the Sidekiq class-method set as `classdef` members of the class identified by
+// `class_id` (resolved to its stored name so parent_name matches the constant receiver).
+// Class-method-only + completion-only → can never FP a diagnostic.
+pub fn emitSidekiqClassMethods(ctx: *VisitCtx, class_id: i64, line: i32, col: u32) !void {
+    var name_buf: [256]u8 = undefined;
+    const cname = blk: {
+        const st = ctx.db.prepare("SELECT name FROM symbols WHERE id=? LIMIT 1") catch break :blk null;
+        defer st.finalize();
+        st.bind_int(1, class_id);
+        if (st.step() catch false) {
+            const nm = st.column_text(0);
+            if (nm.len > 0 and nm.len <= name_buf.len) {
+                @memcpy(name_buf[0..nm.len], nm);
+                break :blk name_buf[0..nm.len];
+            }
+        }
+        break :blk null;
+    } orelse return;
+    const methods = [_][]const u8{ "perform_async", "perform_in", "perform_at", "perform_bulk", "set" };
+    for (methods) |m| {
+        try insertSymbolWithReturn(ctx, "classdef", m, line, col, null, "sidekiq", cname, null);
+    }
+}
+
+// Walk a state-machine DSL block (`aasm do …` / `state_machine :attr do …`) and
+// synthesize the instance methods it generates — `<state>?` predicate per state, and
+// `<event>`/`<event>!`/`<guard>_<event>?` per event. `guard_prefix` differs by gem
+// (AASM `may_`, state_machines `can_`). Instance `def`s parented to the enclosing
+// class; completion + FP-safe (undefined-method check is receiverless-only).
+pub fn insertStateMachineSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, guard_prefix: []const u8) !void {
+    if (cn.block == null or cn.block.?.*.type != prism.NODE_BLOCK) return;
+    const blk: *const prism.BlockNode = @ptrCast(@alignCast(cn.block));
+    if (blk.body == null or blk.body.?.*.type != prism.NODE_STATEMENTS) return;
+    const stmts: *const prism.StatementsNode = @ptrCast(@alignCast(blk.body));
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var i: usize = 0;
+    while (i < stmts.body.size) : (i += 1) {
+        const st = stmts.body.nodes[i];
+        if (st.*.type != prism.NODE_CALL) continue;
+        const c: *const prism.CallNode = @ptrCast(@alignCast(st));
+        if (c.receiver != null) continue;
+        const dn = resolveConstant(ctx.parser, c.name);
+        const is_state = std.mem.eql(u8, dn, "state");
+        const is_event = std.mem.eql(u8, dn, "event");
+        if (!is_state and !is_event) continue;
+        if (c.arguments == null) continue;
+        const cargs = c.arguments[0].arguments;
+        var j: usize = 0;
+        while (j < cargs.size) : (j += 1) {
+            const arg = cargs.nodes[j];
+            if (arg.*.type != prism.NODE_SYMBOL) {
+                // A state list can carry a trailing options hash (`initial: true`); skip
+                // it. An event has a single name symbol, so a non-symbol ends the scan.
+                if (is_event) break;
+                continue;
+            }
+            const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
+            if (sym.unescaped.source == null) break;
+            const en = sym.unescaped.source[0..sym.unescaped.length];
+            if (en.len == 0 or en.len > 100) break;
+            const lc = locationLineCol(ctx.parser, arg.*.location.start);
+            if (is_state) {
+                var pb: [128]u8 = undefined;
+                const pred = std.fmt.bufPrint(&pb, "{s}?", .{en}) catch continue;
+                try insertSymbolWithReturn(ctx, "def", pred, lc.line, lc.col, "TrueClass | FalseClass", "aasm", parent, null);
+            } else {
+                try insertSymbolWithReturn(ctx, "def", en, lc.line, lc.col, null, "aasm", parent, null);
+                var bb: [128]u8 = undefined;
+                const bang = std.fmt.bufPrint(&bb, "{s}!", .{en}) catch break;
+                try insertSymbolWithReturn(ctx, "def", bang, lc.line, lc.col, null, "aasm", parent, null);
+                var mb: [128]u8 = undefined;
+                const may = std.fmt.bufPrint(&mb, "{s}{s}?", .{ guard_prefix, en }) catch break;
+                try insertSymbolWithReturn(ctx, "def", may, lc.line, lc.col, "TrueClass | FalseClass", "aasm", parent, null);
+                break; // only the first symbol is the event name; the rest are options
+            }
+        }
+    }
+}
+
+// `attribute :user, :account` inside a CurrentAttributes subclass: for each symbol arg
+// synthesize the delegated class accessor (`Current.user` / `Current.user=`, kind
+// `classdef` so the constant-receiver completion path finds them) plus the instance
+// accessor. Unlike AR's `attribute`, every arg here is an attribute name — there is no
+// type positional — so all symbols are consumed.
+pub fn insertCurrentAttributesAccessors(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
+    if (cn.arguments == null) return;
+    const cls = ctx.current_attr_class orelse return;
+    const args = cn.arguments[0].arguments;
+    var ns_buf: [256]u8 = undefined;
+    const iparent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var i: usize = 0;
+    while (i < args.size) : (i += 1) {
+        const arg = args.nodes[i];
+        if (arg.*.type != prism.NODE_SYMBOL) continue;
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
+        if (sym.unescaped.source == null) continue;
+        const nm = sym.unescaped.source[0..sym.unescaped.length];
+        if (nm.len == 0 or nm.len > 100) continue;
+        const lc = locationLineCol(ctx.parser, arg.*.location.start);
+        var wbuf: [128]u8 = undefined;
+        const w = std.fmt.bufPrint(&wbuf, "{s}=", .{nm}) catch continue;
+        try insertSymbolWithReturn(ctx, "classdef", nm, lc.line, lc.col, null, "current_attributes", cls, null);
+        try insertSymbolWithReturn(ctx, "classdef", w, lc.line, lc.col, null, "current_attributes", cls, null);
+        try insertSymbolWithReturn(ctx, "def", nm, lc.line, lc.col, null, "current_attributes", iparent, null);
+        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "current_attributes", iparent, null);
+    }
+}
+
 pub fn insertStoreAccessorSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) !void {
     if (cn.arguments == null) return;
     const args = cn.arguments[0].arguments;
@@ -1227,5 +1381,52 @@ pub fn insertNestedAttributesSymbols(ctx: *VisitCtx, cn: *const prism.CallNode) 
         var bw: [160]u8 = undefined;
         const w = std.fmt.bufPrint(&bw, "{s}_attributes=", .{name}) catch continue;
         try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, "accepts_nested_attributes_for", parent, null);
+    }
+}
+
+// `validates_confirmation_of :password` (and `validates :password, confirmation: true`)
+// make AR synthesize a virtual `<attr>_confirmation` reader/writer pair — no static
+// def exists, so `user.password_confirmation` misses without this. For the generic
+// `validates` form, only fire when a `confirmation: true` option is actually present.
+pub fn insertConfirmationSymbols(ctx: *VisitCtx, cn: *const prism.CallNode, mname: []const u8) !void {
+    if (cn.arguments == null) return;
+    const args = cn.arguments[0].arguments;
+    if (args.size == 0) return;
+    if (std.mem.eql(u8, mname, "validates")) {
+        var has_confirmation = false;
+        for (0..args.size) |oi| {
+            const opt = args.nodes[oi];
+            if (opt.*.type != prism.NODE_KEYWORD_HASH) continue;
+            const kh: *const prism.KeywordHashNode = @ptrCast(@alignCast(opt));
+            for (0..kh.elements.size) |ej| {
+                const el = kh.elements.nodes[ej];
+                if (el.*.type != prism.NODE_ASSOC) continue;
+                const as: *const prism.AssocNode = @ptrCast(@alignCast(el));
+                if (as.key.*.type != prism.NODE_SYMBOL) continue;
+                const ks: *const prism.SymbolNode = @ptrCast(@alignCast(as.key));
+                if (ks.unescaped.source == null) continue;
+                if (std.mem.eql(u8, ks.unescaped.source[0..ks.unescaped.length], "confirmation") and
+                    as.value.*.type == prism.NODE_TRUE) has_confirmation = true;
+            }
+        }
+        if (!has_confirmation) return;
+    }
+    var ns_buf: [256]u8 = undefined;
+    const parent = if (ctx.namespace_stack_len > 0) namespaceFromStack(ctx, &ns_buf) else null;
+    var i: usize = 0;
+    while (i < args.size) : (i += 1) {
+        const arg = args.nodes[i];
+        if (arg.*.type != prism.NODE_SYMBOL) continue;
+        const sym: *const prism.SymbolNode = @ptrCast(@alignCast(arg));
+        if (sym.unescaped.source == null) continue;
+        const name = sym.unescaped.source[0..sym.unescaped.length];
+        if (name.len == 0 or name.len > 100) continue;
+        const lc = locationLineCol(ctx.parser, arg.*.location.start);
+        var rb: [160]u8 = undefined;
+        var wb: [160]u8 = undefined;
+        const r = std.fmt.bufPrint(&rb, "{s}_confirmation", .{name}) catch continue;
+        try insertSymbolWithReturn(ctx, "def", r, lc.line, lc.col, null, mname, parent, null);
+        const w = std.fmt.bufPrint(&wb, "{s}_confirmation=", .{name}) catch continue;
+        try insertSymbolWithReturn(ctx, "def", w, lc.line, lc.col, null, mname, parent, null);
     }
 }
