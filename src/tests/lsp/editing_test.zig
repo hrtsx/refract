@@ -101,6 +101,101 @@ test "codeAction returns array" {
     }
 }
 
+test "codeAction with negative range position does not crash" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_actneg";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/action_test.rb",
+        .data = "class ActionTest; end\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    // Negative line/character (a buggy/hostile client) must clamp to 0, not trap the
+    // @intCast in ReleaseSafe and kill the server.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/action_test.rb\"},\"range\":{\"start\":{\"line\":-1,\"character\":-5},\"end\":{\"line\":-1,\"character\":-1}},\"context\":{\"diagnostics\":[]}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    // The server survived and answered — the negative positions were clamped, no crash.
+    const resp = getResponseById(responses, 2) orelse return error.NoCodeActionResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    switch (result) {
+        .array => {},
+        else => return error.ResultNotArray,
+    }
+}
+
+test "position larger than u32 does not crash" {
+    const alloc = std.testing.allocator;
+
+    const ws = "/tmp/refract_test_actbig";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{
+        .sub_path = ws ++ "/action_test.rb",
+        .data = "class ActionTest; end\n",
+    });
+
+    var s = try Session.init(alloc);
+    defer s.deinit();
+
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{}}}");
+    try s.send(base_initialized);
+    // A line/character above u32 max must be rejected, not fed to an @intCast
+    // that traps in ReleaseSafe. Hover exercises extractPosition; codeAction
+    // exercises the range parse. Both must answer — the server stayed up.
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/action_test.rb\"},\"position\":{\"line\":9999999999,\"character\":9999999999}}}");
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/action_test.rb\"},\"range\":{\"start\":{\"line\":9999999999,\"character\":0},\"end\":{\"line\":9999999999,\"character\":0}},\"context\":{\"diagnostics\":[]}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+
+    const raw = try s.run();
+    defer alloc.free(raw);
+
+    const responses = try extractResponses(alloc, raw);
+    defer {
+        for (responses) |r| r.deinit();
+        alloc.free(responses);
+    }
+
+    // Server survived both out-of-range requests and answered them.
+    _ = getResponseById(responses, 2) orelse return error.NoHoverResponse;
+    const resp = getResponseById(responses, 3) orelse return error.NoCodeActionResponse;
+    const obj = switch (resp) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
+    const result = obj.get("result") orelse return error.NoResult;
+    switch (result) {
+        .array => {},
+        else => return error.ResultNotArray,
+    }
+}
+
 test "getDiags no false positives on valid ERB" {
     const alloc = std.testing.allocator;
 

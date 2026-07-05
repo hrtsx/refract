@@ -1,5 +1,6 @@
 const std = @import("std");
 const server = @import("server.zig");
+const transport = @import("transport.zig");
 
 const macos_exe = struct {
     extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
@@ -361,11 +362,7 @@ pub const Plugin = struct {
         defer self.io_mu.unlock(std.Options.debug_io);
         const id = self.next_id;
         self.next_id += 1;
-        const body = try std.fmt.allocPrint(
-            self.alloc,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{s}}}",
-            .{ id, method, params_json },
-        );
+        const body = try transport.buildRequestBody(self.alloc, id, method, params_json);
         defer self.alloc.free(body);
         try self.writeFrame(body);
         return try self.readFrame(self.manifest.request_ms);
@@ -386,10 +383,7 @@ pub const Plugin = struct {
 
     fn writeFrame(self: *Plugin, body: []const u8) !void {
         var stdin = self.child.stdin orelse return error.NoStdin;
-        var sbuf: [256]u8 = undefined;
-        const header = try std.fmt.bufPrint(&sbuf, "Content-Length: {d}\r\n\r\n", .{body.len});
-        try stdin.writeStreamingAll(std.Options.debug_io, header);
-        try stdin.writeStreamingAll(std.Options.debug_io, body);
+        try transport.writeStreamFrame(&stdin, body);
     }
 
     fn readFrame(self: *Plugin, timeout_ms: u32) ![]u8 {
@@ -404,34 +398,7 @@ pub const Plugin = struct {
             if (tkill) |t| t.join();
         }
         var stdout = self.child.stdout orelse return error.NoStdout;
-        var hdr_buf: [256]u8 = undefined;
-        var hdr_len: usize = 0;
-        while (hdr_len < hdr_buf.len) {
-            const n = try stdout.readStreaming(std.Options.debug_io, &.{hdr_buf[hdr_len .. hdr_len + 1]});
-            if (n == 0) return error.EndOfStream;
-            hdr_len += n;
-            if (hdr_len >= 4 and std.mem.eql(u8, hdr_buf[hdr_len - 4 .. hdr_len], "\r\n\r\n")) break;
-        }
-        const header_str = hdr_buf[0..hdr_len];
-        var content_len: usize = 0;
-        var it = std.mem.splitSequence(u8, header_str, "\r\n");
-        while (it.next()) |line| {
-            if (std.mem.startsWith(u8, line, "Content-Length: ")) {
-                content_len = std.fmt.parseInt(usize, line["Content-Length: ".len..], 10) catch 0;
-            }
-        }
-        if (content_len == 0 or content_len > 16 * 1024 * 1024) return error.InvalidContentLength;
-        const body = try self.alloc.alloc(u8, content_len);
-        var got: usize = 0;
-        while (got < content_len) {
-            const n = try stdout.readStreaming(std.Options.debug_io, &.{body[got..]});
-            if (n == 0) {
-                self.alloc.free(body);
-                return error.EndOfStream;
-            }
-            got += n;
-        }
-        return body;
+        return transport.readStreamFrame(&stdout, self.alloc);
     }
 };
 

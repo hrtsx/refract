@@ -373,12 +373,12 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
         };
         const col_json = loc_obj.get("start_column") orelse continue;
         const rb_col_1: u32 = switch (col_json) {
-            .integer => |i| if (i >= 0) @intCast(i) else continue,
+            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else continue,
             else => continue,
         };
         const len_json = loc_obj.get("length");
         const rb_len: u32 = if (len_json) |lj| switch (lj) {
-            .integer => |i| if (i >= 0) @intCast(i) else 0,
+            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else 0,
             else => 0,
         } else 0;
 
@@ -444,7 +444,8 @@ pub fn handlePullDiagnostic(self: *Server, msg: types.RequestMessage) !?types.Re
     const path = uriToPath(self.alloc, uri) catch return emptyResult(msg);
     defer self.alloc.free(path);
 
-    const diag_source: ?[]const u8 = self.open_docs.get(uri);
+    const diag_source: ?[]u8 = self.openDocDupe(uri);
+    defer if (diag_source) |s| self.alloc.free(s);
     const src_for_hash: []const u8 = diag_source orelse "";
     const content_hash = std.hash.Wyhash.hash(0, src_for_hash);
     var result_id_buf: [20]u8 = undefined;

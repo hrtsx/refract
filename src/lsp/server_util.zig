@@ -256,7 +256,7 @@ pub fn extractPosition(params: ?std.json.Value) ?struct { line: u32, character: 
         .integer => |i| i,
         else => return null,
     };
-    if (ln < 0 or ch < 0) return null;
+    if (ln < 0 or ch < 0 or ln > std.math.maxInt(u32) or ch > std.math.maxInt(u32)) return null;
     return .{ .line = @intCast(ln), .character = @intCast(ch) };
 }
 

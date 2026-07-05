@@ -10,6 +10,7 @@ const macos_exe = struct {
 /// the Linux `/proc/self/exe` symlink.
 pub fn selfExePath(buf: []u8) ?[]const u8 {
     if (builtin.os.tag == .macos) {
+        if (buf.len > std.math.maxInt(u32)) return null;
         var len: u32 = @intCast(buf.len);
         if (macos_exe._NSGetExecutablePath(buf.ptr, &len) == 0) {
             const slen = std.mem.indexOfScalar(u8, buf[0..@min(buf.len, len)], 0) orelse @as(usize, @intCast(len));

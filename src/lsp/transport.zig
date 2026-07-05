@@ -35,6 +35,57 @@ pub fn writeMessage(writer: *std.Io.Writer, json_bytes: []const u8) !void {
     try writer.flush();
 }
 
+/// Write a `Content-Length`-framed message to a child-process stdin stream
+/// (`writeStreaming` API, distinct from the buffered `*std.Io.Writer` above).
+/// Any locking (e.g. an io mutex) is the caller's responsibility.
+pub fn writeStreamFrame(stdin: anytype, body: []const u8) !void {
+    var sbuf: [256]u8 = undefined;
+    const header = try std.fmt.bufPrint(&sbuf, "Content-Length: {d}\r\n\r\n", .{body.len});
+    try stdin.writeStreamingAll(std.Options.debug_io, header);
+    try stdin.writeStreamingAll(std.Options.debug_io, body);
+}
+
+/// Build a JSON-RPC request body (`id`/`method`/`params`), without framing.
+/// Caller owns the returned slice. Shared by the subprocess bridges so the
+/// envelope format stays in one place.
+pub fn buildRequestBody(alloc: std.mem.Allocator, id: i64, method: []const u8, params_json: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        alloc,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{s}}}",
+        .{ id, method, params_json },
+    );
+}
+
+/// Read one `Content-Length`-framed message from a child-process stdout stream.
+/// Returns an allocator-owned body, freed on any read error.
+pub fn readStreamFrame(stdout: anytype, alloc: std.mem.Allocator) ![]u8 {
+    var hdr_buf: [256]u8 = undefined;
+    var hdr_len: usize = 0;
+    while (hdr_len < hdr_buf.len) {
+        const n = try stdout.readStreaming(std.Options.debug_io, &.{hdr_buf[hdr_len .. hdr_len + 1]});
+        if (n == 0) return error.EndOfStream;
+        hdr_len += n;
+        if (hdr_len >= 4 and std.mem.eql(u8, hdr_buf[hdr_len - 4 .. hdr_len], "\r\n\r\n")) break;
+    }
+    var content_len: usize = 0;
+    var it = std.mem.splitSequence(u8, hdr_buf[0..hdr_len], "\r\n");
+    while (it.next()) |line| {
+        if (std.mem.startsWith(u8, line, "Content-Length: ")) {
+            content_len = std.fmt.parseInt(usize, line["Content-Length: ".len..], 10) catch 0;
+        }
+    }
+    if (content_len == 0 or content_len > max_message_size) return error.InvalidContentLength;
+    const body = try alloc.alloc(u8, content_len);
+    errdefer alloc.free(body);
+    var got: usize = 0;
+    while (got < content_len) {
+        const n = try stdout.readStreaming(std.Options.debug_io, &.{body[got..]});
+        if (n == 0) return error.EndOfStream;
+        got += n;
+    }
+    return body;
+}
+
 test "negative Content-Length returns InvalidContentLength" {
     const bad_frame = "Content-Length: -1\r\n\r\n";
     var r = std.Io.Reader.fixed(bad_frame);

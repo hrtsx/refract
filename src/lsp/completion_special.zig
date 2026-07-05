@@ -92,13 +92,28 @@ pub fn completeEnvKeys(self: *Server, msg: types.RequestMessage, prefix: []const
                 seen.deinit();
             }
 
+            // Bound the workspace file read so a large repo can't turn one
+            // keystroke into an O(all-files) stall on the query path. When the
+            // cap trips we mark the key set incomplete so the client refines.
+            self.env_keys_truncated = false;
+            const max_files: usize = 2000;
+            const max_bytes: usize = 48 * 1024 * 1024;
+            var files_scanned: usize = 0;
+            var bytes_scanned: usize = 0;
+
             const file_stmt = self.cachedStmt("SELECT path FROM files WHERE is_gem = 0") catch null;
             if (file_stmt) |fs| {
                 defer fs.reset();
                 while (fs.step() catch false) {
+                    if (files_scanned >= max_files or bytes_scanned >= max_bytes) {
+                        self.env_keys_truncated = true;
+                        break;
+                    }
+                    files_scanned += 1;
                     const fpath = fs.column_text(0);
                     const fsrc = std.Io.Dir.cwd().readFileAllocOptions(std.Options.debug_io, fpath, self.alloc, std.Io.Limit.limited(512 * 1024), .@"1", 0) catch continue;
                     defer self.alloc.free(fsrc);
+                    bytes_scanned += fsrc.len;
 
                     var pos: usize = 0;
                     while (pos + 4 < fsrc.len) {
@@ -146,11 +161,14 @@ pub fn completeEnvKeys(self: *Server, msg: types.RequestMessage, prefix: []const
     // Emit completions from cache, filtered by prefix.
     var aw = std.Io.Writer.Allocating.init(self.alloc);
     const w = &aw.writer;
-    try w.writeAll("{\"isIncomplete\":false,\"items\":[");
-    var first = true;
-    var count: u32 = 0;
     self.env_keys_mu.lockUncancelable(std.Options.debug_io);
     defer self.env_keys_mu.unlock(std.Options.debug_io);
+    if (self.env_keys_truncated)
+        try w.writeAll("{\"isIncomplete\":true,\"items\":[")
+    else
+        try w.writeAll("{\"isIncomplete\":false,\"items\":[");
+    var first = true;
+    var count: u32 = 0;
     for (self.env_keys_cache.items) |key| {
         if (prefix.len > 0 and !std.mem.startsWith(u8, key, prefix)) continue;
         if (!first) try w.writeByte(',');

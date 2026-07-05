@@ -31,11 +31,11 @@ pub fn handlePrepareTypeHierarchy(self: *Server, msg: types.RequestMessage) !?ty
         else => return emptyResult(msg),
     };
     const line: u32 = switch (pos.get("line") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const character: u32 = switch (pos.get("character") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
 
@@ -116,7 +116,11 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
         \\  SELECT s.parent_name, m.depth+1 FROM mro m
         \\  JOIN symbols s ON s.name=m.name AND s.kind IN ('class','module')
         \\  WHERE m.depth < 8
-        \\) SELECT DISTINCT name FROM mro WHERE name IS NOT NULL
+        \\) SELECT DISTINCT m.name, s.id, s.kind, s.line, s.col, f.path
+        \\  FROM mro m
+        \\  LEFT JOIN symbols s ON s.name=m.name AND s.kind IN ('class','module')
+        \\  LEFT JOIN files f ON s.file_id=f.id
+        \\  WHERE m.name IS NOT NULL
     ) catch {
         try w.writeByte(']');
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = try aw.toOwnedSlice(), .@"error" = null };
@@ -133,11 +137,10 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
         if (parent_name_raw.len == 0 or seen_parents.contains(parent_name_raw)) continue;
         try seen_parents.put(seen_arena.allocator().dupe(u8, parent_name_raw) catch continue, {});
 
-        const sym_stmt = self.cachedStmt("SELECT s.id, s.name, s.kind, s.line, s.col, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=? AND s.kind IN ('class','module') LIMIT 1") catch continue;
-        defer sym_stmt.reset();
-        sym_stmt.bind_text(1, parent_name_raw);
-        if (!(sym_stmt.step() catch false)) {
-            // Parent exists in DB but no file — emit minimal item
+        // LEFT JOIN: an empty path means no indexed symbol-with-file for this
+        // parent — emit the minimal item, matching the old INNER-JOIN miss.
+        const sym_path = mro_stmt.column_text(5);
+        if (sym_path.len == 0) {
             if (!first) try w.writeByte(',');
             first = false;
             try w.writeAll("{\"name\":");
@@ -145,12 +148,11 @@ pub fn handleTypeHierarchySupertypes(self: *Server, msg: types.RequestMessage) !
             try w.writeAll(",\"kind\":5,\"uri\":\"\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"selectionRange\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}");
             continue;
         }
-        const sym_id = sym_stmt.column_int(0);
-        const sym_name = sym_stmt.column_text(1);
-        const sym_kind = sym_stmt.column_text(2);
-        const sym_line = sym_stmt.column_int(3);
-        const sym_col = sym_stmt.column_int(4);
-        const sym_path = sym_stmt.column_text(5);
+        const sym_id = mro_stmt.column_int(1);
+        const sym_name = parent_name_raw;
+        const sym_kind = mro_stmt.column_text(2);
+        const sym_line = mro_stmt.column_int(3);
+        const sym_col = mro_stmt.column_int(4);
         const kind_num: u8 = if (std.mem.eql(u8, sym_kind, "class")) 5 else 2;
         if (!first) try w.writeByte(',');
         first = false;

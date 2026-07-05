@@ -288,8 +288,8 @@ pub fn handleModule(ctx: *VisitCtx, n: *const prism.Node) bool {
 // relation, so a chain ending here carries no `[Model]` type and is not captured.
 fn isScalarTerminal(m: []const u8) bool {
     const set = [_][]const u8{
-        "count", "sum",     "average", "minimum", "maximum",  "pluck",  "pick",
-        "ids",   "exists?", "any?",    "many?",   "none?",    "empty?", "size",
+        "count",  "sum",       "average",        "minimum", "maximum", "pluck",  "pick",
+        "ids",    "exists?",   "any?",           "many?",   "none?",   "empty?", "size",
         "length", "calculate", "distinct_count", "to_json", "to_a?",
     };
     for (set) |s| if (std.mem.eql(u8, m, s)) return true;
@@ -299,8 +299,8 @@ fn isScalarTerminal(m: []const u8) bool {
 // Terminals that return a single record (`Model`), not a relation (`[Model]`).
 fn isSingularTerminal(m: []const u8) bool {
     const set = [_][]const u8{
-        "find",  "first", "last",  "take",  "find_by", "find_by!", "sole",
-        "second", "third", "find_sole_by", "first!", "last!", "take!",
+        "find",   "first", "last",         "take",   "find_by", "find_by!", "sole",
+        "second", "third", "find_sole_by", "first!", "last!",   "take!",
     };
     for (set) |s| if (std.mem.eql(u8, m, s)) return true;
     return false;

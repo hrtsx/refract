@@ -1059,12 +1059,18 @@ pub const Server = struct {
         return self.buildResult(id, result);
     }
 
+    // Opens a JSON-RPC 2.0 response object and writes the `id` (or `null`), leaving the
+    // writer positioned to append `,"result":…` or `,"error":…`. Shared by buildResult/buildError.
+    fn writeRpcEnvelope(w: *std.Io.Writer, id: ?std.json.Value) !void {
+        try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+        if (id) |iv| try writeJsonValue(w, iv) else try w.writeAll("null");
+    }
+
     pub fn buildResult(self: *Server, id: ?std.json.Value, result_json: []const u8) !?[]u8 {
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        if (id) |iv| try writeJsonValue(w, iv) else try w.writeAll("null");
+        try writeRpcEnvelope(w, id);
         try w.writeAll(",\"result\":");
         try w.writeAll(result_json);
         try w.writeByte('}');
@@ -1075,8 +1081,7 @@ pub const Server = struct {
         var aw = std.Io.Writer.Allocating.init(self.alloc);
         errdefer aw.deinit();
         const w = &aw.writer;
-        try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        if (id) |iv| try writeJsonValue(w, iv) else try w.writeAll("null");
+        try writeRpcEnvelope(w, id);
         try w.print(",\"error\":{{\"code\":{d},\"message\":", .{code});
         try writeJsonStr(w, message);
         try w.writeAll("}}");

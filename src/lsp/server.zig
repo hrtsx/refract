@@ -405,6 +405,7 @@ pub const Server = struct {
     git_check_tick: u32 = 0,
     env_keys_cache: std.ArrayListUnmanaged([]u8) = .empty,
     env_keys_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    env_keys_truncated: bool = false,
     env_keys_mu: std.Io.Mutex = std.Io.Mutex.init,
     registry: handler_registry.Registry = .{},
     recorder: ?observability.Recorder = null,

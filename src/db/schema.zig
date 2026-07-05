@@ -78,7 +78,7 @@ pub fn init(self: Db) DbError!void {
         \\PRAGMA synchronous=NORMAL;
         \\PRAGMA cache_size=-32000;
         \\PRAGMA temp_store=MEMORY;
-        ++ std.fmt.comptimePrint("PRAGMA mmap_size={d};\n", .{limits.DB_MMAP_SIZE_BYTES}) ++
+    ++ std.fmt.comptimePrint("PRAGMA mmap_size={d};\n", .{limits.DB_MMAP_SIZE_BYTES}) ++
         \\PRAGMA busy_timeout=5000;
         \\PRAGMA foreign_keys=ON;
         \\CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

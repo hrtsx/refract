@@ -40,12 +40,12 @@ pub fn handlePrepareRename(self: *Server, msg: types.RequestMessage) !?types.Res
     };
     const line_val = pos.get("line") orelse return emptyResult(msg);
     const line: u32 = switch (line_val) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const char_val = pos.get("character") orelse return emptyResult(msg);
     const character: u32 = switch (char_val) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
 
@@ -123,12 +123,12 @@ pub fn handleRename(self: *Server, msg: types.RequestMessage) !?types.ResponseMe
     };
     const line_val = pos.get("line") orelse return emptyResult(msg);
     const line: u32 = switch (line_val) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const char_val = pos.get("character") orelse return emptyResult(msg);
     const character: u32 = switch (char_val) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const new_name_val = obj.get("newName") orelse return emptyResult(msg);

@@ -156,13 +156,13 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
                 if (so) |s| {
                     if (s.get("line")) |l| {
                         action_line = switch (l) {
-                            .integer => |i| @intCast(i),
+                            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else 0,
                             else => 0,
                         };
                     }
                     if (s.get("character")) |c| {
                         action_char = switch (c) {
-                            .integer => |i| @intCast(i),
+                            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else 0,
                             else => 0,
                         };
                     }
@@ -176,13 +176,13 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
                 if (eo) |e| {
                     if (e.get("line")) |l| {
                         end_line = switch (l) {
-                            .integer => |i| @intCast(i),
+                            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else 0,
                             else => 0,
                         };
                     }
                     if (e.get("character")) |c| {
                         end_char = switch (c) {
-                            .integer => |i| @intCast(i),
+                            .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else 0,
                             else => 0,
                         };
                     }
@@ -739,7 +739,7 @@ pub fn handleExecuteCommand(self: *Server, msg: types.RequestMessage) !?types.Re
                     else => "",
                 };
                 const line_num: ?u32 = if (arr.items.len >= 2) switch (arr.items[1]) {
-                    .integer => |i| if (i > 0) @intCast(i) else null,
+                    .integer => |i| if (i > 0 and i <= std.math.maxInt(u32)) @intCast(i) else null,
                     else => null,
                 } else null;
                 const path2 = uriToPath(std.heap.c_allocator, file_uri) catch null;

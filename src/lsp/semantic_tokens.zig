@@ -128,11 +128,11 @@ pub fn handleSemanticTokensRange(self: *Server, msg: types.RequestMessage) !?typ
         else => return emptyResult(msg),
     };
     const start_line: u32 = switch (start_obj.get("line") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const end_line: u32 = switch (end_obj.get("line") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
 

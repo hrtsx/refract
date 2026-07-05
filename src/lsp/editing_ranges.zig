@@ -226,7 +226,7 @@ pub fn handleSelectionRange(self: *Server, msg: types.RequestMessage) !?types.Re
         else => return emptyResult(msg),
     };
     const line: u32 = switch (pos.get("line") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     _ = switch (pos.get("character") orelse return emptyResult(msg)) {
@@ -324,11 +324,11 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
         else => return emptyResult(msg),
     };
     const line: u32 = switch (pos.get("line") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
     const character: u32 = switch (pos.get("character") orelse return emptyResult(msg)) {
-        .integer => |i| if (i >= 0) @intCast(i) else return emptyResult(msg),
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else return emptyResult(msg),
         else => return emptyResult(msg),
     };
 

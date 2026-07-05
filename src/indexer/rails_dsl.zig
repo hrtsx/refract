@@ -120,7 +120,8 @@ pub fn isRailsDsl(mname: []const u8) bool {
         "connects_to",             "composed_of",               "store_accessor",         "accepts_nested_attributes_for",
         "devise",                  "has_attached_file",
         // ActiveJob / ActionMailer class-level DSLs
-        "queue_as",                "retry_on",                  "discard_on",             "default",
+                "queue_as",               "retry_on",
+        "discard_on",              "default",
     };
     for (dsl) |d| if (std.mem.eql(u8, mname, d)) return true;
     return false;
