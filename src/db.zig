@@ -8,7 +8,7 @@ extern fn refract_bind_blob(stmt: *c.sqlite3_stmt, col: c_int, ptr: ?*const anyo
 
 const schema = @import("db/schema.zig");
 
-pub const CURRENT_SCHEMA: u32 = 6;
+pub const CURRENT_SCHEMA: u32 = 7;
 
 pub const DbError = error{
     Open,

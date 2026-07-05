@@ -11,6 +11,7 @@ pub const RdbgBridge = struct {
     alloc: std.mem.Allocator,
     program: []u8,
     cwd: []u8,
+    io: std.Io = std.Options.debug_io,
     io_mu: std.Io.Mutex = std.Io.Mutex.init,
 
     /// Build rdbg argv. Defaults to `rdbg --open=stdio --nonstop -- <program> <args...>`.
@@ -59,14 +60,15 @@ pub const RdbgBridge = struct {
         return false;
     }
 
-    pub fn launch(alloc: std.mem.Allocator, program: []const u8, program_args: []const []const u8, cwd: []const u8) !RdbgBridge {
+    pub fn launch(alloc: std.mem.Allocator, program: []const u8, program_args: []const []const u8, cwd: []const u8, io: std.Io) !RdbgBridge {
         const rdbg_bin: []const u8 = if (std.c.getenv("RDBG_BIN")) |v| std.mem.span(v) else "rdbg";
         if (!binaryAvailable(alloc, rdbg_bin)) return error.RdbgNotFound;
         const argv = try buildArgv(alloc, program, program_args);
         defer freeArgv(alloc, argv);
         const cwd_z = try alloc.dupeZ(u8, cwd);
         defer alloc.free(cwd_z);
-        const child = std.process.spawn(std.Options.debug_io, .{
+        // Spawn on the real event-loop Io — `debug_io` cannot launch a child.
+        const child = std.process.spawn(io, .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
@@ -81,14 +83,16 @@ pub const RdbgBridge = struct {
             .alloc = alloc,
             .program = try alloc.dupe(u8, program),
             .cwd = try alloc.dupe(u8, cwd),
+            .io = io,
         };
     }
 
     pub fn deinit(self: *RdbgBridge) void {
-        if (self.child.stdin) |s| s.close(std.Options.debug_io);
+        // Kill on the spawn Io without wait — `wait` panics on this Io; the OS
+        // reaps the orphan at process exit.
+        if (self.child.stdin) |s| s.close(self.io);
         self.child.stdin = null;
-        self.child.kill(std.Options.debug_io);
-        _ = self.child.wait(std.Options.debug_io) catch {};
+        self.child.kill(self.io);
         self.alloc.free(self.program);
         self.alloc.free(self.cwd);
     }

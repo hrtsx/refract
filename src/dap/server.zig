@@ -161,7 +161,7 @@ pub const Server = struct {
             }
         }
 
-        const bridge = rdbg_bridge.RdbgBridge.launch(self.alloc, program_val.string, program_args.items, cwd_str) catch |err| {
+        const bridge = rdbg_bridge.RdbgBridge.launch(self.alloc, program_val.string, program_args.items, cwd_str, self.io) catch |err| {
             if (err == error.RdbgNotFound) {
                 try self.sendEvent("output", "{\"category\":\"important\",\"output\":\"rdbg not installed: gem install debug\\n\"}", writer);
                 try self.sendResponse(request_seq, "launch", false, "{\"error\":{\"id\":2,\"format\":\"rdbg not installed: gem install debug\"}}", writer);

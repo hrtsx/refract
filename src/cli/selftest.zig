@@ -129,7 +129,7 @@ pub fn runBenchSorbetSteep(io: std.Io, alloc: std.mem.Allocator, sorbet_root: ?[
 }
 
 fn runOneServer(io: std.Io, alloc: std.mem.Allocator, kind: sorbet_harness.ServerKind, root: []const u8, stdout: *std.Io.File) !void {
-    var h = try sorbet_harness.Harness.launch(kind, root, alloc);
+    var h = try sorbet_harness.Harness.launch(kind, root, alloc, io);
     defer h.deinit();
     var uri_buf: [1024]u8 = undefined;
     const root_uri = try std.fmt.bufPrint(&uri_buf, "file://{s}", .{root});

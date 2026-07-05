@@ -1,6 +1,7 @@
 const std = @import("std");
 const db_mod = @import("../db.zig");
 const transport = @import("transport.zig");
+const server = @import("server.zig");
 
 pub const ServerKind = enum {
     sorbet,
@@ -8,7 +9,7 @@ pub const ServerKind = enum {
 
     pub fn argv(self: ServerKind) []const []const u8 {
         return switch (self) {
-            .sorbet => &.{ "bundle", "exec", "srb", "tc", "--lsp", "--no-config-file" },
+            .sorbet => &.{ "bundle", "exec", "srb", "tc", "--lsp", "--disable-watchman" },
             .steep => &.{ "bundle", "exec", "steep", "langserver" },
         };
     }
@@ -54,13 +55,16 @@ pub const Bridge = struct {
     alloc: std.mem.Allocator,
     next_id: i64 = 1,
     project_root: []u8,
+    io: std.Io = std.Options.debug_io,
     io_mu: std.Io.Mutex = std.Io.Mutex.init,
 
-    pub fn launch(kind: ServerKind, project_root: []const u8, alloc: std.mem.Allocator) !Bridge {
+    pub fn launch(kind: ServerKind, project_root: []const u8, alloc: std.mem.Allocator, io: std.Io) !Bridge {
         const args = kind.argv();
         const cwd_z = try alloc.dupeZ(u8, project_root);
         defer alloc.free(cwd_z);
-        const child = try std.process.spawn(std.Options.debug_io, .{
+        // Spawn must use the server's real event-loop Io — `debug_io` cannot
+        // actually launch a child and fails with OutOfMemory.
+        const child = try std.process.spawn(io, .{
             .argv = args,
             .stdin = .pipe,
             .stdout = .pipe,
@@ -72,37 +76,95 @@ pub const Bridge = struct {
             .child = child,
             .alloc = alloc,
             .project_root = try alloc.dupe(u8, project_root),
+            .io = io,
         };
     }
 
     pub fn deinit(self: *Bridge) void {
-        if (self.child.stdin) |s| s.close(std.Options.debug_io);
+        // Child ops must use the spawn Io. Kill without wait — `wait` on this Io
+        // panics (reached unreachable); the OS reaps the orphan at process exit.
+        if (self.child.stdin) |s| s.close(self.io);
         self.child.stdin = null;
-        self.child.kill(std.Options.debug_io);
-        _ = self.child.wait(std.Options.debug_io) catch {};
+        self.child.kill(self.io);
         self.alloc.free(self.project_root);
     }
 
-    /// Send a JSON-RPC request, await response. Caller frees returned bytes.
+    /// Send a JSON-RPC request, await its response. Sorbet interleaves
+    /// `window/logMessage`, `$/progress` and `sorbet/showOperation`
+    /// notifications with responses, so skip frames until the one matching our
+    /// id. Caller frees returned bytes.
     pub fn request(self: *Bridge, method: []const u8, params_json: []const u8) ![]u8 {
         self.io_mu.lockUncancelable(std.Options.debug_io);
         defer self.io_mu.unlock(std.Options.debug_io);
+        return self.sendAndAwait(method, params_json);
+    }
+
+    /// Like `request`, but a kill-timer terminates the child if it goes silent
+    /// for `timeout_ns`. Used for the handshake, which runs synchronously on the
+    /// dispatch thread — a silent Sorbet would otherwise hang LSP init. NOT used
+    /// for the worker's hovers: those legitimately block for minutes behind a
+    /// cold typecheck and must not be killed.
+    pub fn requestTimed(self: *Bridge, method: []const u8, params_json: []const u8, timeout_ns: u64) ![]u8 {
+        self.io_mu.lockUncancelable(std.Options.debug_io);
+        defer self.io_mu.unlock(std.Options.debug_io);
+        const pid = self.child.id orelse return error.NoChild;
+        var tctx = server.TimeoutCtx{
+            .pid = pid,
+            .done = std.atomic.Value(bool).init(false),
+            .timeout_ns = timeout_ns,
+        };
+        const tkill = std.Thread.spawn(.{}, server.TimeoutCtx.run, .{&tctx}) catch null;
+        defer {
+            tctx.done.store(true, .release);
+            if (tkill) |t| t.join();
+        }
+        return self.sendAndAwait(method, params_json);
+    }
+
+    /// Write a request and read frames (skipping interleaved notifications) until
+    /// the id-matched response. Caller must hold io_mu. Caller frees the bytes.
+    fn sendAndAwait(self: *Bridge, method: []const u8, params_json: []const u8) ![]u8 {
         const id = self.next_id;
         self.next_id += 1;
         const body = try transport.buildRequestBody(self.alloc, id, method, params_json);
         defer self.alloc.free(body);
         try self.writeFrame(body);
-        return try self.readFrame();
+        var stdout = self.child.stdout orelse return error.NoStdout;
+        return transport.readResponseById(&stdout, self.alloc, id);
+    }
+
+    /// Fire-and-forget JSON-RPC notification (no id, no response awaited).
+    pub fn notify(self: *Bridge, method: []const u8, params_json: []const u8) !void {
+        self.io_mu.lockUncancelable(std.Options.debug_io);
+        defer self.io_mu.unlock(std.Options.debug_io);
+        const body = try std.fmt.allocPrint(self.alloc, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{s}}}", .{ method, params_json });
+        defer self.alloc.free(body);
+        try self.writeFrame(body);
+    }
+
+    /// Full LSP handshake: `initialize` (with rootUri + capabilities) then the
+    /// required `initialized` notification. Without `initialized`, Sorbet never
+    /// leaves its loading state and answers no requests — the reason the worker
+    /// hydrated zero rows before.
+    pub fn initializeHandshake(self: *Bridge) !void {
+        // supportsOperationNotifications opts into Sorbet's `sorbet/showOperation`
+        // begin/end events, which the worker uses to detect typecheck readiness.
+        const params = try std.fmt.allocPrint(
+            self.alloc,
+            "{{\"processId\":null,\"rootUri\":\"file://{s}\",\"capabilities\":{{}},\"initializationOptions\":{{}}}}",
+            .{self.project_root},
+        );
+        defer self.alloc.free(params);
+        // Timed: Sorbet answers `initialize` before its typecheck, so a silent
+        // server here means it's dead — don't hang the dispatch thread.
+        const resp = try self.requestTimed("initialize", params, 60 * std.time.ns_per_s);
+        self.alloc.free(resp);
+        try self.notify("initialized", "{}");
     }
 
     fn writeFrame(self: *Bridge, body: []const u8) !void {
         var stdin = self.child.stdin orelse return error.NoStdin;
         try transport.writeStreamFrame(&stdin, body);
-    }
-
-    fn readFrame(self: *Bridge) ![]u8 {
-        var stdout = self.child.stdout orelse return error.NoStdout;
-        return transport.readStreamFrame(&stdout, self.alloc);
     }
 };
 
@@ -122,8 +184,8 @@ pub fn persistResult(
     run_id: ?i64,
 ) !void {
     const sql = switch (kind) {
-        .sorbet => "INSERT INTO sorbet_results(workspace_id, fqn, kind, type_str, source, confidence, run_id, ts_us) VALUES(?,?,?,?,?,?,?,?)",
-        .steep => "INSERT INTO steep_results(workspace_id, fqn, kind, type_str, source, confidence, run_id, ts_us) VALUES(?,?,?,?,?,?,?,?)",
+        .sorbet => "INSERT OR REPLACE INTO sorbet_results(workspace_id, fqn, kind, type_str, source, confidence, run_id, ts_us) VALUES(?,?,?,?,?,?,?,?)",
+        .steep => "INSERT OR REPLACE INTO steep_results(workspace_id, fqn, kind, type_str, source, confidence, run_id, ts_us) VALUES(?,?,?,?,?,?,?,?)",
     };
     db_mu.lockUncancelable(std.Options.debug_io);
     defer db_mu.unlock(std.Options.debug_io);

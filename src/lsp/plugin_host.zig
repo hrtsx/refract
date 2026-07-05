@@ -254,9 +254,10 @@ pub const Plugin = struct {
     state: PluginState,
     next_id: i64,
     alloc: std.mem.Allocator,
+    io: std.Io = std.Options.debug_io,
     io_mu: std.Io.Mutex = std.Io.Mutex.init,
 
-    pub fn spawn(alloc: std.mem.Allocator, manifest: Manifest, plugin_dir: []const u8) !Plugin {
+    pub fn spawn(alloc: std.mem.Allocator, manifest: Manifest, plugin_dir: []const u8, io: std.Io) !Plugin {
         const dir_owned = try alloc.dupe(u8, plugin_dir);
         errdefer alloc.free(dir_owned);
         const entry = if (std.fs.path.isAbsolute(manifest.entry))
@@ -299,7 +300,8 @@ pub const Plugin = struct {
 
         const cwd_z = try alloc.dupeZ(u8, plugin_dir);
         defer alloc.free(cwd_z);
-        const child = try std.process.spawn(std.Options.debug_io, .{
+        // Spawn on the real event-loop Io — `debug_io` cannot launch a child.
+        const child = try std.process.spawn(io, .{
             .argv = argv_list.items,
             .stdin = .pipe,
             .stdout = .pipe,
@@ -314,6 +316,7 @@ pub const Plugin = struct {
             .state = .ready,
             .next_id = 1,
             .alloc = alloc,
+            .io = io,
         };
     }
 
@@ -333,10 +336,11 @@ pub const Plugin = struct {
     }
 
     pub fn deinit(self: *Plugin) void {
-        if (self.child.stdin) |s| s.close(std.Options.debug_io);
+        // Kill on the spawn Io without wait — `wait` panics on this Io; the OS
+        // reaps the orphan at process exit.
+        if (self.child.stdin) |s| s.close(self.io);
         self.child.stdin = null;
-        self.child.kill(std.Options.debug_io);
-        _ = self.child.wait(std.Options.debug_io) catch {};
+        self.child.kill(self.io);
         self.alloc.free(self.entry_path);
         self.alloc.free(self.plugin_dir);
         self.manifest.deinit(self.alloc);
@@ -406,12 +410,14 @@ pub const Host = struct {
     alloc: std.mem.Allocator,
     plugins: std.ArrayList(Plugin),
     refract_version: []const u8,
+    io: std.Io,
 
-    pub fn init(alloc: std.mem.Allocator, refract_version: []const u8) Host {
+    pub fn init(alloc: std.mem.Allocator, refract_version: []const u8, io: std.Io) Host {
         return .{
             .alloc = alloc,
             .plugins = .empty,
             .refract_version = refract_version,
+            .io = io,
         };
     }
 
@@ -487,7 +493,7 @@ pub const Host = struct {
             manifest.deinit(self.alloc);
             return err;
         };
-        var plugin = Plugin.spawn(self.alloc, manifest, plugin_dir) catch |e| {
+        var plugin = Plugin.spawn(self.alloc, manifest, plugin_dir, self.io) catch |e| {
             manifest.deinit(self.alloc);
             return e;
         };
@@ -632,7 +638,7 @@ test "Host round-trips through hello plugin" {
     if (std.c.getenv("REFRACT_SKIP_PLUGIN_TEST") != null) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
-    var host = Host.init(alloc, "0.1.0-test");
+    var host = Host.init(alloc, "0.1.0-test", std.Options.debug_io);
     defer host.deinit();
 
     const cwd = std.process.currentPathAlloc(std.Options.debug_io, alloc) catch return error.SkipZigTest;

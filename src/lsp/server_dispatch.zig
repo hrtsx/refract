@@ -789,7 +789,7 @@ pub fn handleInitialize(self: *Server, msg: types.RequestMessage) types.Response
             break :blk v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
         };
         if (plugins_enabled) {
-            self.plugin_host = plugin_host.Host.init(self.alloc, build_meta.version);
+            self.plugin_host = plugin_host.Host.init(self.alloc, build_meta.version, self.io);
             if (self.root_uri) |ruri| {
                 if (uriToPath(self.alloc, ruri) catch null) |rp| {
                     defer self.alloc.free(rp);
@@ -812,10 +812,9 @@ pub fn handleInitialize(self: *Server, msg: types.RequestMessage) types.Response
         if (uriToPath(self.alloc, ruri) catch null) |rp| {
             defer self.alloc.free(rp);
             if (self.sorbet_handle == null and sorbet_bridge.workspaceHasSorbet(rp, self.alloc)) {
-                if (sorbet_bridge.Bridge.launch(.sorbet, rp, self.alloc)) |handle| {
+                if (sorbet_bridge.Bridge.launch(.sorbet, rp, self.alloc, self.io)) |handle| {
                     self.sorbet_handle = handle;
-                    const init_resp = self.sorbet_handle.?.request("initialize", "{}") catch null;
-                    if (init_resp) |r| self.alloc.free(r);
+                    self.sorbet_handle.?.initializeHandshake() catch {};
                     self.sendLogMessage(3, "refract: sorbet bridge ready");
                     self.spawnTypeWorker(.sorbet);
                 } else |err| {
@@ -825,10 +824,9 @@ pub fn handleInitialize(self: *Server, msg: types.RequestMessage) types.Response
                 }
             }
             if (self.steep_handle == null and sorbet_bridge.workspaceHasSteep(rp, self.alloc)) {
-                if (sorbet_bridge.Bridge.launch(.steep, rp, self.alloc)) |handle| {
+                if (sorbet_bridge.Bridge.launch(.steep, rp, self.alloc, self.io)) |handle| {
                     self.steep_handle = handle;
-                    const init_resp = self.steep_handle.?.request("initialize", "{}") catch null;
-                    if (init_resp) |r| self.alloc.free(r);
+                    self.steep_handle.?.initializeHandshake() catch {};
                     self.sendLogMessage(3, "refract: steep bridge ready");
                     self.spawnTypeWorker(.steep);
                 } else |err| {

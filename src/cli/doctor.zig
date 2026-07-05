@@ -48,7 +48,7 @@ pub fn runDoctor(
 
     try checkBasics(alloc, &checks);
     try checkDatabase(io, db_path, alloc, &checks);
-    try checkRdbg(alloc, &checks);
+    try checkRdbg(io, alloc, &checks);
     try checkRubyEnv(alloc, cwd, &checks);
     try checkPrismVendor(io, alloc, &checks);
     try checkOtlpEndpoint(alloc, &checks);
@@ -56,7 +56,7 @@ pub fn runDoctor(
     try checkSchemaIntegrity(alloc, db_path, &checks);
     try checkGemCoverage(alloc, db_path, &checks);
     try checkStaleWalLock(io, db_path, alloc, &checks);
-    try checkBundlePresence(alloc, cwd, &checks);
+    try checkBundlePresence(io, alloc, cwd, &checks);
     try checkTmpdirWritable(alloc, &checks);
     try checkPriorCrashLog(io, alloc, &checks);
     try checkPluginsGate(alloc, &checks);
@@ -209,11 +209,12 @@ fn checkDatabase(
     }
 }
 
-fn checkRdbg(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
+fn checkRdbg(io: std.Io, alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
     const rdbg_bin: []const u8 = if (std.c.getenv("RDBG_BIN")) |v| std.mem.span(v) else "rdbg";
     const argv: []const []const u8 = &.{ rdbg_bin, "--version" };
 
-    var child = std.process.spawn(std.Options.debug_io, .{
+    // Spawn on the real event-loop Io — `debug_io` cannot launch a child.
+    var child = std.process.spawn(io, .{
         .argv = argv,
         .stdout = .ignore,
         .stderr = .ignore,
@@ -576,7 +577,7 @@ fn checkStaleWalLock(io: std.Io, db_path: []const u8, alloc: std.mem.Allocator, 
     }
 }
 
-fn checkBundlePresence(alloc: std.mem.Allocator, cwd: []const u8, checks: *std.ArrayList(Check)) !void {
+fn checkBundlePresence(io: std.Io, alloc: std.mem.Allocator, cwd: []const u8, checks: *std.ArrayList(Check)) !void {
     if (cwd.len == 0) return;
     const lockfile = try std.fs.path.join(alloc, &.{ cwd, "Gemfile.lock" });
     defer alloc.free(lockfile);
@@ -591,7 +592,8 @@ fn checkBundlePresence(alloc: std.mem.Allocator, cwd: []const u8, checks: *std.A
         return;
     }
 
-    var child = std.process.spawn(std.Options.debug_io, .{
+    // Spawn on the real event-loop Io — `debug_io` cannot launch a child.
+    var child = std.process.spawn(io, .{
         .argv = &.{ "bundle", "--version" },
         .stdout = .ignore,
         .stderr = .ignore,

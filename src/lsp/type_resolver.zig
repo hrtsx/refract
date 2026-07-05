@@ -220,6 +220,29 @@ fn extractSorbetCastSecond(t: []const u8, comptime prefix: []const u8) ?[]const 
     return null;
 }
 
+/// External type-checker oracle only: Sorbet (≥0.8) → Steep (≥0.8). Cheaper
+/// than `resolve` — two indexed lookups, no oracle/rbs/literal fallback — and
+/// scoped to authoritative sources, for the completion hot path. Returns null
+/// (no result, no cost beyond two indexed misses) when neither checker has a
+/// type for `fqn`, e.g. every plain-Ruby workspace. Caller owns type_str.
+pub fn resolveExternalOracle(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8) ?TypeResult {
+    if (selectSorbet(alloc, db, fqn, null) catch null) |r| return r;
+    if (selectSteep(alloc, db, fqn, null) catch null) |r| return r;
+    return null;
+}
+
+/// True when `s` is a plain class reference (`Foo`, `A::B`) usable as a
+/// member-lookup key — i.e. `stripWrapper` fully reduced it. Rejects residue
+/// like `T.untyped`, `T.any(A, B)`, `Boolean?`, or anything with spaces/parens
+/// so the caller can fall back to its heuristics instead of a dead lookup.
+pub fn isBareClassRef(s: []const u8) bool {
+    if (s.len == 0 or !std.ascii.isUpper(s[0])) return false;
+    for (s) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != ':') return false;
+    }
+    return true;
+}
+
 /// Resolve a `Class#method` query through the chain. Convenience wrapper
 /// that calls `resolve` and strips `Class<X>` wrappers from the type_str
 /// before returning. Caller frees `result.type_str`.
@@ -245,6 +268,40 @@ test "resolve picks sorbet over oracle when both present" {
     defer r.deinit(alloc);
     try std.testing.expectEqualStrings("SorbetType", r.type_str);
     try std.testing.expectEqual(Source.sorbet, r.source);
+}
+
+test "isBareClassRef accepts plain refs, rejects sorbet residue" {
+    try std.testing.expect(isBareClassRef("User"));
+    try std.testing.expect(isBareClassRef("Foo::Bar"));
+    try std.testing.expect(!isBareClassRef("T.untyped"));
+    try std.testing.expect(!isBareClassRef("T.any(String, Integer)"));
+    try std.testing.expect(!isBareClassRef("user"));
+    try std.testing.expect(!isBareClassRef(""));
+    try std.testing.expect(!isBareClassRef("Array[Foo]"));
+}
+
+test "resolveExternalOracle: sorbet≥80 then steep, else null; feeds stripWrapper" {
+    const alloc = std.testing.allocator;
+    const db = try db_mod.Db.open(":memory:");
+    defer db.close();
+    try db.init_schema();
+
+    // Miss on empty tables (the plain-Ruby case).
+    try std.testing.expect(resolveExternalOracle(alloc, db, "Nope") == null);
+
+    // Sorbet hit (conf≥80), stored as raw Sorbet syntax.
+    try db.exec("INSERT INTO sorbet_results(fqn, kind, type_str, source, confidence, ts_us) VALUES('acct','var','T.nilable(Account)','sorbet:hover',90,100)");
+    var r = resolveExternalOracle(alloc, db, "acct") orelse return error.NoMatch;
+    defer r.deinit(alloc);
+    try std.testing.expectEqual(Source.sorbet, r.source);
+    const bare = try stripWrapper(alloc, r.type_str);
+    defer alloc.free(bare);
+    try std.testing.expectEqualStrings("Account", bare);
+    try std.testing.expect(isBareClassRef(bare));
+
+    // Low-confidence sorbet is not surfaced.
+    try db.exec("INSERT INTO sorbet_results(fqn, kind, type_str, source, confidence, ts_us) VALUES('lowc','var','Foo','sorbet',50,100)");
+    try std.testing.expect(resolveExternalOracle(alloc, db, "lowc") == null);
 }
 
 test "resolve falls through to literal when no high-confidence type" {

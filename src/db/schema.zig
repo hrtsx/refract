@@ -384,6 +384,11 @@ pub fn init(self: Db) DbError!void {
     self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_symbol ON sorbet_results(symbol_id)") catch {};
     self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_fqn ON sorbet_results(fqn)") catch {};
     self.exec("CREATE INDEX IF NOT EXISTS idx_sorbet_results_ws ON sorbet_results(workspace_id, fqn)") catch {};
+    // Dedup key: one row per (workspace, symbol name, provenance). persistResult
+    // uses INSERT OR REPLACE so a rescan updates-in-place instead of accumulating.
+    // IFNULL(workspace_id,-1): NULLs are distinct in a UNIQUE index, so single-root
+    // rows (workspace_id NULL) would not dedup without collapsing NULL to a value.
+    self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sorbet_results_unique ON sorbet_results(IFNULL(workspace_id,-1), fqn, source)") catch {};
 
     try self.exec(
         \\CREATE TABLE IF NOT EXISTS steep_results (
@@ -403,6 +408,7 @@ pub fn init(self: Db) DbError!void {
     self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_symbol ON steep_results(symbol_id)") catch {};
     self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_fqn ON steep_results(fqn)") catch {};
     self.exec("CREATE INDEX IF NOT EXISTS idx_steep_results_ws ON steep_results(workspace_id, fqn)") catch {};
+    self.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_steep_results_unique ON steep_results(IFNULL(workspace_id,-1), fqn, source)") catch {};
 
     try self.exec(
         \\CREATE TABLE IF NOT EXISTS coverage_lines (

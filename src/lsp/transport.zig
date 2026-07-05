@@ -56,6 +56,31 @@ pub fn buildRequestBody(alloc: std.mem.Allocator, id: i64, method: []const u8, p
     );
 }
 
+/// True when `frame` is the JSON-RPC response to request `id`: it carries that
+/// `id` and no `method` key (a server→client notification/request has `method`).
+pub fn isResponseTo(alloc: std.mem.Allocator, frame: []const u8, id: i64) bool {
+    var p = std.json.parseFromSlice(std.json.Value, alloc, frame, .{}) catch return false;
+    defer p.deinit();
+    if (p.value != .object) return false;
+    const o = p.value.object;
+    if (o.get("method") != null) return false;
+    const idv = o.get("id") orelse return false;
+    return idv == .integer and idv.integer == id;
+}
+
+/// Read frames from a child stdout stream, skipping interleaved notifications
+/// (window/logMessage, $/progress, sorbet/showOperation, …) until the response
+/// matching `id`. Caller frees the returned bytes.
+pub fn readResponseById(stdout: anytype, alloc: std.mem.Allocator, id: i64) ![]u8 {
+    var skipped: u32 = 0;
+    while (skipped < 4096) : (skipped += 1) {
+        const frame = try readStreamFrame(stdout, alloc);
+        if (isResponseTo(alloc, frame, id)) return frame;
+        alloc.free(frame);
+    }
+    return error.NoResponse;
+}
+
 /// Read one `Content-Length`-framed message from a child-process stdout stream.
 /// Returns an allocator-owned body, freed on any read error.
 pub fn readStreamFrame(stdout: anytype, alloc: std.mem.Allocator) ![]u8 {

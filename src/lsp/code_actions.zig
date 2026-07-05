@@ -608,7 +608,7 @@ const RunTestCtx = struct {
             if (chunk.len > 0) ctx.server.sendLogMessage(4, chunk);
         }
 
-        const term = child.wait(ctx.server.io) catch {
+        const term = child.wait(std.Options.debug_io) catch {
             ctx.server.sendShowMessage(2, "refract: test process wait failed");
             return;
         };

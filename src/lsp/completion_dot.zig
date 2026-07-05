@@ -33,6 +33,7 @@ const buildQueryPattern = S.buildQueryPattern;
 const buildPrefixPattern = S.buildPrefixPattern;
 
 const c_common = @import("completion_common.zig");
+const type_resolver = @import("type_resolver.zig");
 const writeInsertTextSnippet = c_common.writeInsertTextSnippet;
 const addStdlibCompletions = c_common.addStdlibCompletions;
 const lit_recv = @import("literal_receiver.zig");
@@ -864,7 +865,28 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 }
             }
             const is_self_recv = std.mem.eql(u8, recv_word, "self");
-            const class_name_raw: []const u8 = if (force_singleton) (chain_class_buf orelse "") else if (th_hit) th_stmt.column_text(0) else if (chain_class_buf) |cc| cc else "";
+            // Lever 1: when an external type checker (Sorbet/Steep) is running, its
+            // type for the receiver is authoritative — prefer it over the heuristic
+            // th_hit / chain / naming-guess. resolveExternalOracle returns null on
+            // every untyped workspace (worker not spawned, or no ≥80-confidence
+            // result), so plain-Ruby completion is unchanged and pays no cost. Only
+            // a fully-reduced bare class ref is used; residue like `T.untyped` or a
+            // union falls through to the existing heuristics (precision-safe).
+            var oracle_class_buf: ?[]u8 = null;
+            defer if (oracle_class_buf) |o| self.alloc.free(o);
+            if (!force_singleton and !index_element and !is_self_recv and
+                recv_word.len > 0 and recv_word[0] != '$' and
+                (self.sorbet_worker_handle != null or self.steep_worker_handle != null))
+            {
+                if (type_resolver.resolveExternalOracle(self.alloc, self.queryDb(), recv_word)) |res| {
+                    var r = res;
+                    defer r.deinit(self.alloc);
+                    if (type_resolver.stripWrapper(self.alloc, r.type_str) catch null) |bare| {
+                        if (type_resolver.isBareClassRef(bare)) oracle_class_buf = bare else self.alloc.free(bare);
+                    }
+                }
+            }
+            const class_name_raw: []const u8 = if (oracle_class_buf) |o| o else if (force_singleton) (chain_class_buf orelse "") else if (th_hit) th_stmt.column_text(0) else if (chain_class_buf) |cc| cc else "";
             // For index access (`arr[0].`/`hash[:k].`) the receiver's resolved type is
             // the collection; complete on its element (`[T]`/Array[T]→T) or value
             // (Hash[K,V]→V). `ENV["X"]` yields a String (core Ruby, not Rails-gated).

@@ -35,7 +35,17 @@ pub const Worker = struct {
     pub fn run(w: *Worker) void {
         defer w.done.store(true, .seq_cst);
 
-        // Phase 1: workspace-level symbol probe. One request, one batch.
+        // Sorbet/Steep only answer hovers once their initial typecheck finishes
+        // (seconds after `initialized`). Block the scan phases until the checker
+        // is warm, else every hover returns empty and we persist zero types.
+        waitForSorbetReady(w);
+
+        // Phase 1: workspace/symbol probe. The empty query returns zero rows, but
+        // this call is LOAD-BEARING as a readiness barrier — Sorbet only answers a
+        // global query after its initial typecheck completes, whereas a hover can
+        // return a fast partial answer mid-index. Removing it lets Phase 2 race the
+        // typecheck and persist nothing. Keep it even though persistSymbolList is
+        // effectively a no-op here.
         const ws_run_id = sorbet_bridge.beginRun(w.db, w.db_mu, w.kind.label()) catch return;
         const ws_params = "{\"query\":\"\"}";
         if (w.bridge.request("workspace/symbol", ws_params)) |resp| {
@@ -219,7 +229,7 @@ fn hydrateLocalVar(w: *Worker, row: LvarRow) !void {
     const params = try std.fmt.allocPrint(
         w.alloc,
         "{{\"textDocument\":{{\"uri\":\"file://{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}",
-        .{ row.file_path, row.line, row.col },
+        .{ row.file_path, row.line - 1, row.col },
     );
     defer w.alloc.free(params);
 
@@ -242,7 +252,7 @@ fn hydrateLocalVar(w: *Worker, row: LvarRow) !void {
     _ = upd.step() catch {};
 }
 
-const MAX_LVARS_PER_RUN: u32 = 1000;
+const MAX_LVARS_PER_RUN: u32 = 4000;
 
 const LvarRow = struct {
     id: i64,
@@ -306,7 +316,7 @@ fn scanLocalVars(w: *Worker, run_id: i64) !void {
         const params = std.fmt.allocPrint(
             w.alloc,
             "{{\"textDocument\":{{\"uri\":\"file://{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}",
-            .{ row.file_path, row.line, row.col },
+            .{ row.file_path, row.line - 1, row.col },
         ) catch continue;
         defer w.alloc.free(params);
 
@@ -353,12 +363,54 @@ fn stripVarPrefix(text: []const u8, var_name: []const u8) []const u8 {
     return first_line[i..];
 }
 
-const MAX_TYPED_FILES_PER_RUN: u32 = 200;
+const MAX_TYPED_FILES_PER_RUN: u32 = 2000;
 const MAX_HEADER_BYTES: usize = 2048; // first ~50 lines is enough to find "# typed:"
-const MAX_HOVERS_PER_FILE: u32 = 32; // method/class symbols per file
+const MAX_HOVERS_PER_FILE: u32 = 96; // method/class symbols per file
 
 /// Iterate workspace `.rb` files in DB, find typed-true ones, send hover
 /// for each indexed method symbol, persist results.
+/// Poll one method-def position until a hover returns a type (the checker has
+/// finished its initial typecheck) or we give up after ~18s. Best-effort: on
+/// timeout the scan proceeds anyway. No usable symbol → returns immediately.
+fn waitForSorbetReady(w: *Worker) void {
+    var probe_path: ?[]u8 = null;
+    var probe_line: i64 = 0;
+    var probe_col: i64 = 0;
+    {
+        w.db_mu.lockUncancelable(std.Options.debug_io);
+        defer w.db_mu.unlock(std.Options.debug_io);
+        const stmt = w.db.prepare(
+            "SELECT f.path, s.line, s.col FROM symbols s JOIN files f ON s.file_id=f.id " ++
+                "WHERE f.path LIKE '%.rb' AND f.is_gem=0 AND s.kind='def' LIMIT 1",
+        ) catch return;
+        defer stmt.finalize();
+        if (stmt.step() catch false) {
+            probe_path = w.alloc.dupe(u8, stmt.column_text(0)) catch null;
+            probe_line = stmt.column_int(1);
+            probe_col = stmt.column_int(2);
+        }
+    }
+    const path = probe_path orelse return;
+    defer w.alloc.free(path);
+
+    var i: u32 = 0;
+    while (i < 400) : (i += 1) {
+        const params = std.fmt.allocPrint(
+            w.alloc,
+            "{{\"textDocument\":{{\"uri\":\"file://{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}",
+            .{ path, probe_line - 1, probe_col },
+        ) catch return;
+        defer w.alloc.free(params);
+        if (w.bridge.request("textDocument/hover", params)) |resp| {
+            defer w.alloc.free(resp);
+            const t = extractHoverType(w.alloc, resp) catch null;
+            defer if (t) |tt| w.alloc.free(tt);
+            if (t != null and t.?.len > 0) return;
+        } else |_| {}
+        sleepNs(750 * std.time.ns_per_ms);
+    }
+}
+
 fn scanTypedFiles(w: *Worker, run_id: i64, scanned: *u32) !void {
     var paths = std.ArrayList(struct { id: i64, path: []u8 }).empty;
     defer {
@@ -463,7 +515,7 @@ fn queryHoverAndPersist(w: *Worker, abs_path: []const u8, sym: SymbolPos, run_id
     const params = try std.fmt.allocPrint(
         w.alloc,
         "{{\"textDocument\":{{\"uri\":\"file://{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}",
-        .{ abs_path, sym.line, sym.col },
+        .{ abs_path, sym.line - 1, sym.col },
     );
     defer w.alloc.free(params);
     const resp = w.bridge.request("textDocument/hover", params) catch return;

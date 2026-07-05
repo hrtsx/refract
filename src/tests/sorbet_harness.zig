@@ -8,7 +8,7 @@ pub const ServerKind = enum {
     pub fn argv(self: ServerKind, project_root: []const u8, alloc: std.mem.Allocator) ![]const []const u8 {
         _ = project_root;
         return switch (self) {
-            .sorbet => try alloc.dupe([]const u8, &.{ "bundle", "exec", "srb", "tc", "--lsp", "--no-config-file" }),
+            .sorbet => try alloc.dupe([]const u8, &.{ "bundle", "exec", "srb", "tc", "--lsp", "--disable-watchman" }),
             .steep => try alloc.dupe([]const u8, &.{ "bundle", "exec", "steep", "langserver" }),
         };
     }
@@ -20,13 +20,15 @@ pub const Harness = struct {
     alloc: std.mem.Allocator,
     next_id: i64 = 1,
     project_root: []u8,
+    io: std.Io,
 
-    pub fn launch(kind: ServerKind, project_root: []const u8, alloc: std.mem.Allocator) !Harness {
+    pub fn launch(kind: ServerKind, project_root: []const u8, alloc: std.mem.Allocator, io: std.Io) !Harness {
         const args = try kind.argv(project_root, alloc);
         defer alloc.free(args);
         const cwd_z = try alloc.dupeZ(u8, project_root);
         defer alloc.free(cwd_z);
-        const child = try std.process.spawn(std.Options.debug_io, .{
+        // Spawn on the real event-loop Io — `debug_io` cannot launch a child.
+        const child = try std.process.spawn(io, .{
             .argv = args,
             .stdin = .pipe,
             .stdout = .pipe,
@@ -38,19 +40,33 @@ pub const Harness = struct {
             .child = child,
             .alloc = alloc,
             .project_root = try alloc.dupe(u8, project_root),
+            .io = io,
         };
     }
 
+    /// Full LSP handshake: initialize (await id-matched response) then the
+    /// required `initialized` notification, so the server leaves loading state.
     pub fn sendInitialize(self: *Harness, root_uri: []const u8) !void {
         const id = self.next_id;
         self.next_id += 1;
         const body = try std.fmt.allocPrint(
             self.alloc,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"initialize\",\"params\":{{\"rootUri\":\"{s}\",\"capabilities\":{{}}}}}}",
+            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"initialize\",\"params\":{{\"processId\":null,\"rootUri\":\"{s}\",\"capabilities\":{{}},\"initializationOptions\":{{}}}}}}",
             .{ id, root_uri },
         );
         defer self.alloc.free(body);
         try self.writeFrame(body);
+        const resp = try self.readResponse(id);
+        self.alloc.free(resp);
+        const initd = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}";
+        try self.writeFrame(initd);
+    }
+
+    /// Read frames, skipping interleaved notifications, until the id-matched
+    /// response. Caller frees the returned bytes.
+    fn readResponse(self: *Harness, id: i64) ![]u8 {
+        var stdout = self.child.stdout orelse return error.NoStdout;
+        return transport.readResponseById(&stdout, self.alloc, id);
     }
 
     pub fn sendShutdown(self: *Harness) !void {
@@ -71,60 +87,27 @@ pub const Harness = struct {
             .{ id, method, params_json },
         );
         defer self.alloc.free(body);
-        const start_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
+        const start_ns = std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds();
         try self.writeFrame(body);
-        const resp = try self.readFrame();
+        const resp = try self.readResponse(id);
         self.alloc.free(resp);
-        const end_ms = std.Io.Timestamp.now(std.Options.debug_io, .real).toMilliseconds();
-        const elapsed_ms: u64 = if (end_ms > start_ms) @intCast(end_ms - start_ms) else 0;
-        return elapsed_ms * 1000;
+        const end_ns = std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds();
+        const elapsed_ns: u64 = if (end_ns > start_ns) @intCast(end_ns - start_ns) else 0;
+        return elapsed_ns / std.time.ns_per_us;
     }
 
     fn writeFrame(self: *Harness, body: []const u8) !void {
         var stdin = self.child.stdin orelse return error.NoStdin;
-        var sbuf: [256]u8 = undefined;
-        const header = try std.fmt.bufPrint(&sbuf, "Content-Length: {d}\r\n\r\n", .{body.len});
-        try stdin.writeStreamingAll(std.Options.debug_io, header);
-        try stdin.writeStreamingAll(std.Options.debug_io, body);
-    }
-
-    fn readFrame(self: *Harness) ![]u8 {
-        var stdout = self.child.stdout orelse return error.NoStdout;
-        var hdr_buf: [256]u8 = undefined;
-        var hdr_len: usize = 0;
-        while (hdr_len < hdr_buf.len) {
-            const n = try stdout.readStreaming(std.Options.debug_io, &.{hdr_buf[hdr_len .. hdr_len + 1]});
-            if (n == 0) return error.EndOfStream;
-            hdr_len += n;
-            if (hdr_len >= 4 and std.mem.eql(u8, hdr_buf[hdr_len - 4 .. hdr_len], "\r\n\r\n")) break;
-        }
-        const header_str = hdr_buf[0..hdr_len];
-        var content_len: usize = 0;
-        var it = std.mem.splitSequence(u8, header_str, "\r\n");
-        while (it.next()) |line| {
-            if (std.mem.startsWith(u8, line, "Content-Length: ")) {
-                content_len = std.fmt.parseInt(usize, line["Content-Length: ".len..], 10) catch 0;
-            }
-        }
-        if (content_len == 0 or content_len > 16 * 1024 * 1024) return error.InvalidContentLength;
-        const body = try self.alloc.alloc(u8, content_len);
-        var got: usize = 0;
-        while (got < content_len) {
-            const n = try stdout.readStreaming(std.Options.debug_io, &.{body[got..]});
-            if (n == 0) {
-                self.alloc.free(body);
-                return error.EndOfStream;
-            }
-            got += n;
-        }
-        return body;
+        try transport.writeStreamFrame(&stdin, body);
     }
 
     pub fn deinit(self: *Harness) void {
-        if (self.child.stdin) |s| s.close(std.Options.debug_io);
+        // Child ops must use the spawn Io. Kill without wait — `wait` on this Io
+        // panics (reached unreachable); the OS reaps the orphan at exit, matching
+        // the proven selfTestProbe teardown.
+        if (self.child.stdin) |s| s.close(self.io);
         self.child.stdin = null;
-        self.child.kill(std.Options.debug_io);
-        _ = self.child.wait(std.Options.debug_io) catch {};
+        self.child.kill(self.io);
         self.alloc.free(self.project_root);
     }
 };
