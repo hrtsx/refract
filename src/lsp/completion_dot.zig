@@ -131,16 +131,44 @@ fn enclosingClassName(self: *Server, alloc: std.mem.Allocator, file_id: i64, cur
     return null;
 }
 
+// Relevance-ranked sortText prefix for a member item. The client re-sorts the whole
+// list lexicographically by sortText, so a flat `"0_"+name` collapses every member to
+// alphabetical order and buries the likely call deep in a 60-80 item list (measured:
+// mastodon membership 0.71 but recall@10 0.21 — the method is present, just not near the
+// top). Encoding (ancestor `depth`, source `bucket`, inverted call-`freq`) makes the
+// client's own sort surface own-class > mixin > inherited, most-called first. Pure
+// reorder: identical item set, no membership change, so precision is untouched.
+// Digits keep members inside the legacy `0…` sortText band (below the `1_` synth/stdlib
+// items), preserving members-before-synth ordering. NULL-safe: freq 0 sorts last in band.
+fn writeSortRank(wd: *std.Io.Writer, local: bool, depth: u8, bucket: u8, freq: u32) !void {
+    const inv: u32 = 999999 - @min(freq, 999999);
+    // `local` (member defined in the cursor's own file) is the top axis: a method the
+    // dev is looking at outranks any inherited/mixed member regardless of depth/freq.
+    try wd.print("0{d}{d}{d}{d:0>6}_", .{ @as(u8, if (local) 0 else 1), @min(depth, 9), @min(bucket, 9), inv });
+}
+
+// Bounded workspace call-frequency of a method name (idx_refs_name). Capped at 4000 so a
+// hot name (`id`, `call`, `name`) can't turn a per-member count into an O(refs) scan on
+// the completion path — 4000 differentiates rare vs common enough for ranking.
+fn memberFreq(self: *Server, name: []const u8) u32 {
+    const st = self.cachedStmt("SELECT COUNT(*) FROM (SELECT 1 FROM refs WHERE name=?1 LIMIT 4000)") catch return 0;
+    st.reset();
+    st.bind_text(1, name);
+    return if (st.step() catch false) @intCast(st.column_int(0)) else 0;
+}
+
 // Serialize one method-member completion item (the simple form, no typed-sig detail).
 // The comma separator and `first_dot`/`seen_names` bookkeeping stay at the call site
 // since they are loop state; this writes only the item object. `detail` is the raw
 // detail string (`(def)`, `(def self)`). Shared by the prepend/classdef/mixin emit loops.
-fn writeMethodMemberItem(wd: *std.Io.Writer, name: []const u8, doc: []const u8, detail: []const u8, line: u32, character: u32) !void {
+// `local`/`depth`/`bucket`/`freq` feed the relevance sortText (see writeSortRank).
+fn writeMethodMemberItem(wd: *std.Io.Writer, name: []const u8, doc: []const u8, detail: []const u8, line: u32, character: u32, local: bool, depth: u8, bucket: u8, freq: u32) !void {
     try wd.writeAll("{\"label\":");
     try writeEscapedJson(wd, name);
     try wd.writeAll(",\"kind\":3,\"detail\":\"");
     try writeEscapedJsonContent(wd, detail);
-    try wd.writeAll("\",\"sortText\":\"0_");
+    try wd.writeAll("\",\"sortText\":\"");
+    try writeSortRank(wd, local, depth, bucket, freq);
     try writeEscapedJsonContent(wd, name);
     try wd.writeAll("\",\"filterText\":\"");
     try writeEscapedJsonContent(wd, name);
@@ -862,7 +890,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    WHEN 'rest' THEN '*'||p.name||': '||COALESCE(p.type_hint,'?')
                             \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
                             \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
-                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
+                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position),
+                            \\  s.file_id
                             \\FROM symbols s
                             \\WHERE s.kind IN ('def','association') AND (s.parent_name = ?1 OR s.parent_name = ?3 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
@@ -882,7 +911,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             \\    WHEN 'rest' THEN '*'||p.name||': '||COALESCE(p.type_hint,'?')
                             \\    WHEN 'keyword_rest' THEN '**'||p.name WHEN 'block' THEN '&'||p.name
                             \\    ELSE p.name||': '||COALESCE(p.type_hint,'?') END, ', ')
-                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position)
+                            \\   FROM params p WHERE p.symbol_id=s.id AND p.type_hint IS NOT NULL ORDER BY p.position),
+                            \\  s.file_id
                             \\FROM symbols s
                             \\WHERE s.kind IN ('def','association') AND (s.parent_name = ?1 OR s.parent_name = ?3 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
@@ -891,7 +921,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     defer if (own_stmt_hoisted) |s2| s2.reset();
                     const cls_stmt_hoisted = if (is_constant_recv)
                         self.cachedStmt(
-                            \\SELECT s.name, s.doc FROM symbols s
+                            \\SELECT s.name, s.doc, s.file_id FROM symbols s
                             \\WHERE s.kind IN ('classdef','scope') AND (s.parent_name = ?1 OR (s.parent_name IS NULL AND s.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=?2
                             \\))) AND (s.visibility IS NULL OR s.visibility = 'public')
@@ -899,13 +929,21 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     else
                         null;
                     defer if (cls_stmt_hoisted) |s2| s2.reset();
+                    // Cursor's own file id: a member defined here is what the dev is
+                    // looking at, so it gets the top sortText axis (see writeSortRank).
+                    const cursor_file_id: i64 = blk: {
+                        const fs = self.cachedStmt("SELECT id FROM files WHERE path=?1 LIMIT 1") catch break :blk -1;
+                        fs.reset();
+                        fs.bind_text(1, path);
+                        break :blk if (fs.step() catch false) fs.column_int(0) else -1;
+                    };
                     var depth: u8 = 0;
                     while (depth < 8) : (depth += 1) {
                         if (seen_classes.contains(current)) break;
                         try seen_classes.put(try ma.dupe(u8, current), {});
 
                         const prep_stmt = try self.cachedStmt(
-                            \\SELECT DISTINCT s2.name, s2.doc FROM symbols s2
+                            \\SELECT DISTINCT s2.name, s2.doc, s2.file_id FROM symbols s2
                             \\JOIN mixins m ON s2.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=m.module_name
                             \\)
@@ -921,7 +959,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try seen_names.put(try ma.dupe(u8, mname2), {});
                             if (!first_dot) try wd.writeByte(',');
                             first_dot = false;
-                            try writeMethodMemberItem(wd, mname2, prep_stmt.column_text(1), "(def)", line, character);
+                            try writeMethodMemberItem(wd, mname2, prep_stmt.column_text(1), "(def)", line, character, prep_stmt.column_int(2) == cursor_file_id, depth, 1, memberFreq(self, mname2));
                         }
 
                         const own_stmt = own_stmt_hoisted orelse continue;
@@ -951,6 +989,8 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             const msig = own_stmt.column_text(2);
                             const mrt = own_stmt.column_text(3);
                             const mtyped_sig = own_stmt.column_text(4); // typed param sig (may be empty)
+                            const freq_own = memberFreq(self, mname2);
+                            const local_own = own_stmt.column_int(5) == cursor_file_id;
                             try wd.writeAll("{\"label\":");
                             try writeEscapedJson(wd, mname2);
                             // detail: "(typed_param: Type, ...) → ReturnType" when type info available
@@ -964,10 +1004,11 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                                     try wd.writeAll(" \u{2192} ");
                                     try writeEscapedJsonContent(wd, mrt);
                                 }
-                                try wd.writeAll("\",\"sortText\":\"0_");
+                                try wd.writeAll("\",\"sortText\":\"");
                             } else {
-                                try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"0_");
+                                try wd.writeAll(",\"kind\":3,\"detail\":\"(def)\",\"sortText\":\"");
                             }
+                            try writeSortRank(wd, local_own, depth, 0, freq_own);
                             try writeEscapedJsonContent(wd, mname2);
                             try wd.writeAll("\",\"filterText\":\"");
                             try writeEscapedJsonContent(wd, mname2);
@@ -1005,13 +1046,13 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                                     try seen_names.put(try ma.dupe(u8, mname2), {});
                                     if (!first_dot) try wd.writeByte(',');
                                     first_dot = false;
-                                    try writeMethodMemberItem(wd, mname2, cls_stmt.column_text(1), "(def self)", line, character);
+                                    try writeMethodMemberItem(wd, mname2, cls_stmt.column_text(1), "(def self)", line, character, cls_stmt.column_int(2) == cursor_file_id, depth, 1, memberFreq(self, mname2));
                                 }
                             }
                         }
 
                         const mix_stmt = try self.cachedStmt(
-                            \\SELECT DISTINCT s2.name, s2.doc FROM symbols s2
+                            \\SELECT DISTINCT s2.name, s2.doc, s2.file_id FROM symbols s2
                             \\JOIN mixins m ON s2.file_id IN (
                             \\  SELECT file_id FROM symbols WHERE kind IN ('class','module') AND name=m.module_name
                             \\)
@@ -1027,7 +1068,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                             try seen_names.put(try ma.dupe(u8, mname2), {});
                             if (!first_dot) try wd.writeByte(',');
                             first_dot = false;
-                            try writeMethodMemberItem(wd, mname2, mix_stmt.column_text(1), "(def)", line, character);
+                            try writeMethodMemberItem(wd, mname2, mix_stmt.column_text(1), "(def)", line, character, mix_stmt.column_int(2) == cursor_file_id, depth, 2, memberFreq(self, mname2));
                         }
 
                         // Ascend the real superclass: `parent_name` carries the

@@ -756,6 +756,24 @@ unless over_deadline.call
       labels = completion_member_labels(r)
       next if labels.nil?
       comp_resolved[name] += 1 unless labels.empty?
+      if name == "refract" && ENV["COMP_PROBE_DUMP"]
+        # Rank the called method as a real LSP client would SEE it: order items by
+        # sortText (fallback label), not server array order. This is what recall@K
+        # actually measures for a user, and it's the axis lever B (relevance sortText)
+        # moves. `labels`/membership above stay order-independent, unaffected.
+        res = r && r["result"]
+        items = res.is_a?(Hash) ? (res["items"] || []) : (res || [])
+        ranked = items.each_with_index
+                      .sort_by { |it, i| [(it["sortText"] || it["label"] || "~").to_s, i] }
+                      .map { |it, _| it["label"] || it["insertText"] }.compact
+        (@comp_dump ||= []) << {
+          path: p[:path].sub(%r{\A#{Regexp.escape(ROOT)}/?}, ""), line: p[:line], char: p[:char],
+          recv: p[:recv], meth: p[:meth],
+          typeable: !UNDECIDABLE_RECV.include?(p[:recv]),
+          resolved: !labels.empty?, n_labels: labels.size,
+          rank: ranked.index(p[:meth]) # sortText-order rank; nil = absent from response
+        }
+      end
       if labels.include?(p[:meth])
         comp_recall_hits[name] += 1
         comp_typeable_hits[name] += 1 if typeable
@@ -771,6 +789,11 @@ unless over_deadline.call
 end
 
 clients.each_value(&:stop)
+
+if ENV["COMP_PROBE_DUMP"] && @comp_dump
+  File.write(ENV["COMP_PROBE_DUMP"], @comp_dump.map { |h| JSON.generate(h) }.join("\n"))
+  warn "wrote #{@comp_dump.size} probe records -> #{ENV['COMP_PROBE_DUMP']}"
+end
 
 # ---- emit -----------------------------------------------------------------
 
