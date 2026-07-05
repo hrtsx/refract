@@ -394,7 +394,7 @@ pub const Plugin = struct {
 
     fn readFrame(self: *Plugin, timeout_ms: u32) ![]u8 {
         var tctx = server.TimeoutCtx{
-            .child = &self.child,
+            .pid = self.child.id.?,
             .done = std.atomic.Value(bool).init(false),
             .timeout_ns = @as(u64, timeout_ms) * std.time.ns_per_ms,
         };

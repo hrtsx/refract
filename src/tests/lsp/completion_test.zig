@@ -3173,3 +3173,19 @@ test "namespaced compound local guesses the namespaced class (chatx_message)" {
     _ = h.response(2) orelse return error.NoCompletionResponse;
     try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorptext") != null);
 }
+
+test "tier-0 fallback: untyped receiver with typed fragment yields workspace defs (isIncomplete)" {
+    // `zzqx` is an untyped param whose type can't be inferred; completion on
+    // `zzqx.zo` must fall back to workspace method names matching the `zo` prefix
+    // (here the def `zorp_unique_helper`) and mark the list incomplete so the client
+    // re-queries per keystroke.
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "def zorp_unique_helper(x); x; end\ndef handle(zzqx)\n  zzqx.zo\nend\n",
+        .line = 2,
+        .character = 9,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorp_unique_helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"isIncomplete\":true") != null);
+}

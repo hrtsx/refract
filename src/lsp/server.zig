@@ -127,7 +127,7 @@ pub fn serverLogSinkCb(ctx: ?*anyopaque, level: u8, msg: []const u8) void {
 }
 
 pub const TimeoutCtx = struct {
-    child: *std.process.Child,
+    pid: std.posix.pid_t,
     done: std.atomic.Value(bool),
     timeout_ns: u64,
 
@@ -141,7 +141,12 @@ pub const TimeoutCtx = struct {
             elapsed += 100 * std.time.ns_per_ms;
             if (ctx.done.load(.acquire)) return;
         }
-        _ = ctx.child.kill(std.Options.debug_io); // cleanup
+        // Timed out: signal the child directly but do NOT reap it. The owning
+        // thread's `child.wait()` is the sole reaper; calling `child.kill()` here
+        // would race that wait() on the shared `child.id` (double reap → ECHILD /
+        // assert-fail panic in debug builds). While `done` is still false the
+        // owner is blocked in wait(), so the pid is alive and not yet recycled.
+        std.posix.kill(ctx.pid, std.posix.SIG.KILL) catch {};
     }
 };
 

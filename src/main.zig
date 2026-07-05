@@ -1040,28 +1040,35 @@ fn indexStdlibRbs(io: std.Io, db: db_mod.Db, cwd_path: []const u8, alloc: std.me
 }
 
 test {
+    // Toolchain-independent, no external process spawns — always in `test:unit`.
     _ = @import("lsp/transport.zig");
     _ = @import("db.zig");
     _ = @import("indexer/index.zig");
     _ = @import("lsp/hot_index.zig");
-    _ = @import("tests/sorbet_harness.zig");
     _ = @import("tests/inline_completion_test.zig");
-    _ = @import("tests/dap_test.zig");
     _ = @import("lsp/observability.zig");
-    _ = @import("lsp/plugin_host.zig");
     _ = @import("lsp/sandbox.zig");
-    _ = @import("lsp/sorbet_bridge.zig");
     _ = @import("lsp/type_resolver.zig");
-    _ = @import("dap/server.zig");
-    _ = @import("dap/rdbg_bridge.zig");
     _ = @import("indexer/ruby_env.zig");
     _ = @import("indexer/coverage_reader.zig");
-    _ = @import("lsp/diagnostics_brakeman.zig");
-    _ = @import("lsp/diagnostics_semgrep.zig");
-    _ = @import("lsp/test_runner.zig");
-    _ = @import("lsp/llm_adapter.zig");
-    _ = @import("lsp/otlp_exporter.zig");
-    _ = @import("lsp/sorbet_worker.zig");
     _ = @import("lsp/navigation.zig");
     _ = @import("lsp/limits.zig");
+
+    // These embed tests that spawn the external toolchain (ruby/mise, rdbg, brakeman,
+    // semgrep, sorbet, plugin subprocesses) or hit LLM/OTLP endpoints. Excluded from
+    // `test:unit` so it stays fast and green without a toolchain; run under `test`.
+    if (!@import("test_opts").unit_only) {
+        _ = @import("tests/sorbet_harness.zig");
+        _ = @import("tests/dap_test.zig");
+        _ = @import("lsp/plugin_host.zig");
+        _ = @import("lsp/sorbet_bridge.zig");
+        _ = @import("dap/server.zig");
+        _ = @import("dap/rdbg_bridge.zig");
+        _ = @import("lsp/diagnostics_brakeman.zig");
+        _ = @import("lsp/diagnostics_semgrep.zig");
+        _ = @import("lsp/test_runner.zig");
+        _ = @import("lsp/llm_adapter.zig");
+        _ = @import("lsp/otlp_exporter.zig");
+        _ = @import("lsp/sorbet_worker.zig");
+    }
 }

@@ -93,22 +93,37 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    addVendorDeps(b, test_mod);
-    test_mod.addOptions("build_meta", meta);
+    // Two test builds share the same root but differ by one comptime flag.
+    // `unit_only=true` (test:unit) drops the source-embedded tests that shell out
+    // to the external toolchain (ruby/mise, rdbg, brakeman, semgrep, sorbet, LLM/OTLP
+    // endpoints) so the fast signal stays green with no toolchain installed. `test`
+    // and `test:toolchain` run everything and expect the toolchain present (as CI).
+    const makeTestRun = struct {
+        fn f(bb: *std.Build, tgt: std.Build.ResolvedTarget, opt: std.builtin.OptimizeMode, m: *std.Build.Step.Options, unit_only: bool) *std.Build.Step.Run {
+            const tm = bb.createModule(.{
+                .root_source_file = bb.path("src/main.zig"),
+                .target = tgt,
+                .optimize = opt,
+            });
+            addVendorDeps(bb, tm);
+            tm.addOptions("build_meta", m);
+            const uo = bb.addOptions();
+            uo.addOption(bool, "unit_only", unit_only);
+            tm.addOptions("test_opts", uo);
+            return bb.addRunArtifact(bb.addTest(.{ .root_module = tm }));
+        }
+    }.f;
 
-    const exe_tests = b.addTest(.{
-        .root_module = test_mod,
-    });
-    const run_tests = b.addRunArtifact(exe_tests);
-    const test_step = b.step("test", "Run tests");
+    const run_tests = makeTestRun(b, target, optimize, meta, false);
+    const test_step = b.step("test", "Run all tests (needs ruby/rdbg/brakeman/semgrep/sorbet toolchain, as CI)");
     test_step.dependOn(&run_tests.step);
-    const test_unit_step = b.step("test:unit", "Run unit tests reachable from main.zig only (no subprocess protocol tests)");
-    test_unit_step.dependOn(&run_tests.step);
+
+    const run_unit_tests = makeTestRun(b, target, optimize, meta, true);
+    const test_unit_step = b.step("test:unit", "Run fast, toolchain-independent unit tests (no external process spawns)");
+    test_unit_step.dependOn(&run_unit_tests.step);
+
+    const test_toolchain_step = b.step("test:toolchain", "Alias of `test`: the full source-embedded suite incl. toolchain-dependent tests");
+    test_toolchain_step.dependOn(&run_tests.step);
 
     // Benchmarks — linked against source, not subprocess
     const bench_mod = b.createModule(.{

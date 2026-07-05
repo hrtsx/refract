@@ -255,7 +255,7 @@ fn doHttpFetch(
             req_headers.authorization = .{ .override = bearer };
         },
         .ollama => {},
-        .none => unreachable,
+        .none => return null,
     }
 
     const io = std.Options.debug_io;
@@ -292,7 +292,7 @@ fn providerUrl(alloc: std.mem.Allocator, cfg: Config) ![]u8 {
         .anthropic => "/v1/messages",
         .openai => "/v1/chat/completions",
         .ollama => "/api/generate",
-        .none => unreachable,
+        .none => return error.NoLlmProvider,
     };
     return std.fmt.allocPrint(alloc, "{s}{s}", .{ base, path });
 }
@@ -323,7 +323,7 @@ fn providerBody(alloc: std.mem.Allocator, cfg: Config, prompt: []const u8) ![]u8
             try out.appendSlice(alloc, tokstr);
             try out.appendSlice(alloc, "}}");
         },
-        .none => unreachable,
+        .none => return error.NoLlmProvider,
     }
     return try out.toOwnedSlice(alloc);
 }

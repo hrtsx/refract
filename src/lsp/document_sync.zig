@@ -163,6 +163,26 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
             return;
         }
         const already_tracked = self.open_docs.contains(uri);
+        // Reserve both paired slots up front. The doc and version maps must agree
+        // (doc present ⟺ version present); a mid-pair OOM that inserts the doc but
+        // not its version leaves a versionless doc that readers see as minInt and
+        // that can accept an out-of-order update. Bail before mutating either map,
+        // then insert both infallibly.
+        self.open_docs.ensureUnusedCapacity(self.alloc, 1) catch {
+            self.alloc.free(doc_key);
+            self.alloc.free(doc_val);
+            return;
+        };
+        self.open_docs_version.ensureUnusedCapacity(self.alloc, 1) catch {
+            self.alloc.free(doc_key);
+            self.alloc.free(doc_val);
+            return;
+        };
+        const ver_key = self.alloc.dupe(u8, uri) catch {
+            self.alloc.free(doc_key);
+            self.alloc.free(doc_val);
+            return;
+        };
         if (self.open_docs.fetchRemove(doc_key)) |old| {
             self.alloc.free(old.key);
             self.alloc.free(old.value);
@@ -171,16 +191,8 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
             self.alloc.free(old_ver.key);
             break :blk {};
         } else {};
-        const ver_key = self.alloc.dupe(u8, uri) catch {
-            self.alloc.free(doc_key);
-            self.alloc.free(doc_val);
-            return;
-        };
-        self.open_docs_version.put(self.alloc, ver_key, incoming_version) catch self.alloc.free(ver_key);
-        self.open_docs.put(self.alloc, doc_key, doc_val) catch {
-            self.alloc.free(doc_key);
-            self.alloc.free(doc_val);
-        };
+        self.open_docs_version.putAssumeCapacity(ver_key, incoming_version);
+        self.open_docs.putAssumeCapacity(doc_key, doc_val);
         if (!already_tracked) {
             const order_key2 = self.alloc.dupe(u8, uri) catch "";
             if (order_key2.len > 0) self.open_docs_order.append(self.alloc, order_key2) catch self.alloc.free(order_key2);
@@ -217,23 +229,6 @@ pub fn handleDidChange(self: *Server, msg: types.RequestMessage) void {
         gop.value_ptr.* = now_ms;
     }
     self.notifyFileTouched(real_path);
-
-    // invalidateFileCache writes into the hot index; reach it only through
-    // lockHot so the pointer is touched under hot_mu — rebuildHotIndex frees the
-    // old index under that lock, so a load-before-lock is a UAF (aa8c2e1).
-    {
-        var hg = self.lockHot();
-        defer hg.deinit();
-        if (hg.hot) |hot_idx| {
-            const db_stmt = self.db.prepare("SELECT id FROM files WHERE path=? LIMIT 1") catch return;
-            defer db_stmt.finalize();
-            db_stmt.bind_text(1, real_path);
-            if (db_stmt.step() catch false) {
-                const file_id = db_stmt.column_int(0);
-                hot_idx.invalidateFileCache(@intCast(file_id));
-            }
-        }
-    }
 
     // Diagnostics are deferred to the debounced flush worker
     // (server.zig:flushDirtyUrisImpl). Computing them here ran a full Prism

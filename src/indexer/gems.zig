@@ -16,7 +16,7 @@ fn isGemInstallPath(path: []const u8) bool {
 }
 
 const GemTimeoutCtx = struct {
-    child: *std.process.Child,
+    pid: std.posix.pid_t,
     done: std.atomic.Value(bool),
     expired: std.atomic.Value(bool) = .{ .raw = false },
     timeout_ns: u64,
@@ -31,7 +31,9 @@ const GemTimeoutCtx = struct {
             if (ctx.done.load(.acquire)) return;
         }
         ctx.expired.store(true, .release);
-        ctx.child.kill(std.Options.debug_io);
+        // Signal only; the caller's child.wait() below is the sole reaper. Reaping
+        // here (child.kill) would race that wait() on child.id → ECHILD/assert panic.
+        std.posix.kill(ctx.pid, std.posix.SIG.KILL) catch {};
     }
 };
 
@@ -49,7 +51,7 @@ fn runRubyCmd(io: std.Io, root_path: []const u8, alloc: std.mem.Allocator, argv:
         return error.RubyFailed;
     };
 
-    var gtctx = GemTimeoutCtx{ .child = &child, .done = std.atomic.Value(bool).init(false), .timeout_ns = timeout_ns };
+    var gtctx = GemTimeoutCtx{ .pid = child.id.?, .done = std.atomic.Value(bool).init(false), .timeout_ns = timeout_ns };
     const tkill = std.Thread.spawn(.{}, GemTimeoutCtx.run, .{&gtctx}) catch null;
 
     var out = std.ArrayList(u8).empty;

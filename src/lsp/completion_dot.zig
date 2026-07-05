@@ -194,6 +194,50 @@ fn writeMethodMemberItem(wd: *std.Io.Writer, name: []const u8, doc: []const u8, 
     try wd.writeByte('}');
 }
 
+// Tier-0 fallback: reached only when a real `receiver.` was typed but no receiver
+// type could be inferred (the `class_name.len==0` seam) — the plain/untyped-Ruby
+// case where completion would otherwise return nothing. Emit workspace method names
+// ranked by call frequency, prefix-filtered by what the dev has typed after the dot.
+// Returns `isIncomplete:true` so the client re-queries per keystroke as the fragment
+// grows (a bare dot's global-frequency list is measured near-worthless, so we emit an
+// empty incomplete list there and wait for ≥2 typed chars before ranking). Items sit
+// in the lowest sortText bucket (9) so they can never outrank a genuinely resolved
+// member — this path only fires when there are no resolved members, so precision is
+// untouched. kind:3 (method) mirrors resolved members.
+fn tier0Fallback(self: *Server, msg: types.RequestMessage, line: u32, character: u32, frag: []const u8) !?types.ResponseMessage {
+    var aw = std.Io.Writer.Allocating.init(self.alloc);
+    const wd = &aw.writer;
+    try wd.writeAll("{\"isIncomplete\":true,\"items\":[");
+    if (frag.len >= 2) {
+        const q = self.cachedStmt(
+            \\SELECT s.name, COUNT(r.name) AS freq
+            \\FROM (SELECT DISTINCT name FROM symbols WHERE kind='def' AND name LIKE ?1 || '%') s
+            \\LEFT JOIN refs r ON r.name = s.name
+            \\GROUP BY s.name ORDER BY freq DESC, s.name ASC LIMIT 200
+        ) catch null;
+        if (q) |st| {
+            defer st.reset();
+            st.bind_text(1, frag);
+            var first = true;
+            while (st.step() catch false) {
+                const nm = st.column_text(0);
+                if (nm.len == 0) continue;
+                const freq: u32 = @intCast(st.column_int(1));
+                if (!first) try wd.writeByte(',');
+                first = false;
+                try writeMethodMemberItem(wd, nm, "", "(workspace)", line, character, false, 9, 9, freq);
+            }
+        }
+    }
+    try wd.writeAll("]}");
+    return types.ResponseMessage{
+        .id = msg.id,
+        .result = null,
+        .raw_result = try aw.toOwnedSlice(),
+        .@"error" = null,
+    };
+}
+
 // Camelize a snake_case identifier into a constant candidate (`status_pin` →
 // `StatusPin`, `account` → `Account`). Returns null on empty/overflow. Used only
 // as a completion-time type guess — never persisted.
@@ -387,12 +431,12 @@ fn resolveChainBaseType(self: *Server, file_id: i64, word: []const u8, cursor_li
 // the original name when no known prefix matches.
 fn stripConventionPrefix(name: []const u8) []const u8 {
     const prefixes = [_][]const u8{
-        "current_",  "source_",   "target_",  "default_",  "new_",     "old_",
-        "parent_",   "child_",    "original_", "existing_", "other_",   "next_",
-        "previous_", "prev_",     "selected_", "associated_", "related_", "linked_",
-        "temp_",     "tmp_",      "saved_",    "persisted_",  "given_",   "the_",
-        "from_",     "to_",       "for_",      "by_",         "with_",    "owner_",
-        "sender_",   "recipient_", "author_",  "creator_",    "updated_", "remote_",
+        "current_",  "source_",    "target_",   "default_",    "new_",     "old_",
+        "parent_",   "child_",     "original_", "existing_",   "other_",   "next_",
+        "previous_", "prev_",      "selected_", "associated_", "related_", "linked_",
+        "temp_",     "tmp_",       "saved_",    "persisted_",  "given_",   "the_",
+        "from_",     "to_",        "for_",      "by_",         "with_",    "owner_",
+        "sender_",   "recipient_", "author_",   "creator_",    "updated_", "remote_",
     };
     for (prefixes) |p| {
         if (name.len > p.len and std.mem.startsWith(u8, name, p)) return name[p.len..];
@@ -503,7 +547,6 @@ fn guessReceiverClass(self: *Server, recv_word: []const u8) ?[]u8 {
 }
 
 pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, source: []const u8, line: u32, character: u32, offset: usize, word: []const u8) !?types.ResponseMessage {
-    _ = word;
     var recv_offset = if (offset >= 2) offset - 2 else 0;
     while (recv_offset > 0 and (source[recv_offset] == ' ' or source[recv_offset] == '\t')) : (recv_offset -= 1) {}
     var recv_word = extractQualifiedName(source, recv_offset);
@@ -1188,16 +1231,16 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 // for AR models so those (very common) receivers complete. Completion-only.
                 if (is_ar_model) {
                     const ar_inst = [_][]const u8{
-                        "save",            "save!",           "update",          "update!",
-                        "destroy",         "destroy!",        "reload",          "delete",
-                        "persisted?",      "new_record?",     "destroyed?",      "valid?",
-                        "invalid?",        "errors",          "attributes",      "attribute_names",
-                        "assign_attributes", "update_attribute", "update_column", "update_columns",
-                        "touch",           "becomes",         "increment!",      "decrement!",
-                        "toggle!",         "read_attribute",  "write_attribute", "has_attribute?",
-                        "changed?",        "changes",         "previous_changes", "saved_changes",
-                        "id",              "to_param",        "cache_key",       "lock!",
-                        "with_lock",       "transaction",     "restore_attributes", "association",
+                        "save",              "save!",            "update",             "update!",
+                        "destroy",           "destroy!",         "reload",             "delete",
+                        "persisted?",        "new_record?",      "destroyed?",         "valid?",
+                        "invalid?",          "errors",           "attributes",         "attribute_names",
+                        "assign_attributes", "update_attribute", "update_column",      "update_columns",
+                        "touch",             "becomes",          "increment!",         "decrement!",
+                        "toggle!",           "read_attribute",   "write_attribute",    "has_attribute?",
+                        "changed?",          "changes",          "previous_changes",   "saved_changes",
+                        "id",                "to_param",         "cache_key",          "lock!",
+                        "with_lock",         "transaction",      "restore_attributes", "association",
                     };
                     for (ar_inst) |m| {
                         if (seen_names.contains(m)) continue;
@@ -1209,13 +1252,13 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                     }
                     if (is_constant_recv) {
                         const ar_cls = [_][]const u8{
-                            "where",   "find",    "find_by", "find_by!", "all",       "first",
-                            "last",    "create",  "create!", "new",      "build",     "exists?",
-                            "count",   "sum",     "average", "minimum",  "maximum",   "pluck",
-                            "order",   "limit",   "offset",  "group",    "having",    "joins",
-                            "includes", "preload", "eager_load", "references", "distinct", "select",
-                            "none",    "unscoped", "find_each", "find_or_create_by", "find_or_initialize_by", "take",
-                            "update_all", "delete_all", "destroy_all", "where_not", "or", "merge",
+                            "where",      "find",       "find_by",     "find_by!",          "all",                   "first",
+                            "last",       "create",     "create!",     "new",               "build",                 "exists?",
+                            "count",      "sum",        "average",     "minimum",           "maximum",               "pluck",
+                            "order",      "limit",      "offset",      "group",             "having",                "joins",
+                            "includes",   "preload",    "eager_load",  "references",        "distinct",              "select",
+                            "none",       "unscoped",   "find_each",   "find_or_create_by", "find_or_initialize_by", "take",
+                            "update_all", "delete_all", "destroy_all", "where_not",         "or",                    "merge",
                         };
                         for (ar_cls) |m| {
                             if (seen_names.contains(m)) continue;
@@ -1234,18 +1277,18 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                 if (!index_element and self.has_rails.load(.monotonic)) {
                     if (modelCollectionElement(self, ma, class_name_raw)) |elem| {
                         const rel_methods = [_][]const u8{
-                            "where",     "where_not", "order",   "limit",     "offset",   "group",
-                            "having",    "joins",     "includes", "preload",  "eager_load", "references",
-                            "distinct",  "select",    "pluck",   "count",     "sum",      "average",
-                            "minimum",   "maximum",   "exists?", "any?",      "none?",    "many?",
-                            "find",      "find_by",   "find_each", "first",   "last",     "take",
-                            "reload",    "to_a",      "ids",     "merge",     "or",       "unscope",
+                            "where",    "where_not",  "order",           "limit",            "offset",     "group",
+                            "having",   "joins",      "includes",        "preload",          "eager_load", "references",
+                            "distinct", "select",     "pluck",           "count",            "sum",        "average",
+                            "minimum",  "maximum",    "exists?",         "any?",             "none?",      "many?",
+                            "find",     "find_by",    "find_each",       "first",            "last",       "take",
+                            "reload",   "to_a",       "ids",             "merge",            "or",         "unscope",
                             // Enumerable core — a relation is enumerable; these were absent and
                             // caused `xs.all?`/`.map`/`.each` completion misses on collections.
-                            "all?",      "map",       "each",    "reject",    "detect",   "filter",
-                            "flat_map",  "filter_map", "each_with_index", "each_with_object", "reduce", "inject",
-                            "min_by",    "max_by",    "sort_by", "group_by",  "partition", "find_index",
-                            "include?",  "empty?",    "size",    "length",    "tally",    "each_slice",
+                            "all?",     "map",        "each",            "reject",           "detect",     "filter",
+                            "flat_map", "filter_map", "each_with_index", "each_with_object", "reduce",     "inject",
+                            "min_by",   "max_by",     "sort_by",         "group_by",         "partition",  "find_index",
+                            "include?", "empty?",     "size",            "length",           "tally",      "each_slice",
                         };
                         for (rel_methods) |m| {
                             if (seen_names.contains(m)) continue;
@@ -1283,5 +1326,7 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
             }
         }
     }
-    return null;
+    // A real `receiver.` with no inferable type (untyped local/param/chain). Rather
+    // than return nothing, fall back to workspace method names ranked by frequency.
+    return try tier0Fallback(self, msg, line, character, word);
 }

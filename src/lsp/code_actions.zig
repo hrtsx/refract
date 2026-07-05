@@ -78,7 +78,7 @@ pub fn handleFormatting(self: *Server, msg: types.RequestMessage) !?types.Respon
         const empty = try self.alloc.dupe(u8, empty_json_array);
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = empty, .@"error" = null };
     };
-    var tctx_fmt = TimeoutCtx{ .child = &child, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
+    var tctx_fmt = TimeoutCtx{ .pid = child.id.?, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
     const tkill_fmt = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx_fmt}) catch null;
     if (child.wait(std.Options.debug_io)) |term| {
         tctx_fmt.done.store(true, .release);
@@ -353,7 +353,7 @@ pub fn handleCodeAction(self: *Server, msg: types.RequestMessage) !?types.Respon
             }
             break :rubocop_blk;
         };
-        var tctx_ca = TimeoutCtx{ .child = &child_ca, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
+        var tctx_ca = TimeoutCtx{ .pid = child_ca.id.?, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
         const tkill_ca = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx_ca}) catch null;
         if (child_ca.wait(std.Options.debug_io)) |term| {
             tctx_ca.done.store(true, .release);
@@ -477,7 +477,7 @@ pub fn handleRangeFormatting(self: *Server, msg: types.RequestMessage) !?types.R
         const empty = try self.alloc.dupe(u8, empty_json_array);
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = empty, .@"error" = null };
     };
-    var tctx_rf = TimeoutCtx{ .child = &child, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
+    var tctx_rf = TimeoutCtx{ .pid = child.id.?, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
     const tkill_rf = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx_rf}) catch null;
     if (child.wait(std.Options.debug_io)) |term| {
         tctx_rf.done.store(true, .release);

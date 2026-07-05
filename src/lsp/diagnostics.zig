@@ -260,7 +260,7 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
     };
     self.rubocop_checked.store(true, .monotonic);
 
-    var tctx = TimeoutCtx{ .child = &child, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
+    var tctx = TimeoutCtx{ .pid = child.id.?, .done = std.atomic.Value(bool).init(false), .timeout_ns = self.rubocop_timeout_ms.load(.monotonic) * std.time.ns_per_ms };
     const tkill = std.Thread.spawn(.{}, TimeoutCtx.run, .{&tctx}) catch null;
     // Always reap the child to avoid zombie processes, even on early-return paths
     defer {

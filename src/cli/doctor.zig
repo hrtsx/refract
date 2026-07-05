@@ -227,7 +227,7 @@ fn checkRdbg(alloc: std.mem.Allocator, checks: *std.ArrayList(Check)) !void {
         return;
     };
     var ctx = TimeoutCtx{
-        .child = &child,
+        .pid = child.id.?,
         .done = std.atomic.Value(bool).init(false),
         .timeout_ns = 2 * std.time.ns_per_s,
     };
@@ -605,7 +605,7 @@ fn checkBundlePresence(alloc: std.mem.Allocator, cwd: []const u8, checks: *std.A
         return;
     };
     var ctx = TimeoutCtx{
-        .child = &child,
+        .pid = child.id.?,
         .done = std.atomic.Value(bool).init(false),
         .timeout_ns = 3 * std.time.ns_per_s,
     };
