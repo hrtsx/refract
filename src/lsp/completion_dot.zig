@@ -1231,6 +1231,22 @@ pub fn completeDot(self: *Server, msg: types.RequestMessage, path: []const u8, s
                         try wd.writeAll(",\"kind\":2}");
                     }
                 }
+                // ActiveSupport Object extensions: with AS loaded (any Rails app)
+                // every object gets blank?/present?/presence/try/in?. They live on
+                // Object via monkeypatch, so the symbol-table walk never surfaces
+                // them — same rationale as the universal set above, but Rails-gated.
+                // Completion-only, deduped against real members.
+                if (self.has_rails.load(.monotonic)) {
+                    const as_object = [_][]const u8{ "blank?", "present?", "presence", "try", "try!", "in?" };
+                    for (as_object) |am| {
+                        if (seen_names.contains(am)) continue;
+                        if (!first_dot) try wd.writeByte(',');
+                        first_dot = false;
+                        try wd.writeAll("{\"label\":");
+                        try writeEscapedJson(wd, am);
+                        try wd.writeAll(",\"kind\":2}");
+                    }
+                }
                 // Class-object methods: a constant/singleton receiver (`Foo.`,
                 // `described_class.`) IS the class, so `Class#new`/`allocate` always
                 // apply — independent of AR. The AR class-query set below is additive

@@ -19,6 +19,67 @@ threadlocal var ar_plural_buf: [128]u8 = undefined;
 threadlocal var const_path_buf: [256]u8 = undefined;
 threadlocal var factory_class_buf: [128]u8 = undefined;
 
+// Single source of truth for ActiveRecord query-method return shapes. One table
+// keyed by method name; the facet decides the return type, applied identically
+// whether the receiver is the model class (`Model.where`) or an already-resolved
+// relation in a chain (`rel.order.pluck`). Consolidates what used to be four
+// divergent arrays (relation-keep / singular for chains vs const receivers), so a
+// method's shape is declared once. `relation` yields `[Model]`, `singular` one
+// `Model`, and the scalar facets terminate the chain in a stdlib type.
+const ArFacet = enum { relation, singular, arr, int, boolean };
+const ArMethod = struct { name: []const u8, facet: ArFacet };
+const ar_catalog = [_]ArMethod{
+    // Relation-preserving: return the same `[Model]` relation, so Enumerable +
+    // the model's scopes stay on the completion surface.
+    .{ .name = "where", .facet = .relation },       .{ .name = "all", .facet = .relation },
+    .{ .name = "order", .facet = .relation },        .{ .name = "reorder", .facet = .relation },
+    .{ .name = "limit", .facet = .relation },        .{ .name = "offset", .facet = .relation },
+    .{ .name = "includes", .facet = .relation },     .{ .name = "preload", .facet = .relation },
+    .{ .name = "eager_load", .facet = .relation },   .{ .name = "joins", .facet = .relation },
+    .{ .name = "left_joins", .facet = .relation },   .{ .name = "left_outer_joins", .facet = .relation },
+    .{ .name = "select", .facet = .relation },       .{ .name = "reselect", .facet = .relation },
+    .{ .name = "group", .facet = .relation },        .{ .name = "having", .facet = .relation },
+    .{ .name = "distinct", .facet = .relation },     .{ .name = "not", .facet = .relation },
+    .{ .name = "merge", .facet = .relation },        .{ .name = "unscope", .facet = .relation },
+    .{ .name = "except", .facet = .relation },       .{ .name = "only", .facet = .relation },
+    .{ .name = "or", .facet = .relation },           .{ .name = "and", .facet = .relation },
+    .{ .name = "extending", .facet = .relation },    .{ .name = "none", .facet = .relation },
+    .{ .name = "readonly", .facet = .relation },     .{ .name = "references", .facet = .relation },
+    .{ .name = "rewhere", .facet = .relation },      .{ .name = "excluding", .facet = .relation },
+    .{ .name = "without", .facet = .relation },      .{ .name = "unscoped", .facet = .relation },
+    .{ .name = "from", .facet = .relation },         .{ .name = "lock", .facet = .relation },
+    .{ .name = "strict_loading", .facet = .relation },
+    // Singular terminals: collapse the relation to one `Model` instance.
+    .{ .name = "first", .facet = .singular },        .{ .name = "last", .facet = .singular },
+    .{ .name = "find", .facet = .singular },         .{ .name = "find_by", .facet = .singular },
+    .{ .name = "find_by!", .facet = .singular },     .{ .name = "take", .facet = .singular },
+    .{ .name = "sole", .facet = .singular },         .{ .name = "find_sole_by", .facet = .singular },
+    .{ .name = "second", .facet = .singular },       .{ .name = "third", .facet = .singular },
+    .{ .name = "fourth", .facet = .singular },       .{ .name = "fifth", .facet = .singular },
+    .{ .name = "forty_two", .facet = .singular },    .{ .name = "second_to_last", .facet = .singular },
+    .{ .name = "third_to_last", .facet = .singular }, .{ .name = "find_or_create_by", .facet = .singular },
+    .{ .name = "find_or_create_by!", .facet = .singular }, .{ .name = "find_or_initialize_by", .facet = .singular },
+    .{ .name = "create", .facet = .singular },       .{ .name = "create!", .facet = .singular },
+    .{ .name = "build", .facet = .singular },        .{ .name = "first_or_create", .facet = .singular },
+    // Scalar terminals: the chain ends in a stdlib type, so completion switches to
+    // Array / Integer / boolean members instead of dropping to nothing.
+    .{ .name = "pluck", .facet = .arr },             .{ .name = "ids", .facet = .arr },
+    .{ .name = "to_a", .facet = .arr },              .{ .name = "to_ary", .facet = .arr },
+    .{ .name = "count", .facet = .int },             .{ .name = "size", .facet = .int },
+    .{ .name = "length", .facet = .int },            .{ .name = "sum", .facet = .int },
+    .{ .name = "exists?", .facet = .boolean },       .{ .name = "any?", .facet = .boolean },
+    .{ .name = "empty?", .facet = .boolean },        .{ .name = "none?", .facet = .boolean },
+    .{ .name = "one?", .facet = .boolean },          .{ .name = "many?", .facet = .boolean },
+    .{ .name = "include?", .facet = .boolean },
+};
+
+fn arFacet(mname: []const u8) ?ArFacet {
+    for (ar_catalog) |m| {
+        if (std.mem.eql(u8, mname, m.name)) return m.facet;
+    }
+    return null;
+}
+
 // Camelize a snake_case factory name into a class (`admin_user` → `AdminUser`).
 fn camelizeSnake(name: []const u8, buf: []u8) ?[]const u8 {
     if (name.len == 0) return null;
@@ -211,14 +272,13 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
             // `[Model]` shape (so `.all?`/`.map`/Enumerable surface); singular terminals
             // (`.first`/`.find`/…) yield one `Model`.
             if (inner_type.len > 2 and inner_type[0] == '[' and inner_type[inner_type.len - 1] == ']') {
-                const rel_keep = [_][]const u8{ "where", "all", "order", "limit", "includes", "joins", "preload", "eager_load", "select", "group", "having", "left_joins", "left_outer_joins", "distinct", "not", "merge", "unscope", "reorder", "except", "or", "extending", "none", "readonly", "references", "rewhere", "excluding", "without", "reselect" };
-                for (rel_keep) |m| {
-                    if (std.mem.eql(u8, mname, m)) return inner_type;
-                }
-                const rel_singular = [_][]const u8{ "first", "last", "find", "find_by", "find_by!", "take", "sole", "find_sole_by", "second", "third" };
-                for (rel_singular) |m| {
-                    if (std.mem.eql(u8, mname, m)) return inner_type[1 .. inner_type.len - 1];
-                }
+                if (arFacet(mname)) |f| switch (f) {
+                    .relation => return inner_type,
+                    .singular => return inner_type[1 .. inner_type.len - 1],
+                    .arr => return "Array",
+                    .int => return "Integer",
+                    .boolean => return "TrueClass | FalseClass",
+                };
             }
         }
     }
@@ -235,16 +295,13 @@ pub fn extractNewCallType(parser: *prism.Parser, node: ?*const prism.Node) ?[]co
             prism.NODE_CONSTANT_PATH => qualifyConstPath(parser, recv) orelse return null,
             else => return null,
         };
-        const ar_singular = [_][]const u8{ "find", "first", "last", "create", "create!", "build", "find_by", "find_by!", "take" };
-        for (ar_singular) |m| {
-            if (std.mem.eql(u8, mname, m)) return class_name;
-        }
-        const ar_plural = [_][]const u8{ "where", "all", "order", "limit", "includes", "joins", "preload", "eager_load", "select", "group", "having", "left_joins", "left_outer_joins", "distinct" };
-        for (ar_plural) |m| {
-            if (std.mem.eql(u8, mname, m)) {
-                return std.fmt.bufPrint(&ar_plural_buf, "[{s}]", .{class_name}) catch null;
-            }
-        }
+        if (arFacet(mname)) |f| switch (f) {
+            .singular => return class_name,
+            .relation => return std.fmt.bufPrint(&ar_plural_buf, "[{s}]", .{class_name}) catch null,
+            .arr => return "Array",
+            .int => return "Integer",
+            .boolean => return "TrueClass | FalseClass",
+        };
         return null;
     }
     if (recv.*.type == prism.NODE_CONSTANT or recv.*.type == prism.NODE_CONSTANT_PATH) {

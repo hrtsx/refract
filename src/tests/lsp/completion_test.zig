@@ -3189,3 +3189,66 @@ test "tier-0 fallback: untyped receiver with typed fragment yields workspace def
     try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorp_unique_helper") != null);
     try std.testing.expect(std.mem.indexOf(u8, h.raw, "\"isIncomplete\":true") != null);
 }
+
+test "AS Object-ext (blank?/present?) offered on resolved receiver when Rails" {
+    // ActiveSupport monkeypatches Object with blank?/present?/... Any resolved
+    // receiver in a Rails project must offer them. has_rails is set from the
+    // Gemfile.lock activesupport line; waitIdle commits that bg scan before the query.
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_as_object_rails";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/Gemfile.lock", .data = "GEM\n  specs:\n    activesupport (7.1.0)\n" });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class FooAs1; end\nf = FooAs1.new\nf.\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class FooAs1; end\\nf = FooAs1.new\\nf.\\n\"}}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const resp = try extractResponses(alloc, raw);
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
+    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"present?\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"blank?\"") != null);
+}
+
+test "AS Object-ext gated off without Rails" {
+    // Same resolved receiver, no Gemfile.lock => has_rails stays false => the AS
+    // Object-ext set must NOT appear. The universal nil? still does, proving the
+    // receiver resolved and only the Rails-gated block was suppressed.
+    const alloc = std.testing.allocator;
+    const ws = "/tmp/refract_test_as_object_norails";
+    std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.createDirAbsolute(std.Options.debug_io, ws, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.Options.debug_io, ws) catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ws ++ "/a.rb", .data = "class FooAs2; end\nf = FooAs2.new\nf.\n" });
+    var s = try Session.init(alloc);
+    defer s.deinit();
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
+    try s.send(base_initialized);
+    try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"class FooAs2; end\\nf = FooAs2.new\\nf.\\n\"}}}");
+    try s.waitIdle(100);
+    try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file://" ++ ws ++ "/a.rb\"},\"position\":{\"line\":2,\"character\":2}}}");
+    try s.send(base_shutdown);
+    try s.send(base_exit);
+    const raw = try s.run();
+    defer alloc.free(raw);
+    const resp = try extractResponses(alloc, raw);
+    defer {
+        for (resp) |r| r.deinit();
+        alloc.free(resp);
+    }
+    _ = getResponseById(resp, 2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"nil?\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"present?\"") == null);
+}
