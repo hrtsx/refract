@@ -35,6 +35,9 @@ const writeEscapedJson = S.writeEscapedJson;
 const TimeoutCtx = S.TimeoutCtx;
 const LOG_FILE_SIZE_LIMIT = S.LOG_FILE_SIZE_LIMIT;
 
+// One-shot so a repo full of large-output files can't spam the client log.
+var rubocop_trunc_warned = std.atomic.Value(bool).init(false);
+
 pub fn writeDiagItems(
     self: *Server,
     w: *std.Io.Writer,
@@ -275,6 +278,8 @@ pub fn getRubocopDiags(self: *Server, path: []const u8) ![]indexer.DiagEntry {
     const max_rubocop_bytes: usize = LOG_FILE_SIZE_LIMIT;
     while (true) {
         if (stdout_buf.items.len >= max_rubocop_bytes) {
+            if (!rubocop_trunc_warned.swap(true, .monotonic))
+                self.sendLogMessage(3, "refract: rubocop output exceeded size cap; diagnostics truncated for large output");
             child.stdout.?.close(std.Options.debug_io);
             child.stdout = null;
             break;

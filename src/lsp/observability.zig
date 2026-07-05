@@ -7,6 +7,9 @@ const FLUSH_INTERVAL_NS: u64 = 5 * std.time.ns_per_s;
 const MAX_SAMPLES_PER_METHOD: usize = 4096;
 const MAX_AUDIT_ARGS_BYTES: usize = 4096;
 
+// One-shot: audit-arg truncation is benign but should be visible at least once.
+var audit_trunc_warned = std.atomic.Value(bool).init(false);
+
 pub const Recorder = struct {
     alloc: std.mem.Allocator,
     db: db_mod.Db,
@@ -76,7 +79,11 @@ pub const Recorder = struct {
         const redacted = redact.redactAlloc(self.alloc, args_json) catch null;
         defer if (redacted) |r| self.alloc.free(r);
         const src = if (redacted) |r| r else args_json;
-        const args_capped = if (src.len > MAX_AUDIT_ARGS_BYTES) src[0..MAX_AUDIT_ARGS_BYTES] else src;
+        const args_capped = if (src.len > MAX_AUDIT_ARGS_BYTES) blk: {
+            if (!audit_trunc_warned.swap(true, .monotonic))
+                std.log.warn("refract: audit args exceed {d}B cap; truncated in audit_log", .{MAX_AUDIT_ARGS_BYTES});
+            break :blk src[0..MAX_AUDIT_ARGS_BYTES];
+        } else src;
         const us: i64 = @intCast(duration_ns / std.time.ns_per_us);
         self.db_mu.lockUncancelable(self.io);
         defer self.db_mu.unlock(self.io);

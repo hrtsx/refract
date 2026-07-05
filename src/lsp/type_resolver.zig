@@ -59,6 +59,14 @@ pub fn resolve(
     return null;
 }
 
+// Confidence is a 0..100 domain, but a corrupted DB value could sit outside it
+// and trap a bare u8 @intCast in ReleaseSafe. Clamp instead of trusting the row.
+fn clampConfidence(v: anytype) u8 {
+    if (v <= 0) return 0;
+    if (v >= 100) return 100;
+    return @intCast(v);
+}
+
 fn selectSorbet(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_name: ?[]const u8) !?TypeResult {
     const sql = if (method_name == null)
         "SELECT type_str, confidence FROM sorbet_results WHERE fqn=? AND confidence >= 80 ORDER BY ts_us DESC LIMIT 1"
@@ -75,7 +83,7 @@ fn selectSorbet(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method
     }
     if (!(try stmt.step())) return null;
     const t = try alloc.dupe(u8, stmt.column_text(0));
-    return TypeResult{ .type_str = t, .source = .sorbet, .confidence = @intCast(stmt.column_int(1)) };
+    return TypeResult{ .type_str = t, .source = .sorbet, .confidence = clampConfidence(stmt.column_int(1)) };
 }
 
 fn selectSteep(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_name: ?[]const u8) !?TypeResult {
@@ -94,7 +102,7 @@ fn selectSteep(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_
     }
     if (!(try stmt.step())) return null;
     const t = try alloc.dupe(u8, stmt.column_text(0));
-    return TypeResult{ .type_str = t, .source = .steep, .confidence = @intCast(stmt.column_int(1)) };
+    return TypeResult{ .type_str = t, .source = .steep, .confidence = clampConfidence(stmt.column_int(1)) };
 }
 
 fn selectOracle(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_name: ?[]const u8, param_pos: i32) !?TypeResult {
@@ -114,7 +122,7 @@ fn selectOracle(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method
     stmt.bind_int(4, param_pos);
     if (!(try stmt.step())) return null;
     const t = try alloc.dupe(u8, stmt.column_text(0));
-    return TypeResult{ .type_str = t, .source = .type_oracle, .confidence = @intCast(stmt.column_int(1)) };
+    return TypeResult{ .type_str = t, .source = .type_oracle, .confidence = clampConfidence(stmt.column_int(1)) };
 }
 
 fn selectParam(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_name: []const u8, param_pos: i32) !?TypeResult {
@@ -131,7 +139,7 @@ fn selectParam(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8, method_
     stmt.bind_int(3, param_pos);
     if (!(try stmt.step())) return null;
     const t = try alloc.dupe(u8, stmt.column_text(0));
-    return TypeResult{ .type_str = t, .source = .rbs_param, .confidence = @intCast(stmt.column_int(1)) };
+    return TypeResult{ .type_str = t, .source = .rbs_param, .confidence = clampConfidence(stmt.column_int(1)) };
 }
 
 fn selectLiteral(alloc: std.mem.Allocator, db: db_mod.Db, fqn: []const u8) !?TypeResult {

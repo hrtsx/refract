@@ -43,10 +43,15 @@ pub fn recordWorkspace(server: anytype, workspace_uri: []const u8, root_path: []
 }
 
 pub fn removeWorkspace(server: anytype, workspace_uri: []const u8) void {
-    const stmt = server.db.prepare("DELETE FROM worktree WHERE workspace_uri = ?") catch return;
+    const stmt = server.db.prepare("DELETE FROM worktree WHERE workspace_uri = ?") catch {
+        server.sendLogMessage(2, "refract: workspace removal failed (prepare)");
+        return;
+    };
     defer stmt.finalize();
     stmt.bind_text(1, workspace_uri);
-    _ = stmt.step() catch {};
+    _ = stmt.step() catch {
+        server.sendLogMessage(2, "refract: workspace removal failed (delete)");
+    };
 }
 
 pub fn listWorkspaces(server: anytype, alloc: std.mem.Allocator) ![]WorkspaceRecord {

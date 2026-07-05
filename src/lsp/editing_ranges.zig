@@ -380,6 +380,8 @@ pub fn handleLinkedEditingRange(self: *Server, msg: types.RequestMessage) !?type
     while (try occ_stmt.step()) {
         const ln = occ_stmt.column_int(0) - 1;
         const col = occ_stmt.column_int(1);
+        // A 0/negative stored line would make `ln` negative and trap the u32 cast.
+        if (ln < 0 or col < 0) continue;
         const ln_src = getLineSlice(source, @intCast(ln));
         const start_char = self.toClientCol(ln_src, @intCast(col));
         const end_char = start_char + @as(u32, @intCast(word.len));

@@ -500,9 +500,8 @@ fn checkGemCoverage(alloc: std.mem.Allocator, db_path: []const u8, checks: *std.
     defer db.close();
 
     var avg_coverage: f64 = 0;
-    const gem_count: i64 = 0;
 
-    if (db.prepare("SELECT CAST(COUNT(DISTINCT file_id) AS REAL) / NULLIF(SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END), 0) * 100 FROM coverage_lines")) |stmt| {
+    if (db.prepare("SELECT CAST(SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) * 100 FROM coverage_lines")) |stmt| {
         defer stmt.finalize();
         if (try stmt.step()) {
             const val: f64 = @floatFromInt(stmt.column_int(0));
@@ -517,7 +516,7 @@ fn checkGemCoverage(alloc: std.mem.Allocator, db_path: []const u8, checks: *std.
         return;
     }
 
-    if (gem_count == 0 and avg_coverage == 0) {
+    if (avg_coverage == 0) {
         try checks.append(alloc, .{
             .name = try alloc.dupe(u8, "Gem coverage"),
             .status = .ok,

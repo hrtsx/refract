@@ -457,7 +457,11 @@ pub fn reindex(db: db_mod.Db, paths: []const []const u8, is_gem: bool, alloc: st
         }
         db.begin() catch return;
         for (touched.items) |fid| resolveRefsForFile(db, fid, alloc, &memo);
-        db.commit() catch db.rollback() catch {};
+        db.commit() catch |ce| {
+            db.rollback() catch {};
+            var buf: [128]u8 = undefined;
+            emitLog(2, std.fmt.bufPrint(&buf, "refract index: ref-resolution commit failed ({}); refs left unresolved this batch", .{ce}) catch "refract index: ref-resolution commit failed");
+        };
     }
 }
 

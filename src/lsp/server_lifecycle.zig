@@ -254,7 +254,11 @@ pub fn resolveWorkspaceRefs(self: *Server) void {
         if (self.bg_cancelled.load(.acquire)) break;
         indexer.resolveRefsForFile(self.db, fid, self.alloc, &memo);
     }
-    self.db.commit() catch self.db.rollback() catch {};
+    self.db.commit() catch |ce| {
+        self.db.rollback() catch {};
+        var buf: [128]u8 = undefined;
+        self.sendLogMessage(2, std.fmt.bufPrint(&buf, "refract: ref-resolution commit failed ({}); refs left unresolved", .{ce}) catch "refract: ref-resolution commit failed");
+    };
 }
 
 pub fn startBgIndexer(self: *Server) void {

@@ -86,6 +86,11 @@ fn writeCoverage(
 
     const ts: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds(), std.time.ns_per_us));
 
+    // Wipe-then-insert must be atomic so a partial failure never leaves the
+    // file with old coverage gone and new coverage incomplete.
+    try db.begin();
+    errdefer db.rollback() catch {};
+
     // Wipe any previous coverage for this file so re-ingestion is idempotent.
     {
         const del = try db.prepare("DELETE FROM coverage_lines WHERE file_id = ?");
@@ -116,6 +121,7 @@ fn writeCoverage(
         _ = ins.step() catch continue;
         written += 1;
     }
+    try db.commit();
     _ = alloc; // reserved for future per-line context allocations
     return written;
 }

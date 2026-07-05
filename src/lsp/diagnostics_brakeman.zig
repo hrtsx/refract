@@ -88,15 +88,17 @@ fn upsertFile(db: db_mod.Db, workspace_root: []const u8, alloc: std.mem.Allocato
     else
         try std.fs.path.join(alloc, &.{ workspace_root, file_rel });
     defer alloc.free(abs);
+    // INSERT OR IGNORE then SELECT is race-safe: a concurrent insert can't make
+    // us hand back a wrong id or trip the UNIQUE(path) constraint.
+    const ins = try db.prepare("INSERT OR IGNORE INTO files(path, mtime) VALUES(?, 0)");
+    defer ins.finalize();
+    ins.bind_text(1, abs);
+    _ = try ins.step();
     const sel = try db.prepare("SELECT id FROM files WHERE path = ?");
     defer sel.finalize();
     sel.bind_text(1, abs);
     if (try sel.step()) return sel.column_int(0);
-    const ins = try db.prepare("INSERT INTO files(path, mtime) VALUES(?, 0)");
-    defer ins.finalize();
-    ins.bind_text(1, abs);
-    _ = try ins.step();
-    return db.last_insert_rowid();
+    return error.FileUpsertFailed;
 }
 
 test "ingest stores brakeman warning with severity from confidence" {

@@ -493,10 +493,16 @@ pub const BgCtx = struct {
 
         var queue = WorkQueue{};
         defer queue.deinit();
+        var dropped: usize = 0;
         for (paths) |p| {
-            _ = queue.push(.{ .path = p, .is_gem = is_gem });
+            if (!queue.push(.{ .path = p, .is_gem = is_gem })) dropped += 1;
         }
         queue.markDone();
+        if (dropped > 0) {
+            var drop_buf: [160]u8 = undefined;
+            const drop_msg = std.fmt.bufPrint(&drop_buf, "refract: index queue full — {d} of {d} paths not indexed (exceeds cap)", .{ dropped, paths.len }) catch "refract: index queue full — some paths not indexed";
+            self.server_ptr.sendLogMessage(2, drop_msg);
+        }
 
         self.progress_done.store(0, .monotonic);
         const wctx = BgWorkerCtx{ .bg_ctx = self, .queue = &queue };
