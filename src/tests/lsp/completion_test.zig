@@ -2582,6 +2582,10 @@ test "T_KERNEL_COMPLETION Kernel methods appear at top level" {
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file://" ++ ws ++ "\",\"capabilities\":{},\"initializationOptions\":{\"disableGemIndex\":true}}}");
     try s.send(base_initialized);
     try s.send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"" ++ file_uri ++ "\",\"languageId\":\"ruby\",\"version\":1,\"text\":\"put\\n\"}}}");
+    // Barrier: block until the bg scan (incl. stdlib RBS load) settles, so the
+    // Kernel members are present before we probe. Without it a slow runner
+    // answers the completion before RBS is indexed and `puts` is missing.
+    try s.waitIdle(99);
     // Request completion at line 0, char 3 — prefix "put"
     try s.send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"" ++ file_uri ++ "\"},\"position\":{\"line\":0,\"character\":3}}}");
     try s.send(base_shutdown);

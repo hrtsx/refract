@@ -787,6 +787,14 @@ pub fn handleWaitForIdle(self: *Server, msg: types.RequestMessage) !?types.Respo
         if (drained) break;
     }
 
+    // Publish the freshly-drained symbols (and the initial-scan's stdlib RBS)
+    // into the in-memory hot index that the hot query paths read. The bg loop
+    // rebuilds on its own schedule; without doing it here, a completion/hover
+    // issued right after this barrier reads a stale hot index and misses the
+    // new members until that async rebuild lands — the macOS cold-start race
+    // (`Referable` / Kernel `puts` absent). Matches this handler's contract.
+    S.rebuildHotIndex(self);
+
     const raw = try self.alloc.dupe(u8, "null");
     return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw, .@"error" = null };
 }
