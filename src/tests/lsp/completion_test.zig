@@ -3252,3 +3252,18 @@ test "AS Object-ext gated off without Rails" {
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"nil?\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"present?\"") == null);
 }
+
+test "flow-typing: local assigned from a local's method return completes (w = f.build_widg)" {
+    // `f` is typed Fact (constructor); `w = f.build_widg` has a LOCAL receiver whose type is
+    // known only after indexing. The post-index flow pass resolves f -> Fact, build_widg's
+    // return -> Widg, types w -> Widg, so `w.` offers zorpwidth. This is the scoped-local pass
+    // (distinct from the inline chain fold — w is a separate pre-assigned binding).
+    var h = try harness.probe(std.testing.allocator, .{
+        .source = "class Widg\n  def zorpwidth; end\nend\nclass Fact\n  def build_widg\n    Widg.new\n  end\nend\nf = Fact.new\nw = f.build_widg\nw.\n",
+        .line = 10,
+        .character = 2,
+    });
+    defer h.deinit();
+    _ = h.response(2) orelse return error.NoCompletionResponse;
+    try std.testing.expect(std.mem.indexOf(u8, h.raw, "zorpwidth") != null);
+}

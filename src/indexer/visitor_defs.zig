@@ -104,6 +104,26 @@ fn ivarReturnType(ctx: *VisitCtx, node: *const prism.Node) ?[]const u8 {
     return null;
 }
 
+// Stage a memoized-accessor return (`def m; @x; end`) for post-index resolution when the ivar
+// isn't typed yet at index time. Keyed on the def's (file,line,col) — the same key the flow pass
+// uses to UPDATE the symbol's return_type — plus the ivar name and the enclosing class scope.
+fn capturePendingIvarReturn(ctx: *VisitCtx, node: *const prism.Node, line: i32, col: u32) void {
+    const class_id = ctx.current_class_id orelse return;
+    const ivar: *const prism.InstanceVarReadNode = @ptrCast(@alignCast(node));
+    var iname = resolveConstant(ctx.parser, ivar.name);
+    if (iname.len > 0 and iname[0] == '@') iname = iname[1..];
+    if (iname.len == 0) return;
+    if (ctx.db.prepare("INSERT INTO pending_ivar_returns (file_id,line,col,ivar_name,class_id) VALUES (?,?,?,?,?)")) |ps| {
+        defer ps.finalize();
+        ps.bind_int(1, ctx.file_id);
+        ps.bind_int(2, line);
+        ps.bind_int(3, @intCast(col));
+        ps.bind_text(4, iname);
+        ps.bind_int(5, class_id);
+        _ = ps.step() catch {};
+    } else |_| {}
+}
+
 pub fn handleClass(ctx: *VisitCtx, n: *const prism.Node) bool {
     const cn: *const prism.ClassNode = @ptrCast(@alignCast(n));
     const lc = locationLineCol(ctx.parser, cn.base.location.start);
@@ -486,7 +506,7 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                         updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                             ctx.error_count += 1;
                         };
-                    }
+                    } else capturePendingIvarReturn(ctx, last_node, lc.line, lc.col);
                 } else if (last_node.*.type == prism.NODE_RETURN) {
                     const rn: *const prism.ReturnNode = @ptrCast(@alignCast(last_node));
                     if (rn.arguments != null) {
@@ -501,7 +521,7 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                                     updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                                         ctx.error_count += 1;
                                     };
-                                }
+                                } else capturePendingIvarReturn(ctx, rargs.nodes[0], lc.line, lc.col);
                             }
                         }
                     }
@@ -537,7 +557,7 @@ pub fn handleDef(ctx: *VisitCtx, n: *const prism.Node) bool {
                     updateSymbolReturnType(ctx.db, sym_id, rt) catch {
                         ctx.error_count += 1;
                     };
-                }
+                } else capturePendingIvarReturn(ctx, body, lc.line, lc.col);
             }
         }
     }

@@ -279,6 +279,14 @@ fn capturePendingRecvReturn(ctx: *VisitCtx, call: *const prism.CallNode, ivar_na
                 recv_kind = "ivar";
                 recv_name = resolveConstant(ctx.parser, ir.name);
             },
+            prism.NODE_LOCAL_VAR_READ => {
+                // `x = y.method` where y is a local — resolved SCOPED (y's own type_hint,
+                // file-scoped) by the flow pass. Kept out of the unscoped fallback (which would
+                // type x to an arbitrary same-named return); untyped-when-unresolvable is better.
+                const lr: *const prism.LocalVarReadNode = @ptrCast(@alignCast(rcv));
+                recv_kind = "local";
+                recv_name = resolveConstant(ctx.parser, lr.name);
+            },
             else => {},
         }
     } else {
@@ -896,19 +904,19 @@ pub fn handleLocalVarWrite(ctx: *VisitCtx, n: *const prism.Node) bool {
 
     // Deferred receiver-scoped typing for `x = recv.method` (non-constructor): capture the
     // (recv, method) shape and resolve it in the post-index flow-typing pass over the COMPLETE
-    // symbol table — receiver-scoped (self→enclosing class, const→named class, ivar→ivar type)
-    // at confidence 50. Restricted to PRECISE receivers (implicit/explicit self, a constant, or an
-    // @ivar): an unresolvable receiver (`x = local.foo` / a chain) would fall to the unscoped
-    // any-same-named-return guess, which types the local to an arbitrary class and offers the
-    // wrong members — measured to depress member_recall. Leaving those untyped is strictly better
-    // for recall. Mirrors the `@ivar = recv.method` capture in handleInstanceVarWrite.
+    // symbol table — receiver-scoped (self→enclosing class, const→named class, ivar→ivar type,
+    // local→the local's own type_hint) at confidence 50. Every captured receiver is resolved
+    // SCOPED: the flow pass first resolves recv's concrete type, then the method's return on
+    // THAT class; a receiver whose type stays unresolvable is left untyped (the 'local' kind is
+    // excluded from the unscoped any-same-named-return fallback, which would type x to an
+    // arbitrary class and depress member_recall). Mirrors the `@ivar = recv.method` capture.
     if (!inserted and type_hint == null) {
         if (lv.value) |val| {
             if (val.*.type == prism.NODE_CALL) {
                 const call: *const prism.CallNode = @ptrCast(@alignCast(val));
                 const mname = resolveConstant(ctx.parser, call.name);
                 const precise_recv = call.receiver == null or switch (call.receiver.?.*.type) {
-                    prism.NODE_SELF, prism.NODE_CONSTANT, prism.NODE_CONSTANT_PATH, prism.NODE_INSTANCE_VAR_READ => true,
+                    prism.NODE_SELF, prism.NODE_CONSTANT, prism.NODE_CONSTANT_PATH, prism.NODE_INSTANCE_VAR_READ, prism.NODE_LOCAL_VAR_READ => true,
                     else => false,
                 };
                 if (precise_recv and !std.mem.eql(u8, mname, "new")) capturePendingRecvReturn(ctx, call, name, lc, mname);

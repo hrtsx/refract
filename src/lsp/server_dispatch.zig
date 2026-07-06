@@ -365,6 +365,8 @@ pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessag
     } else if (std.mem.eql(u8, msg.method, "workspace/willCreateFiles") or
         std.mem.eql(u8, msg.method, "workspace/willDeleteFiles"))
     {
+        // Intentional no-op: refract applies no pre-create/pre-delete WorkspaceEdit (it has no
+        // file-templating or cascade-rename-on-delete behaviour). `null` is the spec's "no edit".
         const raw = try self.alloc.dupe(u8, "null");
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw, .@"error" = null };
     } else if (std.mem.eql(u8, msg.method, "workspace/didChangeWorkspaceFolders")) {
@@ -499,6 +501,11 @@ pub fn dispatch(self: *Server, msg: types.RequestMessage) !?types.ResponseMessag
             .@"error" = null,
         };
     } else if (std.mem.eql(u8, msg.method, "textDocument/willSaveWaitUntil")) {
+        // Intentional no-op: refract never rewrites a document on save (no format-on-save or
+        // trailing-fix injection here — formatting is an explicit request). `[]` = no TextEdits.
+        // The completionItem/codeAction/codeLens/inlayHint *resolve* methods are likewise
+        // unimplemented by design: refract returns fully-resolved items up front, so there is no
+        // deferred field to fetch — and it advertises no resolveProvider for them.
         const raw = try self.alloc.dupe(u8, empty_json_array);
         return types.ResponseMessage{ .id = msg.id, .result = null, .raw_result = raw, .@"error" = null };
     }

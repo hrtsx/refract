@@ -223,6 +223,20 @@ pub fn init(self: Db) DbError!void {
         \\)
     );
     self.exec("CREATE INDEX IF NOT EXISTS idx_pending_chain_file ON pending_chain_returns(file_id)") catch {};
+    // A memoized accessor whose body tail is a bare `@ivar` (`def profile; @profile; end`)
+    // returns the ivar's type — but at index time the ivar is often typed only later (a sibling
+    // method's assignment, or the flow pass itself). Staged per (file,line,col) of the def +
+    // the ivar name and class scope, resolved by the post-index pass once the ivar is typed.
+    try self.exec(
+        \\CREATE TABLE IF NOT EXISTS pending_ivar_returns (
+        \\  file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        \\  line       INTEGER NOT NULL,
+        \\  col        INTEGER NOT NULL,
+        \\  ivar_name  TEXT NOT NULL,
+        \\  class_id   INTEGER
+        \\)
+    );
+    self.exec("CREATE INDEX IF NOT EXISTS idx_pending_ivar_ret_file ON pending_ivar_returns(file_id)") catch {};
     // A block param whose iterable receiver (`xs.each { |x| }`, `@xs.map { |x| }`) has no type
     // yet at index time — the receiver local/ivar is often typed only by the post-index flow pass
     // (e.g. `xs = fetch_all`). Staged per (file,line,col) of the param and resolved after the

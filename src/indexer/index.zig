@@ -564,6 +564,11 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
     del_pr.bind_int(1, real_file_id);
     _ = try del_pr.step();
 
+    const del_pir = try real_db.prepare("DELETE FROM pending_ivar_returns WHERE file_id = ?");
+    defer del_pir.finalize();
+    del_pir.bind_int(1, real_file_id);
+    _ = try del_pir.step();
+
     const del_pcr = try real_db.prepare("DELETE FROM pending_chain_returns WHERE file_id = ?");
     defer del_pcr.finalize();
     del_pcr.bind_int(1, real_file_id);
@@ -800,6 +805,33 @@ pub fn commitParsed(real_db: db_mod.Db, mem_db: db_mod.Db, path: []const u8, is_
         ins_pcr.bind_text(4, sel_pcr.column_text(2));
         ins_pcr.bind_int(5, sel_pcr.column_int(3));
         _ = try ins_pcr.step();
+    }
+
+    // Copy pending_ivar_returns (memoized `def m; @x; end` accessors; class_id references
+    // symbols, remapped via id_map). The post-index flow-typing pass sets the def's return_type
+    // from the ivar's resolved type.
+    const sel_pir = try mem_db.prepare(
+        \\SELECT line, col, ivar_name, class_id FROM pending_ivar_returns WHERE file_id = ?
+    );
+    defer sel_pir.finalize();
+    sel_pir.bind_int(1, mem_file_id);
+
+    const ins_pir = try real_db.prepare(
+        \\INSERT INTO pending_ivar_returns (file_id, line, col, ivar_name, class_id) VALUES (?, ?, ?, ?, ?)
+    );
+    defer ins_pir.finalize();
+
+    while (try sel_pir.step()) {
+        ins_pir.reset();
+        ins_pir.bind_int(1, real_file_id);
+        ins_pir.bind_int(2, sel_pir.column_int(0));
+        ins_pir.bind_int(3, sel_pir.column_int(1));
+        ins_pir.bind_text(4, sel_pir.column_text(2));
+        if (sel_pir.column_type(3) != 5) {
+            const real_class = id_map.get(sel_pir.column_int(3)) orelse 0;
+            if (real_class != 0) ins_pir.bind_int(5, real_class) else ins_pir.bind_null(5);
+        } else ins_pir.bind_null(5);
+        _ = try ins_pir.step();
     }
 
     // Copy pending_block_yields (deferred `xs.each { |x| }` params; keyed on line/col, no id

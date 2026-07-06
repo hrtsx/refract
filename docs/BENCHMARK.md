@@ -215,9 +215,41 @@ rival-independent ground truth needing no consensus: probe completion at the dot
 score a hit when the actually-called method comes back. `member_recall` =
 hits / sites; `resolution_rate` = sites returning any member / sites.
 
+**Current results (2026-07-07, refract-only, clean DB):**
+
+| corpus | probes | member_recall | resolution_rate |
+|---|:-:|:-:|:-:|
+| mastodon | 90 | **0.911** | 0.989 |
+| solidus | 120 | **0.842** | 1.00 |
+| homebrew | 300 | **0.577** | 0.773 |
+| discourse | 90 | **0.567** | 0.878 |
+
+Rails apps land **0.84–0.91**; the metaprogramming-heavy worst cases (discourse,
+Homebrew) land **≈0.57**. The gains over the figures narrated below came from
+completing the member-list backlog — ActiveSupport `Object` extensions, and
+indexer-time member generation for Rails/gem DSLs (`class_attribute`, validates-
+confirmation, ActiveJob/Sidekiq `perform_*`, `ActiveSupport::CurrentAttributes`,
+AASM / `state_machines`) — all FP-safe (the undefined-method diagnostic is
+receiverless-only, so additive members can't produce a false positive) and at
+zero query-path / RSS cost.
+
+Receiver **flow-typing** was then built out — post-index scoped resolution of
+`x = y.method` (local receiver) and memoized-accessor return types
+(`def profile; @profile; end`), all completion-only at confidence ≤50 so
+diagnostics/refs/hover-precision are untouched. It produces real coverage (on
+mastodon: ~7.2k local-receiver captures, ~420 memoized accessors, ~390 locals
+newly typed), which improves hover/`resolve_type`/chain-navigation — but is
+**completion-metric-neutral** here: the residual completion misses on the ≈0.57
+corpora are undecidable dynamic dispatch (`method_missing`, runtime `define_method`,
+gem objects with no source/RBS), not resolvable-but-unresolved dataflow. Measured
+before/after on discourse/homebrew/mastodon: member_recall identical to 3 decimals.
+The 0.57 floor is a decidability floor, not an inference-breadth gap.
+
+The progression that reached these numbers (earliest first):
+
 On **mastodon** (40 sampled files, 250 `recv.method` sites, comment/string
-matches filtered): refract `resolution_rate ≈ 0.51`, `member_recall ≈ 0.25` —
-up from `0.19 / 0.09` before this work (≈2.8× recall).
+matches filtered): refract started at `resolution_rate ≈ 0.51`, `member_recall ≈ 0.25` —
+up from `0.19 / 0.09` before that work (≈2.8× recall).
 
 The bottleneck is receiver-type inference *breadth*, not the member-listing
 engine (§3a shows the latter is exact). Three levers, in order of impact, all
@@ -275,8 +307,9 @@ schema-column attributes** (`credit_card.cc_type`) — which need the host app's
 `db/schema.rb` (a Rails *engine* like solidus has none, so its column methods are
 structurally absent) — plus argument-bearing method-return chains and dynamic
 (`method_missing`/`define_method`) methods, all needing flow typing or a running
-framework. Homebrew (refract-only, 120 probes) lands `member_recall 0.18 / resolution
-0.67` on the same harness.
+framework. Homebrew (refract-only, 300 probes) now lands `member_recall 0.58 /
+resolution 0.77` on the same harness (up from `0.18 / 0.67`), after the DSL
+member-generation work in the current-results table above.
 - **references / rename** — scored as precision/recall over the known reference and
   edit sets, `includeDeclaration=true`. refract is **1.00 / 1.00** on both: it binds
   each method/constant reference to a single definition (`refs.def_id`) by resolving

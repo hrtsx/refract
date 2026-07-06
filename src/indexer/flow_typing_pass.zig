@@ -13,11 +13,32 @@ const rails_dsl = @import("rails_dsl.zig");
 // confidence 50 (< the 70 diagnostic gate), so diagnostics never read these types — no new
 // false positives. Idempotent: only updates rows whose type_hint is still NULL.
 pub fn runFlowTypingPass(db: db_mod.Db) void {
-    // Const-rooted AR chain defs (`def prunable_accounts; Account.remote.where...; end`).
-    // Runs FIRST so a chain-typed method's return feeds the const-receiver local pass below
-    // (`x = Foo.chain_method` → `x : [Model]`). Gated on the root being AR-shaped (owns a
-    // scope/association), so a plain `Config.load.freeze` on a non-model types nothing — the
-    // gate is the FP guard. `[Root]` for a relation terminal, `Root` for a singular one.
+    // Const-rooted AR chain defs — static (depends only on scope/association symbols), so once.
+    runConstChainPass(db);
+
+    // Scoped receiver + accessor-return passes as a bounded fixpoint: a type one pass writes feeds
+    // the next (`@x = @y.m` types @x → `def n; @x; end` gets a return_type → `z = obj.n` types z).
+    // Each pass is NULL-gated + confidence-fixed, so re-running only fills newly-resolvable rows;
+    // 3 rounds cover the assignment/accessor chains that occur in practice.
+    var iter: u8 = 0;
+    while (iter < 3) : (iter += 1) {
+        runSelfPass(db);
+        runConstPass(db);
+        runIvarPass(db);
+        runIvarAccessorReturnPass(db);
+        runLocalReceiverPass(db);
+    }
+
+    runUnscopedFallback(db);
+
+    // Block-yield element typing runs LAST so it sees every type the passes above wrote.
+    resolveBlockYields(db);
+}
+
+// Const-rooted AR chain defs (`def prunable_accounts; Account.remote.where...; end`). Gated on the
+// root being AR-shaped (owns a scope/association), so `Config.load.freeze` on a non-model types
+// nothing — the gate is the FP guard. `[Root]` for a relation terminal, `Root` for a singular one.
+fn runConstChainPass(db: db_mod.Db) void {
     db.exec(
         \\UPDATE symbols SET return_type = (
         \\    SELECT CASE WHEN p.singular=1 THEN p.root_const ELSE '['||p.root_const||']' END
@@ -33,9 +54,11 @@ pub fn runFlowTypingPass(db: db_mod.Db) void {
         \\      AND EXISTS (SELECT 1 FROM symbols m WHERE m.kind IN ('scope','association')
         \\        AND (m.parent_name=p.root_const OR m.parent_name LIKE '%::'||p.root_const)));
     ) catch {};
+}
 
-    // self / implicit-self receiver: `@x = helper` / `@x = self.helper` — resolve the
-    // method's return on the enclosing class (and its `%::Name` namespaced form).
+// self / implicit-self receiver: `@x = helper` / `@x = self.helper` — resolve the method's return
+// on the enclosing class (and its `%::Name` namespaced form).
+fn runSelfPass(db: db_mod.Db) void {
     db.exec(
         \\UPDATE local_vars SET type_hint = (
         \\    SELECT s.return_type FROM symbols s, pending_recv_returns p, symbols cls
@@ -52,9 +75,11 @@ pub fn runFlowTypingPass(db: db_mod.Db) void {
         \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
         \\      AND (s.parent_name=cls.name OR s.parent_name LIKE '%::'||cls.name));
     ) catch {};
+}
 
-    // constant receiver: `@x = SomeService.call` — resolve the method's return on the named
-    // class (class method / scope, falling back to instance defs).
+// constant receiver: `@x = SomeService.call` — resolve the method's return on the named class
+// (class method / scope, falling back to instance defs).
+fn runConstPass(db: db_mod.Db) void {
     db.exec(
         \\UPDATE local_vars SET type_hint = (
         \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
@@ -71,10 +96,12 @@ pub fn runFlowTypingPass(db: db_mod.Db) void {
         \\      AND s.name=p.method_name AND s.kind IN ('classdef','scope','def') AND s.return_type IS NOT NULL
         \\      AND (s.parent_name=p.recv_name OR s.parent_name LIKE '%::'||p.recv_name));
     ) catch {};
+}
 
-    // instance-variable receiver: `@x = @y.method` — resolve @y's recorded type (same class
-    // scope), then the method's return on that class. Precise (vs the unscoped fallback) so
-    // it runs first. @y must already be typed (inline new/finder, or the self/const passes).
+// instance-variable receiver: `@x = @y.method` — resolve @y's recorded type (same class scope),
+// then the method's return on that class. @y must already be typed (inline new/finder, or an
+// earlier pass).
+fn runIvarPass(db: db_mod.Db) void {
     db.exec(
         \\UPDATE local_vars SET type_hint = (
         \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
@@ -93,30 +120,72 @@ pub fn runFlowTypingPass(db: db_mod.Db) void {
         \\      AND (s.parent_name=(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1)
         \\        OR s.parent_name LIKE '%::'||(SELECT lv2.type_hint FROM local_vars lv2 WHERE lv2.class_id=p.class_id AND lv2.name=p.recv_name AND lv2.type_hint IS NOT NULL ORDER BY lv2.confidence DESC, lv2.type_hint LIMIT 1)));
     ) catch {};
+}
 
-    // Unscoped fallback (recv type unresolved — an ivar/local/chain receiver). Pick the
-    // method's return type from ANY class deterministically (content ORDER BY) — the old
-    // single-pass behavior, but now stable. Lower confidence (40) marks it imprecise. Only
-    // touches rows the scoped passes above left NULL.
+// Memoized accessor return: `def profile; @profile; end` → the def's return_type is @profile's
+// resolved type (scoped to the class), set once the ivar is typed by an index-time assignment or
+// an earlier receiver pass. Powers receiver-typed completion through accessors (`user.profile.`)
+// and feeds the local/ivar receiver passes (`x = user.profile`). NULL-gated so it never overrides
+// an index-time or Sorbet return_type.
+fn runIvarAccessorReturnPass(db: db_mod.Db) void {
+    db.exec(
+        \\UPDATE symbols SET return_type = (
+        \\    SELECT lv.type_hint FROM local_vars lv, pending_ivar_returns p
+        \\    WHERE p.file_id=symbols.file_id AND p.line=symbols.line AND p.col=symbols.col
+        \\      AND lv.class_id=p.class_id AND lv.name=p.ivar_name AND lv.type_hint IS NOT NULL
+        \\    ORDER BY lv.confidence DESC, lv.type_hint LIMIT 1
+        \\  )
+        \\WHERE kind='def' AND return_type IS NULL AND EXISTS (
+        \\    SELECT 1 FROM local_vars lv, pending_ivar_returns p
+        \\    WHERE p.file_id=symbols.file_id AND p.line=symbols.line AND p.col=symbols.col
+        \\      AND lv.class_id=p.class_id AND lv.name=p.ivar_name AND lv.type_hint IS NOT NULL);
+    ) catch {};
+}
+
+// Unscoped fallback (recv type unresolved — an ivar/chain receiver). Pick the method's return type
+// from ANY class deterministically (content ORDER BY). Lower confidence (40) marks it imprecise.
+// Excludes `local` receivers: their scoped pass is authoritative and an unscoped guess for an
+// unresolvable local was measured to reduce recall.
+fn runUnscopedFallback(db: db_mod.Db) void {
     db.exec(
         \\UPDATE local_vars SET type_hint = (
         \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
         \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind!='local'
         \\      AND s.name=p.method_name AND s.kind IN ('def','classdef','scope') AND s.return_type IS NOT NULL
         \\    ORDER BY s.return_type LIMIT 1
         \\  ), confidence=40
         \\WHERE local_vars.type_hint IS NULL AND EXISTS (
         \\    SELECT 1 FROM pending_recv_returns p, symbols s
         \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind!='local'
         \\      AND s.name=p.method_name AND s.kind IN ('def','classdef','scope') AND s.return_type IS NOT NULL);
     ) catch {};
+}
 
-    // Block-yield element typing: `xs.each { |x| }` / `@xs.map { |x| }` where the receiver's type
-    // was unknown at index time (typed only by the local/ivar passes above). Resolves the
-    // receiver's now-complete type and applies element extraction. Runs LAST so it sees every
-    // type the passes above wrote. Confidence 50 (< 70 gate) and NULL-gated — completion-only,
-    // never an FP, never overrides a higher-confidence index-time typing.
-    resolveBlockYields(db);
+// One pass of `x = y.method` (local receiver) resolution. Resolves y's concrete type from its
+// own file-scoped type_hint (most-recent typed binding at/before the assignment line), then the
+// method's return on that class. NULL-gated so re-running only fills newly-resolvable rows —
+// the caller runs it a few times so a short assignment chain (`y = a.m; x = y.n`) propagates.
+fn runLocalReceiverPass(db: db_mod.Db) void {
+    db.exec(
+        \\UPDATE local_vars SET type_hint = (
+        \\    SELECT s.return_type FROM symbols s, pending_recv_returns p
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='local'
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=(SELECT rv.type_hint FROM local_vars rv WHERE rv.file_id=p.file_id AND rv.name=p.recv_name AND rv.type_hint IS NOT NULL AND rv.line<=p.line ORDER BY rv.line DESC, rv.confidence DESC LIMIT 1)
+        \\        OR s.parent_name LIKE '%::'||(SELECT rv.type_hint FROM local_vars rv WHERE rv.file_id=p.file_id AND rv.name=p.recv_name AND rv.type_hint IS NOT NULL AND rv.line<=p.line ORDER BY rv.line DESC, rv.confidence DESC LIMIT 1))
+        \\    ORDER BY s.return_type LIMIT 1
+        \\  ), confidence=50
+        \\WHERE local_vars.type_hint IS NULL AND EXISTS (
+        \\    SELECT 1 FROM pending_recv_returns p, symbols s
+        \\    WHERE p.file_id=local_vars.file_id AND p.ivar_name=local_vars.name AND p.line=local_vars.line AND p.col=local_vars.col
+        \\      AND p.recv_kind='local'
+        \\      AND s.name=p.method_name AND s.kind IN ('def','association','scope') AND s.return_type IS NOT NULL
+        \\      AND (s.parent_name=(SELECT rv.type_hint FROM local_vars rv WHERE rv.file_id=p.file_id AND rv.name=p.recv_name AND rv.type_hint IS NOT NULL AND rv.line<=p.line ORDER BY rv.line DESC, rv.confidence DESC LIMIT 1)
+        \\        OR s.parent_name LIKE '%::'||(SELECT rv.type_hint FROM local_vars rv WHERE rv.file_id=p.file_id AND rv.name=p.recv_name AND rv.type_hint IS NOT NULL AND rv.line<=p.line ORDER BY rv.line DESC, rv.confidence DESC LIMIT 1)));
+    ) catch {};
 }
 
 fn dupSlice(buf: []u8, s: []const u8) ?[]const u8 {
